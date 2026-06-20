@@ -1,0 +1,306 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+/* ===========================================================================
+   Cloud Code — iOS-native design system.
+   SF Pro typography, true-black dark mode, iMessage bubbles, frosted nav bars,
+   segmented controls, bottom sheets, system colors. Light + dark parity.
+   =========================================================================== */
+
+:root {
+  /* ── Light (iOS systemGroupedBackground) ── */
+  --color-surface-0: #f2f2f7; /* app background */
+  --color-surface-1: #ffffff; /* raised surfaces (nav, sidebar, sheets) */
+  --color-surface-2: #ffffff; /* fields / cards */
+  --color-surface-3: #e5e5ea; /* fills */
+  --color-surface-4: #d1d1d6; /* strong fills */
+
+  --color-text-primary: #000000;
+  --color-text-secondary: rgba(60, 60, 67, 0.6);
+  --color-text-muted: rgba(60, 60, 67, 0.45);
+
+  --color-border: rgba(60, 60, 67, 0.18);
+  --color-border-hover: rgba(0, 122, 255, 0.5);
+
+  --color-bg-secondary: #ffffff;
+  --color-bg-tertiary: #ffffff;
+
+  /* iOS system palette (light) */
+  --ios-blue: #007aff;
+  --ios-blue-press: #0066d6;
+  --ios-green: #34c759;
+  --ios-red: #ff3b30;
+  --ios-nav-bg: rgba(249, 249, 251, 0.8);
+  --ios-fill-tertiary: rgba(118, 118, 128, 0.12);
+  --ios-fill-secondary: rgba(118, 118, 128, 0.16);
+  --ios-segment-track: rgba(118, 118, 128, 0.12);
+  --ios-segment-active: #ffffff;
+  --ios-separator: rgba(60, 60, 67, 0.29);
+
+  /* Chat bubbles */
+  --bubble-agent: #e9e9eb;
+  --bubble-agent-text: #000000;
+
+  /* Markdown prose */
+  --prose-body: #1c1c1e;
+  --prose-strong: #000000;
+
+  /* Code blocks stay GitHub-dark in both themes */
+  --code-bg: #0d1117;
+  --code-border: #21262d;
+  --code-text: #e2e8f0;
+  --code-text-muted: #8b949e;
+  --code-border-soft: #30363d;
+  --code-active: #58a6ff;
+  --code-copy-success: #3fb950;
+}
+
+[data-theme="dark"] {
+  /* ── Dark (true iOS dark — pure blacks + graphite) ── */
+  --color-surface-0: #000000;
+  --color-surface-1: #1c1c1e;
+  --color-surface-2: #2c2c2e;
+  --color-surface-3: #3a3a3c;
+  --color-surface-4: #48484a;
+
+  --color-text-primary: #ffffff;
+  --color-text-secondary: rgba(235, 235, 245, 0.6);
+  --color-text-muted: rgba(235, 235, 245, 0.42);
+
+  --color-border: rgba(84, 84, 88, 0.6);
+  --color-border-hover: rgba(10, 132, 255, 0.6);
+
+  --color-bg-secondary: #1c1c1e;
+  --color-bg-tertiary: #2c2c2e;
+
+  /* iOS system palette (dark — vivid variants) */
+  --ios-blue: #0a84ff;
+  --ios-blue-press: #409cff;
+  --ios-green: #30d158;
+  --ios-red: #ff453a;
+  --ios-nav-bg: rgba(22, 22, 24, 0.72);
+  --ios-fill-tertiary: rgba(118, 118, 128, 0.24);
+  --ios-fill-secondary: rgba(118, 118, 128, 0.32);
+  --ios-segment-track: rgba(118, 118, 128, 0.24);
+  --ios-segment-active: #636366;
+  --ios-separator: rgba(84, 84, 88, 0.65);
+
+  --bubble-agent: #262629;
+  --bubble-agent-text: #ffffff;
+
+  --prose-body: rgba(235, 235, 245, 0.82);
+  --prose-strong: #ffffff;
+}
+
+@layer base {
+  html {
+    background-color: var(--color-surface-0);
+    -webkit-tap-highlight-color: transparent;
+  }
+  body {
+    background-color: var(--color-surface-0);
+    color: var(--color-text-primary);
+    /* SF Pro — the native iOS typeface. Renders real SF on Apple devices. */
+    font-family: -apple-system, BlinkMacSystemFont, "SF Pro Text", "SF Pro Display",
+      "Segoe UI", system-ui, sans-serif;
+    -webkit-font-smoothing: antialiased;
+    -moz-osx-font-smoothing: grayscale;
+    letter-spacing: -0.01em;
+    text-rendering: optimizeLegibility;
+  }
+  /* iOS large/nav titles get a touch tighter tracking */
+  h1, h2, h3 {
+    letter-spacing: -0.02em;
+  }
+}
+
+/* ── Frosted nav bar / toolbar (UINavigationBar blur) ───────────────────── */
+.ios-blur {
+  background-color: var(--ios-nav-bg);
+  backdrop-filter: saturate(180%) blur(22px);
+  -webkit-backdrop-filter: saturate(180%) blur(22px);
+}
+
+.hairline-b { border-bottom: 0.5px solid var(--ios-separator); }
+.hairline-t { border-top: 0.5px solid var(--ios-separator); }
+
+/* ── Pressable (springy tap feedback like UIKit) ────────────────────────── */
+.press { transition: transform 0.13s cubic-bezier(0.2, 0.8, 0.2, 1), background-color 0.15s ease, opacity 0.15s ease; }
+.press:active { transform: scale(0.96); }
+.press-sm:active { transform: scale(0.93); }
+
+/* ── Segmented control (UISegmentedControl) ─────────────────────────────── */
+.ios-segment {
+  display: inline-flex;
+  padding: 2px;
+  background: var(--ios-segment-track);
+  border-radius: 9px;
+  gap: 2px;
+}
+.ios-segment > button {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 5px;
+  padding: 5px 14px;
+  border-radius: 7px;
+  font-size: 13px;
+  font-weight: 590;
+  color: var(--color-text-primary);
+  transition: background 0.2s cubic-bezier(0.32, 0.72, 0, 1), color 0.2s ease, transform 0.1s ease;
+}
+.ios-segment > button:active { transform: scale(0.95); }
+.ios-segment > button[data-on="true"] {
+  background: var(--ios-segment-active);
+  box-shadow: 0 3px 8px rgba(0, 0, 0, 0.12), 0 1px 1px rgba(0, 0, 0, 0.08);
+}
+[data-theme="dark"] .ios-segment > button[data-on="true"] {
+  box-shadow: 0 0 0 0.5px rgba(0, 0, 0, 0.2), 0 1px 2px rgba(0, 0, 0, 0.3);
+}
+.ios-segment > button[data-on="false"] { color: var(--color-text-secondary); }
+
+/* ── iMessage bubbles ───────────────────────────────────────────────────── */
+.bubble-user {
+  background-image: linear-gradient(180deg, #2c9bff 0%, #0a84ff 60%, #0a7aff 100%);
+  color: #fff;
+  border-radius: 21px;
+  border-bottom-right-radius: 7px;
+  box-shadow: 0 1px 2px rgba(10, 132, 255, 0.28);
+}
+[data-theme="dark"] .bubble-user {
+  background-image: linear-gradient(180deg, #0a84ff 0%, #0066ff 100%);
+}
+.bubble-agent {
+  background: var(--bubble-agent);
+  color: var(--bubble-agent-text);
+  border-radius: 21px;
+  border-bottom-left-radius: 7px;
+}
+
+/* iOS "typing" indicator (three breathing dots) */
+.typing { display: inline-flex; gap: 5px; align-items: center; }
+.typing span {
+  width: 8px; height: 8px; border-radius: 50%;
+  background: var(--color-text-muted);
+  animation: typing 1.3s infinite ease-in-out;
+}
+.typing span:nth-child(2) { animation-delay: 0.18s; }
+.typing span:nth-child(3) { animation-delay: 0.36s; }
+@keyframes typing {
+  0%, 60%, 100% { transform: translateY(0); opacity: 0.5; }
+  30% { transform: translateY(-4px); opacity: 1; }
+}
+
+/* ── Bottom sheet (UISheetPresentationController) ───────────────────────── */
+.ios-sheet {
+  background: var(--color-surface-1);
+  border-radius: 22px 22px 0 0;
+  box-shadow: 0 -8px 40px rgba(0, 0, 0, 0.35);
+  animation: sheetUp 0.42s cubic-bezier(0.32, 0.72, 0, 1);
+}
+@media (min-width: 768px) {
+  .ios-sheet { border-radius: 22px; animation: sheetPop 0.34s cubic-bezier(0.32, 0.72, 0, 1); }
+}
+.ios-grabber {
+  width: 36px; height: 5px; border-radius: 3px;
+  background: var(--ios-fill-secondary);
+}
+.sheet-backdrop { animation: fadeIn 0.3s ease; }
+@keyframes sheetUp { from { transform: translateY(100%); } to { transform: translateY(0); } }
+@keyframes sheetPop { from { transform: translateY(16px) scale(0.97); opacity: 0; } to { transform: translateY(0) scale(1); opacity: 1; } }
+@keyframes fadeIn { from { opacity: 0; } to { opacity: 1; } }
+@keyframes msgIn { from { transform: translateY(8px) scale(0.97); opacity: 0; } to { transform: translateY(0) scale(1); opacity: 1; } }
+.msg-in { animation: msgIn 0.32s cubic-bezier(0.32, 0.72, 0, 1); }
+
+/* ── Scrollbars (thin, iOS-ish; hidden until scroll on supported browsers) ── */
+.ios-scroll { scrollbar-width: thin; scrollbar-color: var(--color-surface-4) transparent; }
+.ios-scroll::-webkit-scrollbar { width: 7px; height: 7px; }
+.ios-scroll::-webkit-scrollbar-thumb { background: var(--ios-fill-secondary); border-radius: 4px; }
+.ios-scroll::-webkit-scrollbar-track { background: transparent; }
+
+/* Prevent prose code blocks from expanding containers */
+.prose pre { overflow-x: auto; max-width: 100%; }
+.prose code { word-break: break-all; }
+.prose p, .prose li, .prose td { overflow-wrap: break-word; word-break: break-word; }
+
+/* ── Code block (markdown renderer) ─────────────────────────────────────── */
+.code-block-wrapper {
+  position: relative;
+  margin: 14px 0;
+  border-radius: 13px;
+  border: 1px solid var(--code-border);
+  overflow: hidden;
+  background: var(--code-bg);
+}
+.code-block-header {
+  display: flex; align-items: center; justify-content: space-between;
+  padding: 8px 14px;
+  background: rgba(13, 17, 23, 0.85);
+  border-bottom: 1px solid var(--code-border);
+}
+.code-block-lang {
+  font-size: 11px; font-weight: 600; color: var(--code-text-muted);
+  font-family: ui-monospace, "SF Mono", "JetBrains Mono", monospace; text-transform: lowercase;
+}
+.code-block-copy {
+  display: flex; align-items: center; gap: 4px;
+  padding: 4px 9px; border-radius: 7px; border: none; background: transparent;
+  color: var(--code-text-muted); font-size: 11px; cursor: pointer;
+  transition: background 0.15s ease, color 0.15s ease, transform 0.1s ease; opacity: 0;
+}
+.code-block-wrapper:hover .code-block-copy, .code-block-copy:focus-visible { opacity: 1; }
+.code-block-copy:hover { background: rgba(110, 118, 129, 0.4); color: var(--code-text); }
+.code-block-copy:active { transform: scale(0.95); }
+.code-block-copy.copied { color: var(--code-copy-success); opacity: 1; }
+.code-block-content {
+  padding: 14px; overflow-x: auto; font-size: 12.5px; line-height: 1.7;
+  font-family: ui-monospace, "SF Mono", "JetBrains Mono", monospace; color: var(--code-text);
+  margin: 0; background: transparent; border: none;
+}
+.code-block-content code { font-family: inherit; font-size: inherit; line-height: inherit; background: transparent; padding: 0; border: none; }
+.code-block-content::-webkit-scrollbar { height: 5px; }
+.code-block-content::-webkit-scrollbar-thumb { background: var(--code-border-soft); border-radius: 3px; }
+@media (max-width: 767px) { .code-block-copy { opacity: 1; } }
+
+/* ── Agent output prose ─────────────────────────────────────────────────── */
+.agent-output-prose { color: var(--prose-body); }
+.agent-output-prose h1, .agent-output-prose h2, .agent-output-prose h3, .agent-output-prose h4, .agent-output-prose h5, .agent-output-prose h6 { color: var(--prose-strong); font-weight: 650; }
+.agent-output-prose h1 { font-size: 1.35rem; margin-top: 1.4rem; margin-bottom: 0.7rem; }
+.agent-output-prose h2 { font-size: 1.12rem; margin-top: 1.2rem; margin-bottom: 0.5rem; }
+.agent-output-prose h3 { font-size: 1rem; margin-top: 1rem; margin-bottom: 0.5rem; }
+.agent-output-prose a { color: var(--ios-blue); text-decoration: none; font-weight: 500; }
+.agent-output-prose a:hover { text-decoration: underline; }
+.agent-output-prose strong { color: var(--prose-strong); font-weight: 650; }
+.agent-output-prose blockquote { border-left: 3px solid var(--ios-blue); background: rgba(10, 132, 255, 0.06); border-radius: 0 10px 10px 0; padding: 10px 14px; font-style: normal; color: var(--prose-body); }
+.agent-output-prose code { color: var(--prose-strong); background: var(--ios-fill-tertiary); border-radius: 6px; padding: 2px 6px; font-size: 0.82rem; font-family: ui-monospace, "SF Mono", "JetBrains Mono", monospace; font-weight: 500; }
+.agent-output-prose code::before, .agent-output-prose code::after { content: none; }
+.agent-output-prose pre { background: transparent; padding: 0; margin: 0; border: none; }
+.agent-output-prose pre code { background: transparent; padding: 0; font-size: 0.8rem; line-height: 1.7; }
+.agent-output-prose table { width: 100%; border-collapse: collapse; }
+.agent-output-prose thead { border-bottom: 2px solid var(--color-border); }
+.agent-output-prose thead th { color: var(--prose-strong); font-weight: 600; font-size: 0.82rem; padding: 8px 12px; text-align: left; }
+.agent-output-prose tbody td { padding: 8px 12px; font-size: 0.82rem; border-bottom: 1px solid var(--color-border); }
+.agent-output-prose hr { border-color: var(--color-border); margin: 1.4rem 0; }
+.agent-output-prose ul { list-style-type: disc; }
+.agent-output-prose ol { list-style-type: decimal; }
+.agent-output-prose li { margin: 0.25rem 0; }
+.agent-output-prose img { border-radius: 12px; }
+
+/* Syntax highlighting (GitHub Dark) */
+.agent-output-prose .hljs-keyword, .code-block-content .hljs-keyword { color: #ff7b72; }
+.agent-output-prose .hljs-string, .code-block-content .hljs-string { color: #a5d6ff; }
+.agent-output-prose .hljs-comment, .code-block-content .hljs-comment { color: #8b949e; }
+.agent-output-prose .hljs-function, .code-block-content .hljs-function { color: #d2a8ff; }
+.agent-output-prose .hljs-number, .code-block-content .hljs-number { color: #79c0ff; }
+.agent-output-prose .hljs-title, .code-block-content .hljs-title { color: #d2a8ff; }
+.agent-output-prose .hljs-params, .code-block-content .hljs-params { color: #e2e8f0; }
+.agent-output-prose .hljs-built_in, .code-block-content .hljs-built_in { color: #ffa657; }
+.agent-output-prose .hljs-literal, .code-block-content .hljs-literal { color: #79c0ff; }
+.agent-output-prose .hljs-type, .code-block-content .hljs-type { color: #ffa657; }
+.agent-output-prose .hljs-attr, .code-block-content .hljs-attr { color: #79c0ff; }
+.agent-output-prose .hljs-selector-class, .code-block-content .hljs-selector-class { color: #7ee787; }
+.agent-output-prose .hljs-selector-tag, .code-block-content .hljs-selector-tag { color: #7ee787; }
+.agent-output-prose .hljs-variable, .code-block-content .hljs-variable { color: #ffa657; }
+.agent-output-prose .hljs-meta, .code-block-content .hljs-meta { color: #79c0ff; }
+.agent-output-prose .hljs-punctuation, .code-block-content .hljs-punctuation { color: #e2e8f0; }

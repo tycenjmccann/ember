@@ -1,0 +1,10 @@
+node_modules
+.next
+.git
+mcp
+deploy
+*.log
+.env.local
+.DS_Store
+playwright-screenshots
+test-results

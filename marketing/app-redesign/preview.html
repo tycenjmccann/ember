@@ -1,0 +1,163 @@
+<!doctype html>
+<html lang="en" data-theme="dark">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Ember re-skin — token preview</title>
+<style>
+  :root {
+    --ember-50:#fff3e6; --ember-100:#ffe1c2; --ember-200:#ffc187; --ember-300:#ff9d4d;
+    --ember-400:#ff7a1a; --ember-500:#ff6a00; --ember-600:#f25c00; --ember-700:#cc4a00;
+    --ember-800:#a23a00; --ember-900:#7a2c00;
+    --night-0:#000; --night-1:#0e0d0c; --night-2:#1a1816; --night-3:#2a2724; --night-4:#3a3531;
+    --ash:#8a8079; --smoke:#c9c2bb; --bone:#f5efe8;
+    --coal:radial-gradient(circle,#ffd089 0%,#ff7a1a 38%,#ff4d00 70%,#7a2c00 100%);
+    --glow-grad:linear-gradient(180deg,#ffb24d 0%,#ff7a1a 45%,#ff4d00 100%);
+    --bloom:0 0 24px rgba(255,106,0,.4);
+    --btn-glow:0 2px 16px rgba(255,106,0,.35);
+    --ios-green:#30d158; --ios-red:#ff453a;
+    --font-body:-apple-system,BlinkMacSystemFont,"SF Pro Text",system-ui,sans-serif;
+    --font-mono:ui-monospace,"SF Mono","JetBrains Mono",monospace;
+  }
+  * { box-sizing:border-box; margin:0; padding:0; }
+  html, body { overflow-x:hidden; }
+  body { background:var(--night-0); color:var(--bone); font-family:var(--font-body);
+    -webkit-font-smoothing:antialiased; letter-spacing:-.01em; padding:40px 32px 64px;
+    max-width:980px; margin:0 auto; }
+  h1 { font-size:30px; letter-spacing:-.03em; margin-bottom:4px; }
+  h1 .e { background:var(--glow-grad); -webkit-background-clip:text; background-clip:text; -webkit-text-fill-color:transparent; }
+  .sub { color:var(--smoke); font-size:15px; margin-bottom:36px; }
+  h2 { font-size:13px; text-transform:uppercase; letter-spacing:.08em; color:var(--ash); margin:34px 0 14px; font-weight:650; }
+  .row { display:flex; flex-wrap:wrap; gap:14px; align-items:center; }
+
+  /* surfaces */
+  .surfaces { display:flex; gap:0; border-radius:13px; overflow:hidden; border:1px solid var(--night-4); max-width:100%; }
+  .surf { flex:1 1 0; min-width:0; height:90px; display:flex; flex-direction:column; justify-content:flex-end; padding:10px; font-size:11px; font-family:var(--font-mono); color:var(--smoke); white-space:nowrap; }
+  .s0{background:var(--night-0)} .s1{background:var(--night-1)} .s2{background:var(--night-2)}
+  .s3{background:var(--night-3)} .s4{background:var(--night-4)}
+
+  /* ember scale chips */
+  .chip { width:78px; height:64px; border-radius:11px; display:flex; align-items:flex-end; padding:7px; font-size:10px; font-family:var(--font-mono); color:#fff; text-shadow:0 1px 2px rgba(0,0,0,.5); }
+
+  /* buttons */
+  .btn { display:inline-flex; align-items:center; gap:.5rem; padding:.8rem 1.4rem; border-radius:13px;
+    font-weight:600; font-size:15px; border:0; cursor:pointer; font-family:var(--font-body); }
+  .btn-primary { background:var(--ember-500); color:#fff; box-shadow:var(--btn-glow); }
+  .btn-primary:hover { background:var(--ember-400); box-shadow:0 4px 28px rgba(255,106,0,.5); }
+  .btn-ghost { background:transparent; color:var(--bone); border:1px solid var(--night-4); }
+  .btn-ghost:hover { border-color:var(--ember-600); background:rgba(255,106,0,.08); }
+  .btn-press { background:var(--ember-700); color:#fff; }
+
+  /* bubbles */
+  .bubbles { display:flex; flex-direction:column; gap:8px; max-width:min(340px,100%); }
+  .bubble-user { align-self:flex-end; background-image:linear-gradient(180deg,#ffb24d 0%,#ff7a1a 45%,#ff4d00 100%);
+    color:#fff; border-radius:21px; border-bottom-right-radius:7px; padding:9px 14px; font-size:15px;
+    box-shadow:0 1px 2px rgba(255,106,0,.32), 0 0 14px rgba(255,106,0,.18); }
+  .bubble-agent { align-self:flex-start; background:#1f1c19; color:var(--bone); border-radius:21px;
+    border-bottom-left-radius:7px; padding:9px 14px; font-size:15px; }
+
+  /* warmth dots */
+  .dotwrap { display:flex; flex-wrap:wrap; gap:30px; }
+  .dotcell { display:flex; flex-direction:column; align-items:center; gap:9px; font-size:12px; color:var(--smoke); }
+  .dotcell small { color:var(--ash); font-size:11px; }
+  .dot { width:14px; height:14px; border-radius:50%; }
+  .dot--warm { background:var(--coal); box-shadow:0 0 8px rgba(255,106,0,.85),0 0 16px rgba(255,106,0,.45);
+    animation:breathe 2.6s ease-in-out infinite; }
+  .dot--idle { background:var(--ember-300); opacity:.7; }
+  .dot--cold { background:var(--ash); }
+  .dot--green { background:var(--ios-green); box-shadow:0 0 0 3px rgba(52,199,89,.18); }
+  @keyframes breathe {
+    0%,100%{transform:scale(1);filter:brightness(1);box-shadow:0 0 8px rgba(255,106,0,.7),0 0 14px rgba(255,106,0,.35)}
+    50%{transform:scale(1.18);filter:brightness(1.3);box-shadow:0 0 12px rgba(255,106,0,1),0 0 22px rgba(255,106,0,.6)}
+  }
+
+  /* nav mock */
+  .nav { display:flex; align-items:center; gap:10px; background:rgba(14,13,12,.72); border:0.5px solid var(--night-4);
+    backdrop-filter:blur(22px); padding:10px 16px; border-radius:13px; max-width:min(420px,100%); }
+  .nav .mark { width:28px; height:28px; border-radius:8px; background:var(--coal); box-shadow:var(--bloom); }
+  .nav .word { font-size:17px; font-weight:650; letter-spacing:-.02em; }
+  .nav .word .glow { color:var(--ember-400); }
+  .nav .right { margin-left:auto; color:var(--ember-500); font-size:15px; }
+
+  /* code block stays github-dark */
+  .code { background:#0d1117; border:1px solid #21262d; border-radius:13px; max-width:min(420px,100%); overflow:hidden; }
+  .code .hd { display:flex; justify-content:space-between; padding:8px 14px; background:rgba(13,17,23,.85);
+    border-bottom:1px solid #21262d; font-family:var(--font-mono); font-size:11px; color:#8b949e; }
+  .code pre { padding:14px; font-family:var(--font-mono); font-size:12.5px; line-height:1.7; color:#e2e8f0; }
+  .k{color:#ff7b72} .s{color:#a5d6ff} .f{color:#d2a8ff} .c{color:#8b949e}
+
+  /* compact on narrow viewports so nothing clips off-screen */
+  @media (max-width:480px) {
+    body { padding:28px 18px 56px; }
+    h1 { font-size:26px; }
+    .row { gap:10px; }
+    .chip { width:64px; height:54px; }
+    .dotwrap { gap:18px 26px; }
+  }
+</style>
+</head>
+<body>
+  <h1><span class="e">ember</span> — app re-skin</h1>
+  <div class="sub mono" style="font-family:var(--font-mono)">Keep your session warm. · dark theme · blue → ember</div>
+
+  <h2>Nav lockup</h2>
+  <div class="nav">
+    <div class="mark"></div>
+    <div class="word">emb<span class="glow">e</span>r</div>
+    <div class="right">Cost</div>
+  </div>
+
+  <h2>Warm-shifted night surfaces (0 → 4)</h2>
+  <div class="surfaces">
+    <div class="surf s0">#000000</div>
+    <div class="surf s1">#0e0d0c</div>
+    <div class="surf s2">#1a1816</div>
+    <div class="surf s3">#2a2724</div>
+    <div class="surf s4">#3a3531</div>
+  </div>
+
+  <h2>Ember accent scale</h2>
+  <div class="row">
+    <div class="chip" style="background:#fff3e6;color:#7a2c00">50</div>
+    <div class="chip" style="background:#ffe1c2;color:#7a2c00">100</div>
+    <div class="chip" style="background:#ffc187;color:#7a2c00">200</div>
+    <div class="chip" style="background:#ff9d4d">300</div>
+    <div class="chip" style="background:#ff7a1a">400</div>
+    <div class="chip" style="background:#ff6a00;box-shadow:var(--bloom)">500</div>
+    <div class="chip" style="background:#f25c00">600</div>
+    <div class="chip" style="background:#cc4a00">700</div>
+    <div class="chip" style="background:#a23a00">800</div>
+    <div class="chip" style="background:#7a2c00">900</div>
+  </div>
+
+  <h2>Buttons (ember fill + glow)</h2>
+  <div class="row">
+    <button class="btn btn-primary">Primary</button>
+    <button class="btn btn-press">Pressed</button>
+    <button class="btn btn-ghost">Ghost</button>
+  </div>
+
+  <h2>Chat bubbles (user = ember glow gradient)</h2>
+  <div class="bubbles">
+    <div class="bubble-user">add a CONTRIBUTING.md, commit on a branch, open a PR</div>
+    <div class="bubble-agent">On it. Cloning the repo and banking a warm session…</div>
+    <div class="bubble-user">ship it</div>
+  </div>
+
+  <h2>Session warmth dots</h2>
+  <div class="dotwrap">
+    <div class="dotcell"><span class="dot dot--warm"></span>warm <small>glow + breathe</small></div>
+    <div class="dotcell"><span class="dot dot--idle"></span>idle <small>coals dimming</small></div>
+    <div class="dotcell"><span class="dot dot--cold"></span>cold <small>gone out (ash)</small></div>
+    <div class="dotcell"><span class="dot dot--green"></span>connected <small>plan active (green kept)</small></div>
+  </div>
+
+  <h2>Code block (kept GitHub-dark)</h2>
+  <div class="code">
+    <div class="hd"><span>bash</span><span>copy</span></div>
+    <pre><span class="c"># bank it and walk away</span>
+<span class="k">export</span> AWS_PROFILE=<span class="s">my-profile</span>
+<span class="f">./install.sh</span> --runtime-only</pre>
+  </div>
+</body>
+</html>

@@ -1,0 +1,37 @@
+# dependencies
+node_modules/
+/.pnp
+.pnp.js
+
+# next.js
+/.next/
+/out/
+next-env.d.ts
+*.tsbuildinfo
+
+# production
+/build
+
+# env / secrets
+.env
+.env.local
+.env*.local
+
+# misc
+.DS_Store
+*.pem
+npm-debug.log*
+
+# mcp build output
+mcp/port-session/dist/
+mcp/port-session/node_modules/
+
+# marketing secrets
+marketing/.telegram.env
+marketing/.wf-*.js
+
+# logo scratch (rejected rounds)
+marketing/brand/logo/_svg/r2out/
+marketing/brand/logo/_svg/r2/
+marketing/brand/logo/_contact_*.png
+marketing/brand/logo/_meta.json
