@@ -35,3 +35,9 @@ marketing/brand/logo/_svg/r2out/
 marketing/brand/logo/_svg/r2/
 marketing/brand/logo/_contact_*.png
 marketing/brand/logo/_meta.json
+
+# logo concept-exploration scratch (kept locally, not shipped)
+marketing/brand/logo/sheets/
+marketing/brand/logo/final_v2/_layers/
+marketing/brand/logo/gen_sheets*.py
+marketing/brand/logo/*.pbm

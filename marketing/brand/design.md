@@ -71,6 +71,12 @@ Center-out radial for the mark: `radial-gradient(circle, #ffd089 0%, #ff7a1a 38%
 
 ## 4. The logo system
 
+> **FINAL MARK (locked 2026-06-20):** a **charred log with textured woodgrain bark, its glowing
+> cut end a live ember showing a `>_` terminal prompt, on a bed of chunky natural coals.**
+> Files + full usage in `logo/BRAND_KIT.md`. The favicon is the simplified ember-`>_` coal-end
+> only (`ember-favicon.svg`) — the full scene is used for icon/lockup, never below ~24px.
+> The early "single coal dot" concept below was superseded by this.
+
 **Mark — "the ember":** a single glowing coal. Construction: a soft-cornered irregular dot
 (the live tip) with a `radial-gradient` core (`#ffd089 → #ff7a1a → #ff4d00`), a faint outer
 bloom (`0 0 24px #ff6a00 at ~40% opacity`), and an optional charred-log base in `night-4`

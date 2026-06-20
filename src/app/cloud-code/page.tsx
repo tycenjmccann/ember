@@ -254,9 +254,7 @@ export default function CloudCodePage() {
         <div className="flex-1 overflow-y-auto ios-scroll px-3 py-2.5">
           {sessions.length === 0 && (
             <div className="text-center mt-16 px-6">
-              <div className="w-14 h-14 mx-auto rounded-2xl flex items-center justify-center mb-3" style={{ background: "var(--ios-fill-tertiary)" }}>
-                <Cloud className="w-7 h-7 text-[var(--ios-blue)]" />
-              </div>
+              <img src="/ember-icon.svg" alt="" className="h-12 w-auto mx-auto mb-3" />
               <p className="text-[14px] text-[var(--color-text-secondary)] leading-relaxed">
                 No sessions yet. Tap <span className="text-[var(--ios-blue)] font-semibold">+</span> to start one — it runs in the cloud and resumes from any device.
               </p>
@@ -347,10 +345,8 @@ export default function CloudCodePage() {
               </button>
             </div>
             <div className="flex flex-col items-center justify-center h-full text-center px-8">
-              <div className="w-20 h-20 rounded-[22px] flex items-center justify-center mb-5"
-                style={{ background: "radial-gradient(circle,#ffd089 0%,#ff7a1a 38%,#ff4d00 70%,#7a2c00 100%)", boxShadow: "0 10px 30px rgba(255,106,0,0.4)" }}>
-                <Cloud className="w-10 h-10 text-white" strokeWidth={2} />
-              </div>
+              <img src="/ember-icon.svg" alt="ember" className="h-24 w-auto mb-5"
+                style={{ filter: "drop-shadow(0 8px 28px rgba(255,106,0,0.45))" }} />
               <h3 className="text-[24px] font-bold tracking-tight mb-2">A coding agent in the cloud</h3>
               <p className="text-[15px] text-[var(--color-text-secondary)] max-w-sm mb-6 leading-relaxed">
                 Give it a repo and a task. It clones, codes, builds, and opens a PR — server-side. Close your laptop; pick the session back up from any device.

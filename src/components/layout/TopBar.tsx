@@ -16,7 +16,7 @@ export default function TopBar() {
     >
       <div className="flex items-center gap-2.5 min-w-0">
         {/* ember mark */}
-        <img src="/ember-icon.svg" alt="" className="w-7 h-7 shrink-0" />
+        <img src="/ember-icon.svg" alt="ember" className="h-7 w-auto shrink-0" />
         <h1 className="text-[17px] font-semibold tracking-tight text-[var(--color-text-primary)] truncate">
           ember
         </h1>
