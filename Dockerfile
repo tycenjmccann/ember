@@ -25,6 +25,8 @@ RUN addgroup --system --gid 1001 nodejs \
 
 COPY --from=builder /app/.next/standalone ./
 COPY --from=builder /app/.next/static ./.next/static
+# Static assets served from web root (favicon, app icons, ember logo).
+COPY --from=builder /app/public ./public
 
 RUN mkdir -p /app/.next/cache && chown -R nextjs:nodejs /app/.next/cache
 
