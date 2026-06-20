@@ -128,7 +128,7 @@ export default function CostPage() {
         {/* Headline total */}
         <div
           className="ios-sheet rounded-ios-lg p-5 mb-6 text-center"
-          style={{ background: "linear-gradient(180deg,#3a98ff,#007aff)", boxShadow: "0 8px 24px rgba(0,122,255,0.35)" }}
+          style={{ background: "linear-gradient(180deg,#ffb24d 0%,#ff7a1a 45%,#ff4d00 100%)", boxShadow: "0 8px 24px rgba(255,106,0,0.35)" }}
         >
           <div className="text-white/80 text-[13px] font-medium uppercase tracking-wide">Estimated monthly</div>
           <div className="text-white text-[44px] font-bold leading-tight tabular-nums">{usd(calc.total)}</div>

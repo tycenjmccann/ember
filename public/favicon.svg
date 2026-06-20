@@ -1,0 +1,29 @@
+<svg viewBox="0 0 64 64" xmlns="http://www.w3.org/2000/svg">
+  <defs>
+    <linearGradient id="fLog" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0%" stop-color="#413b36"/>
+      <stop offset="100%" stop-color="#18130f"/>
+    </linearGradient>
+    <radialGradient id="fCoal" cx="50%" cy="40%" r="62%">
+      <stop offset="0%" stop-color="#fff0cf"/>
+      <stop offset="30%" stop-color="#ffb24d"/>
+      <stop offset="60%" stop-color="#ff5a00"/>
+      <stop offset="100%" stop-color="#7a1c00"/>
+    </radialGradient>
+    <radialGradient id="fBed" cx="50%" cy="50%" r="50%">
+      <stop offset="0%" stop-color="#ff8a2a" stop-opacity="0.9"/>
+      <stop offset="55%" stop-color="#ff4d00" stop-opacity="0.3"/>
+      <stop offset="100%" stop-color="#ff4d00" stop-opacity="0"/>
+    </radialGradient>
+  </defs>
+  <ellipse cx="32" cy="46" rx="30" ry="12" fill="url(#fBed)"/>
+  <!-- one thick charred log -->
+  <path d="M8 18 Q32 13 54 18 Q60 28 54 38 Q32 43 8 38 Q3 28 8 18 Z" fill="url(#fLog)"/>
+  <!-- glowing burnt face -->
+  <ellipse cx="32" cy="28" rx="17" ry="11" fill="url(#fCoal)"/>
+  <!-- bed of coals at base -->
+  <ellipse cx="20" cy="44" rx="11" ry="8" fill="url(#fCoal)"/>
+  <ellipse cx="38" cy="46" rx="13" ry="9" fill="url(#fCoal)"/>
+  <ellipse cx="50" cy="43" rx="9" ry="6" fill="url(#fCoal)"/>
+  <circle cx="33" cy="26" r="3" fill="#fff0cf" opacity="0.85"/>
+</svg>

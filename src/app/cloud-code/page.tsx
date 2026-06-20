@@ -19,9 +19,9 @@ import type {
 } from "@/lib/cloud-code/types";
 
 const WARMTH_DOT: Record<SessionWarmth, string> = {
-  warm: "bg-[var(--ios-green)] shadow-[0_0_0_3px_rgba(52,199,89,0.18)]",
-  idle: "bg-amber-400/80",
-  cold: "bg-[var(--color-text-muted)]",
+  warm: "warmth-dot warmth-dot--warm",   // ember-500, glow + breathe
+  idle: "warmth-dot warmth-dot--idle",   // ember-300, dimmer
+  cold: "warmth-dot warmth-dot--cold",   // ash, gone out
 };
 const WARMTH_LABEL: Record<SessionWarmth, string> = { warm: "Active", idle: "Idle", cold: "Asleep" };
 
@@ -277,13 +277,13 @@ export default function CloudCodePage() {
                   {i > 0 && <span className="absolute left-4 right-0 top-0 h-px" style={{ background: "var(--ios-separator)" }} />}
                   {/* App-icon-style square */}
                   <div className="relative w-10 h-10 rounded-[11px] flex items-center justify-center shrink-0"
-                    style={{ background: s.defaultView === "terminal" ? "linear-gradient(180deg,#2c2c2e,#1c1c1e)" : "linear-gradient(180deg,#3a98ff,#007aff)" }}>
+                    style={{ background: s.defaultView === "terminal" ? "linear-gradient(180deg,#2c2c2e,#1c1c1e)" : "radial-gradient(circle,#ffd089 0%,#ff7a1a 38%,#ff4d00 70%,#7a2c00 100%)" }}>
                     {s.defaultView === "terminal" ? (
                       <TerminalSquare className="w-5 h-5 text-white" strokeWidth={2} />
                     ) : (
                       <MessageSquare className="w-5 h-5 text-white" strokeWidth={2} />
                     )}
-                    <span className={`absolute -top-0.5 -right-0.5 w-2.5 h-2.5 rounded-full ring-2 ring-[var(--color-surface-2)] ${WARMTH_DOT[s.warmth]}`} />
+                    <span className={`absolute -top-0.5 -right-0.5 rounded-full ring-2 ring-[var(--color-surface-2)] ${WARMTH_DOT[s.warmth]}`} />
                   </div>
                   <div className="min-w-0 flex-1">
                     <div className="flex items-center gap-2">
@@ -348,7 +348,7 @@ export default function CloudCodePage() {
             </div>
             <div className="flex flex-col items-center justify-center h-full text-center px-8">
               <div className="w-20 h-20 rounded-[22px] flex items-center justify-center mb-5"
-                style={{ background: "linear-gradient(180deg,#3a98ff,#007aff)", boxShadow: "0 10px 30px rgba(0,122,255,0.4)" }}>
+                style={{ background: "radial-gradient(circle,#ffd089 0%,#ff7a1a 38%,#ff4d00 70%,#7a2c00 100%)", boxShadow: "0 10px 30px rgba(255,106,0,0.4)" }}>
                 <Cloud className="w-10 h-10 text-white" strokeWidth={2} />
               </div>
               <h3 className="text-[24px] font-bold tracking-tight mb-2">A coding agent in the cloud</h3>
@@ -358,7 +358,7 @@ export default function CloudCodePage() {
               <button
                 onClick={() => setShowNew(true)}
                 className="press px-6 py-3 text-white text-[16px] font-semibold rounded-full"
-                style={{ background: "var(--ios-blue)", boxShadow: "0 6px 18px rgba(0,122,255,0.35)" }}
+                style={{ background: "var(--ios-blue)", boxShadow: "0 6px 18px rgba(255,106,0,0.35)" }}
               >
                 New Session
               </button>
@@ -681,7 +681,7 @@ function NewSessionSheet({
         onClick={() => onCreate(cli, repo.trim(), authMode)}
         data-testid="cc-start"
         className="press w-full py-3.5 rounded-[14px] text-[16px] font-semibold text-white"
-        style={{ background: "var(--ios-blue)", boxShadow: "0 6px 18px rgba(0,122,255,0.3)" }}
+        style={{ background: "var(--ios-blue)", boxShadow: "0 6px 18px rgba(255,106,0,0.3)" }}
       >
         Start Session
       </button>

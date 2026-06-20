@@ -4,9 +4,16 @@ import { ThemeProvider } from "@/components/theme-provider";
 import TopBar from "@/components/layout/TopBar";
 
 export const metadata: Metadata = {
-  title: "Cloud Code",
-  description: "A resumable coding agent that runs in the cloud. Close the lid, resume anywhere.",
-  appleWebApp: { capable: true, statusBarStyle: "black-translucent", title: "Cloud Code" },
+  title: "Ember",
+  description: "Keep your session warm. A resumable coding agent that runs in your own AWS account.",
+  appleWebApp: { capable: true, statusBarStyle: "black-translucent", title: "Ember" },
+  icons: {
+    icon: [
+      { url: "/favicon.svg", type: "image/svg+xml" },
+      { url: "/favicon-32.png", sizes: "32x32", type: "image/png" },
+    ],
+    apple: "/apple-touch-icon.png",
+  },
 };
 
 export const viewport: Viewport = {
@@ -17,7 +24,7 @@ export const viewport: Viewport = {
   viewportFit: "cover",
   themeColor: [
     { media: "(prefers-color-scheme: dark)", color: "#000000" },
-    { media: "(prefers-color-scheme: light)", color: "#f2f2f7" },
+    { media: "(prefers-color-scheme: light)", color: "#f2efe9" },
   ],
 };
 

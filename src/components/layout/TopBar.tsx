@@ -1,7 +1,6 @@
 "use client";
 
 import Link from "next/link";
-import { Cloud } from "lucide-react";
 import ThemeToggle from "./ThemeToggle";
 
 /**
@@ -16,14 +15,10 @@ export default function TopBar() {
       style={{ height: 52, paddingTop: "env(safe-area-inset-top)" }}
     >
       <div className="flex items-center gap-2.5 min-w-0">
-        <div
-          className="w-7 h-7 rounded-[8px] flex items-center justify-center shrink-0"
-          style={{ background: "linear-gradient(180deg,#3a98ff,#007aff)", boxShadow: "0 2px 6px rgba(0,122,255,0.35)" }}
-        >
-          <Cloud className="w-[18px] h-[18px] text-white" strokeWidth={2.4} />
-        </div>
+        {/* ember mark */}
+        <img src="/ember-icon.svg" alt="" className="w-7 h-7 shrink-0" />
         <h1 className="text-[17px] font-semibold tracking-tight text-[var(--color-text-primary)] truncate">
-          Cloud Code
+          ember
         </h1>
       </div>
       <div className="flex items-center gap-1">
