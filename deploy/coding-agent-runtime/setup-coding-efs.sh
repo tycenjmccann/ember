@@ -71,16 +71,45 @@ VPC_CIDR=$(aws ec2 describe-vpcs "${R[@]}" --vpc-ids "$VPC_ID" \
 echo "  VPC: $VPC_ID ($VPC_CIDR)"
 
 # ─── 2. A public subnet to host the NAT gateway ───────────────────────────────
-# NAT must live in a subnet that routes to an internet gateway. Default-VPC
-# subnets are public (MapPublicIpOnLaunch=true); pick one (override via env).
+# NAT must live in a subnet that ROUTES to an internet gateway. The real
+# definition of "public" is an IGW route in the associated route table — NOT
+# MapPublicIpOnLaunch (that's just instance auto-addressing, and a hardened VPC
+# can have it off on a genuinely public subnet, or on with no IGW route). So we
+# test each subnet's effective route table (its explicit association, else the
+# VPC main table) for a 0.0.0.0/0 → igw-* route.
+_subnet_has_igw() {
+  local sn="$1"
+  local rts
+  rts=$(aws ec2 describe-route-tables "${R[@]}" \
+    --filters "Name=association.subnet-id,Values=$sn" \
+    --query "RouteTables[].Routes[?starts_with(GatewayId,'igw-')].GatewayId" \
+    --output text 2>/dev/null || echo "")
+  if [ -z "$rts" ]; then
+    # No explicit association → the subnet uses the VPC main route table.
+    rts=$(aws ec2 describe-route-tables "${R[@]}" \
+      --filters "Name=vpc-id,Values=$VPC_ID" "Name=association.main,Values=true" \
+      --query "RouteTables[].Routes[?starts_with(GatewayId,'igw-')].GatewayId" \
+      --output text 2>/dev/null || echo "")
+  fi
+  [ -n "$rts" ]
+}
+
 NAT_SUBNET="${CODING_NAT_SUBNET:-}"
-if [ -z "$NAT_SUBNET" ]; then
-  NAT_SUBNET=$(aws ec2 describe-subnets "${R[@]}" \
-    --filters "Name=vpc-id,Values=$VPC_ID" "Name=map-public-ip-on-launch,Values=true" \
-    --query "Subnets[0].SubnetId" --output text 2>/dev/null || echo "None")
+if [ -n "$NAT_SUBNET" ]; then
+  _subnet_has_igw "$NAT_SUBNET" || {
+    echo "ERROR: CODING_NAT_SUBNET=$NAT_SUBNET has no internet-gateway route." >&2
+    echo "       A NAT gateway needs a public subnet (route table with 0.0.0.0/0 → igw-*)." >&2
+    exit 1
+  }
+else
+  for sn in $(aws ec2 describe-subnets "${R[@]}" \
+        --filters "Name=vpc-id,Values=$VPC_ID" \
+        --query "Subnets[].SubnetId" --output text | tr '\t' '\n'); do
+    if _subnet_has_igw "$sn"; then NAT_SUBNET="$sn"; break; fi
+  done
 fi
 if [ -z "$NAT_SUBNET" ] || [ "$NAT_SUBNET" = "None" ]; then
-  echo "ERROR: no public subnet found for the NAT gateway in $VPC_ID." >&2
+  echo "ERROR: no public subnet (with an internet-gateway route) found in $VPC_ID." >&2
   echo "       Export CODING_NAT_SUBNET=<public-subnet-id> and retry." >&2
   exit 1
 fi
@@ -189,12 +218,27 @@ if aws ec2 create-route "${R[@]}" --route-table-id "$PRIV_RT" \
   aws ec2 replace-route "${R[@]}" --route-table-id "$PRIV_RT" \
     --destination-cidr-block 0.0.0.0/0 --nat-gateway-id "$NAT_ID" >/dev/null 2>&1 || true
 fi
-# Associate both private subnets (skip if already associated to this table).
-assoc_subnets=$(aws ec2 describe-route-tables "${R[@]}" --route-table-ids "$PRIV_RT" \
+# Associate both private subnets with PRIV_RT. A subnet already has an
+# association (explicit, or implicitly the main table): associate-route-table
+# fails on an already-explicitly-associated subnet, so when a user-supplied
+# CODING_PRIVATE_SUBNET_* is already attached elsewhere we must REPLACE its
+# association. Skip only if it's already on PRIV_RT.
+already_on_priv=$(aws ec2 describe-route-tables "${R[@]}" --route-table-ids "$PRIV_RT" \
   --query "RouteTables[0].Associations[].SubnetId" --output text 2>/dev/null || echo "")
 for sn in "$PRIV_1" "$PRIV_2"; do
-  if echo "$assoc_subnets" | grep -qw "$sn"; then
+  if echo "$already_on_priv" | grep -qw "$sn"; then
     echo "  [skip] route assoc $sn"
+    continue
+  fi
+  # Existing EXPLICIT association for this subnet (on some other table)?
+  existing_assoc=$(aws ec2 describe-route-tables "${R[@]}" \
+    --filters "Name=association.subnet-id,Values=$sn" \
+    --query "RouteTables[].Associations[?SubnetId=='$sn'].RouteTableAssociationId | [0]" \
+    --output text 2>/dev/null || echo "")
+  if [ -n "$existing_assoc" ] && [ "$existing_assoc" != "None" ]; then
+    aws ec2 replace-route-table-association "${R[@]}" \
+      --association-id "$existing_assoc" --route-table-id "$PRIV_RT" >/dev/null
+    echo "  [reassoc] $sn → $PRIV_RT (was $existing_assoc)"
   else
     aws ec2 associate-route-table "${R[@]}" --route-table-id "$PRIV_RT" --subnet-id "$sn" >/dev/null
     echo "  [assoc] $sn → $PRIV_RT"
