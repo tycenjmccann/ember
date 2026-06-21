@@ -1,7 +1,7 @@
 /**
  * Shared Server-Sent Events (SSE) reader.
  *
- * Every streaming surface in the app (Cloud Code chat, agent-detail invoke,
+ * Every streaming surface in the app (Ember chat, agent-detail invoke,
  * builder chat, the message-route relay) reads an SSE body the same way: pull
  * bytes from a ReadableStream, decode incrementally, buffer across chunk
  * boundaries, and surface each `data:` payload. That byte/frame plumbing is the
@@ -9,7 +9,7 @@
  * trailing buffer), so it lives here ONCE and is unit-tested.
  *
  * What stays per-feature: interpreting each payload (the event schema differs —
- * Cloud Code emits {type:text|done}, Strands agents emit contentBlockDelta,
+ * Ember emits {type:text|done}, Strands agents emit contentBlockDelta,
  * etc.). Callers parse the yielded string themselves.
  *
  * Usage:

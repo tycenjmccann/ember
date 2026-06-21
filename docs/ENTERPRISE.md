@@ -1,4 +1,4 @@
-# Cloud Code for the enterprise
+# Ember for the enterprise
 
 The wedge in one sentence: **Claude Code / Codex on the web, running inside your
 own AWS account** — your code, your credentials, your audit logs, your model
@@ -11,7 +11,7 @@ company-wide rollout, plus why that posture matters right now.
 |---|---|---|---|
 | Claude Code on the web | Anthropic-managed cloud | Claude only | Yes |
 | OpenAI Codex + Ona/Gitpod (acq. Jun 2026) | OpenAI-managed cloud | OpenAI only | Yes |
-| **Cloud Code (this)** | **Your AWS account** | **Claude *and* Codex *and* Bedrock** | **No** |
+| **Ember (this)** | **Your AWS account** | **Claude *and* Codex *and* Bedrock** | **No** |
 
 The incumbents validated the category and then locked it to their cloud + their
 model. The unmet enterprise ask — *"can the agent run in our VPC, on our bill, on
@@ -41,7 +41,7 @@ private URL for one person, unacceptable for a team.
   list/get/delete by it. The data model already keys on `userId` — it's a
   find-and-replace of `DEFAULT_USER_ID`, not a migration.
 - **API gate:** middleware that rejects unauthenticated requests to
-  `/api/cloud-code/*`, including the port/checkpoint/presign endpoints.
+  `/api/ember/*`, including the port/checkpoint/presign endpoints.
 
 ### 2. Network isolation  *(the core enterprise selling point)*
 - Put App Runner behind a **VPC connector**; reach DynamoDB/S3/Bedrock over **VPC
@@ -52,7 +52,7 @@ private URL for one person, unacceptable for a team.
 - Optional: private App Runner ingress + WAF, or front with an internal ALB.
 
 ### 3. Per-user credential isolation  *(security)*
-- Subscription tokens + ported transcripts live in S3 under `cloud-code/{userId}/…`.
+- Subscription tokens + ported transcripts live in S3 under `ember/{userId}/…`.
   Move secrets to **AWS Secrets Manager** (or AgentCore Identity vault) with
   per-user KMS grants; scope the runtime role so a session can read only its own
   user's prefix (IAM session policy / ABAC on `userId` tag).

@@ -3,7 +3,7 @@
 @tailwind utilities;
 
 /* ===========================================================================
-   Ember — re-skin of the Cloud Code iOS-native design system.
+   Ember — re-skin of the Ember iOS-native design system.
    Night woods, one warm light against the dark. Same structure as the original
    globals.css; ONLY color / glow / warmth changed. iOS-blue → ember glow,
    pure-gray surfaces → warm-shifted night neutrals. True black bg kept.

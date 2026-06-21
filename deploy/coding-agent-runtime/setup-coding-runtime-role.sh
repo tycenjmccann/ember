@@ -21,8 +21,8 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]:-$0}")" && pwd)"
 # shellcheck disable=SC1091
 source "$SCRIPT_DIR/../config.sh"
 
-ROLE_NAME="${CODING_RUNTIME_ROLE_NAME:-cloud-code-coding-runtime}"
-ARTIFACT_BUCKET="${ARTIFACT_BUCKET:-cloud-code-artifacts-${ACCOUNT_ID}-${AWS_REGION}}"
+ROLE_NAME="${CODING_RUNTIME_ROLE_NAME:-ember-coding-runtime}"
+ARTIFACT_BUCKET="${ARTIFACT_BUCKET:-ember-artifacts-${ACCOUNT_ID}-${AWS_REGION}}"
 
 echo "─── Coding runtime execution role ───────────────────────"
 echo "  Role:   $ROLE_NAME"
@@ -56,7 +56,7 @@ if aws iam get-role --role-name "$ROLE_NAME" >/dev/null 2>&1; then
 else
   echo "  [create] role"
   aws iam create-role --role-name "$ROLE_NAME" --assume-role-policy-document "$TRUST" \
-    --description "Execution role for the Cloud Code coding-agent runtime" --output text >/dev/null
+    --description "Execution role for the Ember coding-agent runtime" --output text >/dev/null
 fi
 
 # Permissions policy. Bedrock + observability follow the AgentCore guide; the S3,
@@ -108,7 +108,7 @@ PERMS=$(cat <<JSON
       "Action": ["s3:GetObject", "s3:PutObject", "s3:DeleteObject", "s3:ListBucket"],
       "Resource": [
         "arn:aws:s3:::${ARTIFACT_BUCKET}",
-        "arn:aws:s3:::${ARTIFACT_BUCKET}/cloud-code/*"
+        "arn:aws:s3:::${ARTIFACT_BUCKET}/ember/*"
       ]
     },
     {

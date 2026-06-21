@@ -1,10 +1,10 @@
-# Before / after — Cloud Code (iOS blue) → Ember
+# Before / after — Ember (iOS blue) → Ember
 
 A re-skin, not a redesign. Same iOS-native components, same layout, same radii and
 motion. We swapped the light source: **iOS blue → ember glow**, and warm-shifted the
 night so the whole app feels lit by a fire instead of a screen.
 
-| Surface | Before (Cloud Code) | After (Ember) |
+| Surface | Before (Ember) | After (Ember) |
 |---|---|---|
 | **Brand accent (dark)** | iOS blue `#0a84ff` | ember-500 `#ff6a00` |
 | **Brand accent (light)** | iOS blue `#007aff` | ember-600 `#f25c00` |

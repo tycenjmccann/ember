@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 #
-# install.sh — stand up Cloud Code in YOUR AWS account, end to end.
+# install.sh — stand up Ember in YOUR AWS account, end to end.
 #
 # Runs the full chain, each step idempotent so you can re-run any time:
 #   1. Preflight   — check aws/docker/node, resolve account, enforce guard
@@ -11,7 +11,7 @@
 #   6. Web         — build/push web image + App Runner service
 #   7. Persist     — write .env.local with every resolved id/URL
 #
-# Result: a public App Runner URL serving the Cloud Code UI over a coding runtime
+# Result: a public App Runner URL serving the Ember UI over a coding runtime
 # that lives entirely in your account. Pure-infra cost ~$15-30/mo; LLM is the
 # only real variable cost (and $0 marginal if you connect your own Claude/ChatGPT
 # plan — see the in-app /cost calculator).
@@ -24,8 +24,8 @@
 #
 # Optional env (sensible defaults, override in .env.local or the shell):
 #   AWS_REGION            default us-east-1
-#   CLOUD_CODE_TABLE      default cloud-code-sessions
-#   ARTIFACT_BUCKET       default cloud-code-artifacts-<account>-<region>
+#   EMBER_TABLE      default ember-sessions
+#   ARTIFACT_BUCKET       default ember-artifacts-<account>-<region>
 #   GITHUB_PAT            (optional) for private-repo clone/push from the runtime
 #   EXPECTED_ACCOUNT_ID   (optional) refuse to deploy to any other account
 
@@ -58,10 +58,10 @@ docker info >/dev/null 2>&1 || { echo "ERROR: Docker is not running." >&2; exit 
 # shellcheck disable=SC1091
 source "$ROOT/deploy/config.sh"
 
-export CLOUD_CODE_TABLE="${CLOUD_CODE_TABLE:-cloud-code-sessions}"
-export ARTIFACT_BUCKET="${ARTIFACT_BUCKET:-cloud-code-artifacts-${ACCOUNT_ID}-${AWS_REGION}}"
+export EMBER_TABLE="${EMBER_TABLE:-ember-sessions}"
+export ARTIFACT_BUCKET="${ARTIFACT_BUCKET:-ember-artifacts-${ACCOUNT_ID}-${AWS_REGION}}"
 echo "  Account: $ACCOUNT_ID   Region: $AWS_REGION"
-echo "  Table:   $CLOUD_CODE_TABLE"
+echo "  Table:   $EMBER_TABLE"
 echo "  Bucket:  $ARTIFACT_BUCKET"
 
 # ─── 2. Stores ────────────────────────────────────────────────────────────────
@@ -107,7 +107,7 @@ write_env() {
 }
 touch .env.local
 write_env AWS_REGION "$AWS_REGION"
-write_env CLOUD_CODE_TABLE "$CLOUD_CODE_TABLE"
+write_env EMBER_TABLE "$EMBER_TABLE"
 write_env ARTIFACT_BUCKET "$ARTIFACT_BUCKET"
 write_env CODING_AGENT_RUNTIME_ARN "${CODING_AGENT_RUNTIME_ARN:-}"
 [ -n "${EXPECTED_ACCOUNT_ID:-}" ] && write_env EXPECTED_ACCOUNT_ID "$EXPECTED_ACCOUNT_ID"
@@ -128,7 +128,7 @@ step "6/7  Build web image + deploy App Runner"
 step "7/7  Done"
 # shellcheck disable=SC1091
 source "$ROOT/.env.local" 2>/dev/null || true
-echo "  Cloud Code is live → ${DEPLOYMENT_URL:-(see App Runner console)}"
+echo "  Ember is live → ${DEPLOYMENT_URL:-(see App Runner console)}"
 echo ""
 echo "  Next:"
 echo "    • Open the URL and start a session (Bedrock works out of the box)."

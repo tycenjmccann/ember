@@ -11,7 +11,7 @@
 #   - a mount target in each of two subnets
 #   - an EFS access point (POSIX root /workspace, uid/gid 0)
 #
-# Idempotent: tags resources with Name=cloud-code-coding-efs and reuses them.
+# Idempotent: tags resources with Name=ember-coding-efs and reuses them.
 # Writes efs.config (sourced by deploy.py). Override the VPC by exporting
 # CODING_VPC_ID before running.
 #
@@ -25,7 +25,7 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]:-$0}")" && pwd)"
 # shellcheck disable=SC1091
 source "$SCRIPT_DIR/../config.sh"
 
-NAME="cloud-code-coding-efs"
+NAME="ember-coding-efs"
 CONFIG_FILE="$SCRIPT_DIR/efs.config"
 R=(--region "$AWS_REGION")
 
@@ -65,7 +65,7 @@ SG_ID=$(aws ec2 describe-security-groups "${R[@]}" \
   --query "SecurityGroups[0].GroupId" --output text 2>/dev/null || echo "None")
 if [ "$SG_ID" = "None" ] || [ -z "$SG_ID" ]; then
   SG_ID=$(aws ec2 create-security-group "${R[@]}" \
-    --group-name "$NAME" --description "Cloud Code coding runtime NFS" \
+    --group-name "$NAME" --description "Ember coding runtime NFS" \
     --vpc-id "$VPC_ID" --query "GroupId" --output text)
   # Allow NFS (2049) from members of this same SG (runtime ENI ↔ mount targets).
   aws ec2 authorize-security-group-ingress "${R[@]}" \

@@ -110,10 +110,10 @@ export default function CostPage() {
     <div className="ios-scroll h-full overflow-y-auto" style={{ background: "var(--color-bg-secondary)" }}>
       <div className="max-w-[640px] mx-auto px-4 pb-16 pt-3">
         <Link
-          href="/cloud-code"
+          href="/ember"
           className="press inline-flex items-center gap-1 text-[15px] text-[var(--ios-blue)] mb-3"
         >
-          <ChevronLeft className="w-5 h-5 -ml-1" /> Cloud Code
+          <ChevronLeft className="w-5 h-5 -ml-1" /> Ember
         </Link>
 
         <h1 className="text-[28px] font-bold tracking-tight text-[var(--color-text-primary)] mb-1">

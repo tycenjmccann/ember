@@ -1,8 +1,8 @@
 {
-  "name": "@agentcore-hub/port-session-mcp",
+  "name": "@ember/port-session-mcp",
   "version": "0.1.0",
   "private": true,
-  "description": "Local stdio MCP server: hand off your in-flight laptop coding session to Cloud Code.",
+  "description": "Local stdio MCP server: hand off your in-flight laptop coding session to Ember.",
   "type": "module",
   "bin": {
     "port-session-mcp": "dist/index.js"

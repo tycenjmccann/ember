@@ -1,4 +1,4 @@
-# Cloud Code — Next.js standalone image for App Runner.
+# Ember — Next.js standalone image for App Runner.
 FROM node:22-alpine AS base
 
 # Install all deps (incl. dev) for the build.

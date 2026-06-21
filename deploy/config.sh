@@ -27,26 +27,26 @@ export DEPLOYMENT_URL="${DEPLOYMENT_URL:-}"
 
 # GitHub
 export GITHUB_OWNER="${GITHUB_OWNER:-}"
-export FLEET_REPO_URL="${FLEET_REPO_URL:-https://github.com/${GITHUB_OWNER}/agentcore-hub-fleet.git}"
+export FLEET_REPO_URL="${FLEET_REPO_URL:-https://github.com/${GITHUB_OWNER}/ember-fleet.git}"
 
 # IAM roles (convention-based defaults)
-export AGENTCORE_ROLE_ARN="${AGENTCORE_ROLE_ARN:-arn:aws:iam::${ACCOUNT_ID}:role/agentcore-hub-agentcore-role}"
-export LAMBDA_ROLE_ARN="${LAMBDA_ROLE_ARN:-arn:aws:iam::${ACCOUNT_ID}:role/agentcore-hub-lambda-role}"
+export AGENTCORE_ROLE_ARN="${AGENTCORE_ROLE_ARN:-arn:aws:iam::${ACCOUNT_ID}:role/ember-agentcore-role}"
+export LAMBDA_ROLE_ARN="${LAMBDA_ROLE_ARN:-arn:aws:iam::${ACCOUNT_ID}:role/ember-lambda-role}"
 
 # S3 — single bucket shared by App Runner, Lambdas, and runtime agents
-export ARTIFACT_BUCKET="${ARTIFACT_BUCKET:-agentcore-hub-artifacts-${ACCOUNT_ID}-${AWS_REGION}}"
+export ARTIFACT_BUCKET="${ARTIFACT_BUCKET:-ember-artifacts-${ACCOUNT_ID}-${AWS_REGION}}"
 
 # DynamoDB tables
-export EVENTS_TABLE="${EVENTS_TABLE:-agentcore-hub-events}"
-export TICKETS_TABLE="${TICKETS_TABLE:-agentcore-hub-tickets}"
-export WORKFLOWS_TABLE="${WORKFLOWS_TABLE:-agentcore-hub-workflows}"
-export CLOUD_CODE_TABLE="${CLOUD_CODE_TABLE:-agentcore-hub-cloud-code-sessions}"
+export EVENTS_TABLE="${EVENTS_TABLE:-ember-events}"
+export TICKETS_TABLE="${TICKETS_TABLE:-ember-tickets}"
+export WORKFLOWS_TABLE="${WORKFLOWS_TABLE:-ember-workflows}"
+export EMBER_TABLE="${EMBER_TABLE:-ember-sessions}"
 
-# Cloud Code — the standalone coding-agent runtime (set after deploy.py prints the ARN)
+# Ember — the standalone coding-agent runtime (set after deploy.py prints the ARN)
 export CODING_AGENT_RUNTIME_ARN="${CODING_AGENT_RUNTIME_ARN:-}"
-# Default MCP gateway wired into Cloud Code CLIs (shared Jira/S3/Skill tools).
+# Default MCP gateway wired into Ember CLIs (shared Jira/S3/Skill tools).
 export MCP_GATEWAY_URL="${MCP_GATEWAY_URL:-}"
-export MCP_GATEWAY_NAME="${MCP_GATEWAY_NAME:-agentis_gateway}"
+export MCP_GATEWAY_NAME="${MCP_GATEWAY_NAME:-ember_gateway}"
 
 # Validation
 if [ -z "$ACCOUNT_ID" ] || [ "$ACCOUNT_ID" = "None" ]; then

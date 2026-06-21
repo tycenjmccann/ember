@@ -2,7 +2,7 @@
 """
 deploy.py — Deploy the multi-CLI coding-agent runtime to AgentCore.
 
-Creates (or updates) a single runtime named "agentcore-hub-coding-runtime" with
+Creates (or updates) a single runtime named "ember-coding-runtime" with
 PERSISTENT session storage mounted at /mnt/workspace, hosting Claude Code and
 Codex. The Strands fleet agents invoke this runtime via the commands API for all
 coding work.
@@ -18,7 +18,7 @@ Required env (defaults from deploy/config.sh):
   CODING_RUNTIME_ROLE_ARN    execution role (from setup-coding-runtime-role.sh)
   AWS_REGION                 default us-east-1
   BEDROCK_MANTLE_REGION      default us-east-2 (Codex GPT-5.5)
-  EVENTS_TABLE               default agentcore-hub-events
+  EVENTS_TABLE               default ember-events
 
 Usage:
   source deploy/config.sh
@@ -36,7 +36,7 @@ import boto3
 from botocore.exceptions import ClientError
 
 # AgentCore runtime names must match [a-zA-Z][a-zA-Z0-9_]{0,47} — no hyphens.
-RUNTIME_NAME = "agentcore_hub_coding_runtime"
+RUNTIME_NAME = "ember_coding_runtime"
 # EFS mount — elastic, POSIX, survives cold microVMs. Required for a real code
 # workspace (git + node_modules exceed the ~1 GB sessionStorage quota). Provision
 # the VPC/EFS with setup-coding-efs.sh first (writes efs.config).
@@ -148,7 +148,7 @@ def main() -> None:
 
     env_vars = {
         "AWS_REGION": region,
-        "EVENTS_TABLE": os.environ.get("EVENTS_TABLE", "agentcore-hub-events"),
+        "EVENTS_TABLE": os.environ.get("EVENTS_TABLE", "ember-events"),
         "CLAUDE_CODE_USE_BEDROCK": "1",
         "ANTHROPIC_MODEL": os.environ.get("ANTHROPIC_MODEL", "us.anthropic.claude-opus-4-6-v1"),
         "CLAUDE_MODEL": os.environ.get("CLAUDE_MODEL", "us.anthropic.claude-opus-4-6-v1"),
@@ -171,13 +171,13 @@ def main() -> None:
         "PLAYWRIGHT_BROWSERS_PATH": "0",
     }
     # Artifact bucket — where per-user config bundles live; the server fetches
-    # cloud-code/configs/{userId}/{version}.zip and materializes it on turn start.
+    # ember/configs/{userId}/{version}.zip and materializes it on turn start.
     if bucket := os.environ.get("ARTIFACT_BUCKET"):
         env_vars["ARTIFACT_BUCKET"] = bucket
     # Default MCP gateway — wired into both CLIs on session start.
     if mcp_url := os.environ.get("MCP_GATEWAY_URL"):
         env_vars["MCP_GATEWAY_URL"] = mcp_url
-        env_vars["MCP_GATEWAY_NAME"] = os.environ.get("MCP_GATEWAY_NAME", "agentis_gateway")
+        env_vars["MCP_GATEWAY_NAME"] = os.environ.get("MCP_GATEWAY_NAME", "ember_gateway")
     # GitHub auth for private repo clone/push (launchers configure git from it).
     if gh_pat := os.environ.get("GITHUB_PAT"):
         env_vars["GITHUB_PAT"] = gh_pat

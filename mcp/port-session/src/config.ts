@@ -1,5 +1,5 @@
 /**
- * Gather a CLI's *local* config into a Cloud Code config bundle (a zip laid out
+ * Gather a CLI's *local* config into a Ember config bundle (a zip laid out
  * as `claude/...` or `codex/...`) so the cloud session is a clone of your laptop
  * setup — same CLAUDE.md / AGENTS.md, skills, custom agents, and MCP servers.
  *

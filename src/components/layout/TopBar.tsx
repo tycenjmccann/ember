@@ -5,7 +5,7 @@ import ThemeToggle from "./ThemeToggle";
 
 /**
  * iOS UINavigationBar — frosted, hairline separator, status-bar safe area.
- * The Cloud Code page sizes its panes to calc(100dvh - 52px), so this height is
+ * The Ember page sizes its panes to calc(100dvh - 52px), so this height is
  * part of the layout contract.
  */
 export default function TopBar() {

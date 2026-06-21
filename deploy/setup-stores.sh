@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 #
-# setup-stores.sh — create the two backing stores Cloud Code needs:
+# setup-stores.sh — create the two backing stores Ember needs:
 #   1. DynamoDB table  (one row per session + config:{user} + auth:{user})
 #   2. S3 bucket       (ported transcripts, checkpoints, config bundles, auth creds)
 #
@@ -12,8 +12,8 @@
 #   ./deploy/setup-stores.sh
 #
 # Names default to:
-#   CLOUD_CODE_TABLE = cloud-code-sessions
-#   ARTIFACT_BUCKET  = cloud-code-artifacts-<account>-<region>
+#   EMBER_TABLE = ember-sessions
+#   ARTIFACT_BUCKET  = ember-artifacts-<account>-<region>
 # Override either by exporting it (or setting it in .env.local) before running.
 
 set -euo pipefail
@@ -22,11 +22,11 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]:-$0}")" && pwd)"
 # shellcheck disable=SC1091
 source "$SCRIPT_DIR/config.sh"
 
-CLOUD_CODE_TABLE="${CLOUD_CODE_TABLE:-cloud-code-sessions}"
-ARTIFACT_BUCKET="${ARTIFACT_BUCKET:-cloud-code-artifacts-${ACCOUNT_ID}-${AWS_REGION}}"
+EMBER_TABLE="${EMBER_TABLE:-ember-sessions}"
+ARTIFACT_BUCKET="${ARTIFACT_BUCKET:-ember-artifacts-${ACCOUNT_ID}-${AWS_REGION}}"
 
 echo "─── Stores ──────────────────────────────────────────────"
-echo "  Table:  $CLOUD_CODE_TABLE"
+echo "  Table:  $EMBER_TABLE"
 echo "  Bucket: $ARTIFACT_BUCKET"
 echo "  Region: $AWS_REGION   Account: $ACCOUNT_ID"
 echo "─────────────────────────────────────────────────────────"
@@ -35,19 +35,19 @@ echo "────────────────────────�
 # Single-table design: partition key `sessionId` holds session rows AND the
 # `config:{userId}` / `auth:{userId}` metadata rows. On-demand billing → pay only
 # for the handful of reads/writes a coding session makes (pennies/month).
-if aws dynamodb describe-table --table-name "$CLOUD_CODE_TABLE" --region "$AWS_REGION" >/dev/null 2>&1; then
+if aws dynamodb describe-table --table-name "$EMBER_TABLE" --region "$AWS_REGION" >/dev/null 2>&1; then
   echo "  [skip] table exists"
 else
-  echo "  [create] table $CLOUD_CODE_TABLE"
+  echo "  [create] table $EMBER_TABLE"
   aws dynamodb create-table \
-    --table-name "$CLOUD_CODE_TABLE" \
+    --table-name "$EMBER_TABLE" \
     --attribute-definitions AttributeName=sessionId,AttributeType=S \
     --key-schema AttributeName=sessionId,KeyType=HASH \
     --billing-mode PAY_PER_REQUEST \
     --region "$AWS_REGION" \
     --output text >/dev/null
   echo "         waiting for ACTIVE..."
-  aws dynamodb wait table-exists --table-name "$CLOUD_CODE_TABLE" --region "$AWS_REGION"
+  aws dynamodb wait table-exists --table-name "$EMBER_TABLE" --region "$AWS_REGION"
 fi
 
 # ─── 2. S3 bucket ─────────────────────────────────────────────────────────────
@@ -73,5 +73,5 @@ fi
 
 echo ""
 echo "OK stores ready."
-echo "  export CLOUD_CODE_TABLE=$CLOUD_CODE_TABLE"
+echo "  export EMBER_TABLE=$EMBER_TABLE"
 echo "  export ARTIFACT_BUCKET=$ARTIFACT_BUCKET"

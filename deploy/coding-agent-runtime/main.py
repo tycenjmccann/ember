@@ -55,7 +55,7 @@ CLAUDE_MODEL = os.environ.get("ANTHROPIC_MODEL") or os.environ.get(
 TURN_TIMEOUT_S = int(os.environ.get("TURN_TIMEOUT_S", "1500"))
 
 # Per-user coding-CLI config bundle (MCP servers, skills, custom agents, prefs).
-# The app uploads a zip to s3://{ARTIFACT_BUCKET}/cloud-code/configs/{userId}/
+# The app uploads a zip to s3://{ARTIFACT_BUCKET}/ember/configs/{userId}/
 # {version}.zip; we materialize it into the CLI config dirs on session start.
 ARTIFACT_BUCKET = os.environ.get("ARTIFACT_BUCKET", "")
 CLAUDE_CONFIG_DIR = os.environ.get("CLAUDE_CONFIG_DIR", os.path.join(WORKSPACE_ROOT, ".claude-data"))
@@ -70,7 +70,7 @@ CODEX_MODEL = os.environ.get("CODEX_MODEL", "openai.gpt-5.5")
 # laptop uploads its credential to S3; the runtime materializes it per session:
 #   Claude  → CLAUDE_CODE_OAUTH_TOKEN (from `claude setup-token`), Bedrock OFF
 #   Codex   → ~/.codex/auth.json (from `codex login`), default OpenAI provider
-# Stored at s3://{ARTIFACT_BUCKET}/cloud-code/auth/{userId}/{cli}.json
+# Stored at s3://{ARTIFACT_BUCKET}/ember/auth/{userId}/{cli}.json
 # ({"token": "..."} for claude, the verbatim auth.json for codex). Bedrock stays
 # the default; auth_mode="subscription" on the turn payload opts in.
 # Subscription-mode model names (NOT Bedrock model ids).
@@ -120,7 +120,7 @@ def _remember_session(claude_session_id: str | None, repo: str | None) -> None:
 # to skip. Auth is currently NONE on the gateway (internal); revisit before
 # multi-user/public (would add an Authorization header here).
 MCP_GATEWAY_URL = os.environ.get("MCP_GATEWAY_URL", "")
-MCP_GATEWAY_NAME = os.environ.get("MCP_GATEWAY_NAME", "agentis_gateway")
+MCP_GATEWAY_NAME = os.environ.get("MCP_GATEWAY_NAME", "ember_gateway")
 
 
 def _apply_default_mcp() -> None:
@@ -178,7 +178,7 @@ def _apply_default_mcp() -> None:
 def _apply_config_bundle(user_id: str | None, version: str | None) -> None:
     """Materialize a user's coding-CLI config bundle into the CLI config dirs.
 
-    The bundle is a zip at s3://{ARTIFACT_BUCKET}/cloud-code/configs/{userId}/{version}.zip
+    The bundle is a zip at s3://{ARTIFACT_BUCKET}/ember/configs/{userId}/{version}.zip
     laid out as `claude/...` (→ CLAUDE_CONFIG_DIR) and `codex/...` (→ CODEX_HOME).
     Idempotent per warm microVM via a marker file. The user's files land first;
     run-codex.sh / the launchers then re-assert our Bedrock provider on top, so a
@@ -224,7 +224,7 @@ def _apply_config_bundle(user_id: str | None, version: str | None) -> None:
     if prev.get("files"):
         _remove_applied(prev["files"])
 
-    key = f"cloud-code/configs/{user_id}/{version}.zip"
+    key = f"ember/configs/{user_id}/{version}.zip"
     try:
         s3 = boto3.client("s3", region_name=os.environ.get("AWS_REGION", "us-east-1"))
         obj = s3.get_object(Bucket=ARTIFACT_BUCKET, Key=key)
@@ -279,7 +279,7 @@ def _fetch_subscription_cred(user_id: str | None, cli: str) -> dict | None:
     just means the turn can't run in subscription mode (caller surfaces that)."""
     if not (user_id and ARTIFACT_BUCKET):
         return None
-    key = f"cloud-code/auth/{user_id}/{cli}.json"
+    key = f"ember/auth/{user_id}/{cli}.json"
     try:
         s3 = boto3.client("s3", region_name=os.environ.get("AWS_REGION", "us-east-1"))
         obj = s3.get_object(Bucket=ARTIFACT_BUCKET, Key=key)
@@ -422,7 +422,7 @@ def _configure_git() -> None:
         check=False,
     )
     subprocess.run(["git", "config", "--global", "user.email",
-                    os.environ.get("GIT_AUTHOR_EMAIL", "agent@agentcore-hub.example.com")], check=False)
+                    os.environ.get("GIT_AUTHOR_EMAIL", "agent@ember.example.com")], check=False)
     subprocess.run(["git", "config", "--global", "user.name",
                     os.environ.get("GIT_AUTHOR_NAME", "AgentCore Hub Agent")], check=False)
     # Expose the PAT to the GitHub CLI so the agent can enumerate/inspect repos
@@ -510,7 +510,7 @@ def _checkpoint_transcript(session_id: str, workdir: str) -> dict:
         raise FileNotFoundError(f"no transcript at {src} (session never resumed on this VM?)")
     if not ARTIFACT_BUCKET:
         raise RuntimeError("ARTIFACT_BUCKET not set")
-    key = f"cloud-code/checkpoint/{session_id}/{session_id}.jsonl"
+    key = f"ember/checkpoint/{session_id}/{session_id}.jsonl"
     with open(src, "rb") as f:
         data = f.read()
     s3 = boto3.client("s3", region_name=os.environ.get("AWS_REGION", "us-east-1"))

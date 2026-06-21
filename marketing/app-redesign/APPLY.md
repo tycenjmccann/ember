@@ -1,6 +1,6 @@
 # Applying the Ember re-skin to the app
 
-These are the exact, copy-pasteable changes to turn the blue Cloud Code app into
+These are the exact, copy-pasteable changes to turn the blue Ember app into
 Ember. **Token-only** — no component structure changes. Verified against a
 rendered swatch page (`preview.png`).
 
@@ -101,7 +101,7 @@ Radii (`ios` 13px / `ios-lg` 18px) and the typography plugin are unchanged.
 
 ## 3. Nav lockup + title — `src/components/layout/TopBar.tsx`
 
-Currently a blue `Cloud` icon tile + "Cloud Code". Swap to the ember mark + wordmark.
+Currently a blue `Cloud` icon tile + "Ember". Swap to the ember mark + wordmark.
 
 Replace the icon-tile block (lines ~19–27) with the ember lockup. Drop the SVG into
 `public/` first (see step 5), then:
@@ -125,14 +125,14 @@ Or, to keep it inline with no extra request, use the glowing-coal tile:
 The "Cost" link already uses `text-[var(--ios-blue)]` → it turns ember automatically.
 
 > The same blue Cloud-tile gradient (`linear-gradient(180deg,#3a98ff,#007aff)`) and
-> `rgba(0,122,255,…)` shadows are repeated inline in `src/app/cloud-code/page.tsx`
+> `rgba(0,122,255,…)` shadows are repeated inline in `src/app/ember/page.tsx`
 > (session avatars, FAB, empty-state icon — lines ~280, 351, 361, 684 etc.). Replace
 > each with the coal radial + ember shadow `rgba(255,106,0,…)` for full coverage.
 > These are inline literals, not tokens, so they do NOT follow globals.css.
 
 ---
 
-## 4. Session warmth dots — `src/app/cloud-code/page.tsx` (the brand hero moment)
+## 4. Session warmth dots — `src/app/ember/page.tsx` (the brand hero moment)
 
 Today (lines ~21–26) warmth is mapped to **green/amber/gray** — off-brand. The dot
 should be the ember itself. Replace `WARMTH_DOT` with the new classes:

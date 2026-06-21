@@ -1,20 +1,20 @@
 #!/usr/bin/env node
 /**
  * port-session-mcp — a local stdio MCP server that hands your in-flight laptop
- * coding session off to Cloud Code, so you can close the laptop and pick the
+ * coding session off to Ember, so you can close the laptop and pick the
  * exact same session back up from your phone on the train.
  *
  * One tool: `port_session_to_cloud`. When called it:
  *   1. reads git state in your project (cwd)
- *   2. commits + pushes the in-flight work to a branch (Cloud Code can only see
+ *   2. commits + pushes the in-flight work to a branch (Ember can only see
  *      the remote)
  *   3. extracts a compact context from the local Claude Code transcript
- *   4. POSTs it to the Cloud Code `/api/cloud-code/sessions/port` endpoint
+ *   4. POSTs it to the Ember `/api/ember/sessions/port` endpoint
  *   5. returns a deep link — open it on any device and the cloud agent clones,
  *      checks out the branch, and resumes from your context.
  *
  * Config via env (set in the MCP server registration):
- *   CLOUD_CODE_URL  — base URL of the deployed app (required)
+ *   EMBER_URL  — base URL of the deployed app (required)
  *   PROJECT_CWD     — project dir; defaults to process.cwd()
  */
 import { Server } from "@modelcontextprotocol/sdk/server/index.js";
@@ -32,7 +32,7 @@ import { newestTranscript, sessionIdForTranscript, installLocalTranscript } from
 import { gatherBundle, type Cli } from "./config.js";
 import { gatherLoginBody } from "./login.js";
 
-const CLOUD_CODE_URL = (process.env.CLOUD_CODE_URL || "").replace(/\/$/, "");
+const EMBER_URL = (process.env.EMBER_URL || "").replace(/\/$/, "");
 
 const InputSchema = z.object({
   title: z
@@ -64,7 +64,7 @@ const server = new Server(
 const TOOL = {
   name: "port_session_to_cloud",
   description:
-    "Hand off the current in-flight coding session to Cloud Code so it can be " +
+    "Hand off the current in-flight coding session to Ember so it can be " +
     "resumed from any device. Commits and pushes your work to a branch, packages " +
     "this conversation's context, and starts a cloud session that picks up where " +
     "you left off. Returns a link to open on your phone. Use when you want to " +
@@ -86,16 +86,16 @@ const TOOL = {
 const PULL_TOOL = {
   name: "pull_session_from_cloud",
   description:
-    "Bring a Cloud Code session back to this laptop (the round trip). Asks the " +
+    "Bring a Ember session back to this laptop (the round trip). Asks the " +
     "cloud to checkpoint the session's transcript, pulls the cloud's branch + " +
     "the grown transcript down, and places it so `claude --resume <id>` continues " +
     "locally right where the cloud left off. Use when you're back at your desk " +
     "after working from your phone. Provide the session id (from the deep link) " +
-    "or the Cloud Code session URL.",
+    "or the Ember session URL.",
   inputSchema: {
     type: "object",
     properties: {
-      session: { type: "string", description: "Cloud Code session id (cc-...) or the full session URL." },
+      session: { type: "string", description: "Ember session id (cc-...) or the full session URL." },
       cwd: { type: "string", description: "Project directory to resume into. Defaults to the server cwd." },
     },
     required: ["session"],
@@ -105,7 +105,7 @@ const PULL_TOOL = {
 const SYNC_TOOL = {
   name: "sync_cli_config",
   description:
-    "One-time setup: mirror this laptop's coding-CLI configuration to Cloud Code " +
+    "One-time setup: mirror this laptop's coding-CLI configuration to Ember " +
     "so cloud sessions are a clone of your local setup (CLAUDE.md / AGENTS.md, " +
     "skills, custom agents, MCP servers). Run once per CLI — `cli:\"claude\"` " +
     "uploads your Claude Code config, `cli:\"codex\"` your Codex config; run twice " +
@@ -124,7 +124,7 @@ const SYNC_TOOL = {
 const LOGIN_TOOL = {
   name: "login_cli",
   description:
-    "Connect this laptop's coding-CLI SUBSCRIPTION to Cloud Code so cloud " +
+    "Connect this laptop's coding-CLI SUBSCRIPTION to Ember so cloud " +
     "sessions can run on your OWN plan (Claude Pro/Max, or your ChatGPT plan for " +
     "Codex) instead of AWS Bedrock. Reads the local login credential and uploads " +
     "it: `cli:\"claude\"` grabs your Claude OAuth token (from the keychain / " +
@@ -147,7 +147,7 @@ server.setRequestHandler(ListToolsRequestSchema, async () => ({ tools: [TOOL, PU
 // /mcp__port-session__port. Selecting it tells Claude to call the tool now.
 const PORT_PROMPT = {
   name: "port",
-  description: "Port this coding session to Cloud Code (commit + push, then resume in the cloud).",
+  description: "Port this coding session to Ember (commit + push, then resume in the cloud).",
   // One free-text arg so spaces don't split across placeholders. Comma-separated:
   //   view (chat|terminal), title, first prompt, new branch — all optional.
   arguments: [
@@ -161,21 +161,21 @@ const PORT_PROMPT = {
 
 const PULL_PROMPT = {
   name: "pull",
-  description: "Pull a Cloud Code session back to this laptop (round trip) and resume locally.",
+  description: "Pull a Ember session back to this laptop (round trip) and resume locally.",
   arguments: [
-    { name: "session id or URL", description: "The cc-... id or the Cloud Code session link.", required: true },
+    { name: "session id or URL", description: "The cc-... id or the Ember session link.", required: true },
   ],
 };
 
 const SYNC_PROMPT = {
   name: "sync-config",
-  description: "Mirror this laptop's CLI config (skills, agents, MCP) to Cloud Code. One CLI at a time.",
+  description: "Mirror this laptop's CLI config (skills, agents, MCP) to Ember. One CLI at a time.",
   arguments: [{ name: "cli", description: "claude or codex (required).", required: true }],
 };
 
 const LOGIN_PROMPT = {
   name: "login",
-  description: "Connect your Claude/ChatGPT subscription to Cloud Code so sessions run on your own plan.",
+  description: "Connect your Claude/ChatGPT subscription to Ember so sessions run on your own plan.",
   arguments: [{ name: "cli", description: "claude or codex (required).", required: true }],
 };
 
@@ -191,7 +191,7 @@ server.setRequestHandler(GetPromptRequestSchema, async (req) => {
           content: {
             type: "text",
             text:
-              `Connect my ${cli} subscription to Cloud Code by calling the login_cli ` +
+              `Connect my ${cli} subscription to Ember by calling the login_cli ` +
               `tool now with cli="${cli}". After it returns, confirm it's connected and ` +
               `remind me to pick "My plan" when starting a session.`,
           },
@@ -208,7 +208,7 @@ server.setRequestHandler(GetPromptRequestSchema, async (req) => {
           content: {
             type: "text",
             text:
-              `Sync my local ${cli} CLI configuration to Cloud Code by calling the ` +
+              `Sync my local ${cli} CLI configuration to Ember by calling the ` +
               `sync_cli_config tool now with cli="${cli}". After it returns, show me ` +
               `what was uploaded and anything that was dropped or redacted.`,
           },
@@ -225,7 +225,7 @@ server.setRequestHandler(GetPromptRequestSchema, async (req) => {
           content: {
             type: "text",
             text:
-              `Pull my Cloud Code session "${v}" back to this laptop by calling the ` +
+              `Pull my Ember session "${v}" back to this laptop by calling the ` +
               `pull_session_from_cloud tool now. After it returns, show me the ` +
               `\`claude --resume\` command to continue locally.`,
           },
@@ -243,7 +243,7 @@ server.setRequestHandler(GetPromptRequestSchema, async (req) => {
   if (firstPrompt) extras.push(`First instruction for the cloud agent on resume: "${firstPrompt}".`);
   if (branch) extras.push(`Push to branch: "${branch}".`);
   const text =
-    "Port my current coding session to Cloud Code by calling the " +
+    "Port my current coding session to Ember by calling the " +
     "port_session_to_cloud tool now. " +
     (extras.length ? extras.join(" ") + " " : "") +
     "After it returns, show me the deep link so I can open it on my phone.";
@@ -258,7 +258,7 @@ const PullSchema = z.object({
 });
 
 async function runPull(rawArgs: unknown) {
-  if (!CLOUD_CODE_URL) throw new Error("CLOUD_CODE_URL is not set in the MCP server environment.");
+  if (!EMBER_URL) throw new Error("EMBER_URL is not set in the MCP server environment.");
   const args = PullSchema.parse(rawArgs ?? {});
   const cwd = args.cwd || process.env.PROJECT_CWD || process.cwd();
   // Accept a raw id or a full deep link.
@@ -266,7 +266,7 @@ async function runPull(rawArgs: unknown) {
   const sid = m ? m[0] : args.session.trim();
 
   // 1. checkpoint: cloud uploads the grown transcript + returns a presigned GET.
-  const res = await fetch(`${CLOUD_CODE_URL}/api/cloud-code/sessions/${sid}/checkpoint`, {
+  const res = await fetch(`${EMBER_URL}/api/ember/sessions/${sid}/checkpoint`, {
     method: "POST",
     signal: AbortSignal.timeout(110_000),
   });
@@ -325,7 +325,7 @@ async function runPull(rawArgs: unknown) {
 const SyncSchema = z.object({ cli: z.enum(["claude", "codex"]) });
 
 async function runSync(rawArgs: unknown) {
-  if (!CLOUD_CODE_URL) throw new Error("CLOUD_CODE_URL is not set in the MCP server environment.");
+  if (!EMBER_URL) throw new Error("EMBER_URL is not set in the MCP server environment.");
   const { cli } = SyncSchema.parse(rawArgs ?? {});
 
   // 1. gather this CLI's local config into a bundle zip (claude/... or codex/...).
@@ -340,7 +340,7 @@ async function runSync(rawArgs: unknown) {
   form.set("bundle", new Blob([new Uint8Array(g.zip)], { type: "application/zip" }), `${cli}-config.zip`);
   form.set("label", `${cli} config sync`);
   form.set("scope", cli);
-  const res = await fetch(`${CLOUD_CODE_URL}/api/cloud-code/config`, {
+  const res = await fetch(`${EMBER_URL}/api/ember/config`, {
     method: "POST",
     body: form,
     signal: AbortSignal.timeout(60_000),
@@ -361,7 +361,7 @@ async function runSync(rawArgs: unknown) {
   const unsupported = g.classified.filter((c) => c.category === "unsupported");
 
   const lines: string[] = [
-    `✅ Synced ${cli} config to Cloud Code.`,
+    `✅ Synced ${cli} config to Ember.`,
     ``,
     `Uploaded ${g.files.length} files (${sizeKb} KB) — now the active config bundle.`,
     `Included: ${g.files.map((f) => f.replace(`${cli}/`, "")).join(", ")}`,
@@ -372,7 +372,7 @@ async function runSync(rawArgs: unknown) {
     if (works.length)
       lines.push(`  ✅ Works (${works.length}): ${works.map((c) => `${c.name} [${c.transport}]`).join(", ")}`);
     if (needsSecret.length) {
-      lines.push(`  🔑 Needs a secret (${needsSecret.length}) — ships but inactive until you set the token in Cloud Code:`);
+      lines.push(`  🔑 Needs a secret (${needsSecret.length}) — ships but inactive until you set the token in Ember:`);
       for (const c of needsSecret) lines.push(`     • ${c.name}: ${(c.redactedEnv || []).join(", ")}`);
     }
     if (unsupported.length) {
@@ -394,13 +394,13 @@ async function runSync(rawArgs: unknown) {
 const LoginSchema = z.object({ cli: z.enum(["claude", "codex"]), token: z.string().optional() });
 
 async function runLogin(rawArgs: unknown) {
-  if (!CLOUD_CODE_URL) throw new Error("CLOUD_CODE_URL is not set in the MCP server environment.");
+  if (!EMBER_URL) throw new Error("EMBER_URL is not set in the MCP server environment.");
   const { cli, token } = LoginSchema.parse(rawArgs ?? {});
 
   // Read the local subscription credential (or use an explicit setup-token).
   const body = await gatherLoginBody(cli, token);
 
-  const res = await fetch(`${CLOUD_CODE_URL}/api/cloud-code/auth`, {
+  const res = await fetch(`${EMBER_URL}/api/ember/auth`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify(body),
@@ -411,12 +411,12 @@ async function runLogin(rawArgs: unknown) {
 
   const label = (body.label as string) || cli;
   const lines = [
-    `✅ Connected your ${cli === "claude" ? "Claude" : "Codex"} subscription to Cloud Code.`,
+    `✅ Connected your ${cli === "claude" ? "Claude" : "Codex"} subscription to Ember.`,
     ``,
     `Plan: ${label}`,
     cli === "claude"
       ? `Cloud Claude turns can now run on your plan (CLAUDE_CODE_OAUTH_TOKEN) instead of Bedrock.`
-      : `Cloud Codex turns can now run on your ChatGPT plan (~/.codex/auth.json) instead of Bedrock Mantle.`,
+      : `Emberx turns can now run on your ChatGPT plan (~/.codex/auth.json) instead of Bedrock Mantle.`,
     ``,
     `When you start a session, pick "My plan" (or set authMode:"subscription"). Bedrock stays the default.`,
   ];
@@ -449,8 +449,8 @@ server.setRequestHandler(CallToolRequestSchema, async (req) => {
     return { isError: true, content: [{ type: "text", text: `Unknown tool: ${req.params.name}` }] };
   }
   try {
-    if (!CLOUD_CODE_URL) {
-      throw new Error("CLOUD_CODE_URL is not set in the MCP server environment.");
+    if (!EMBER_URL) {
+      throw new Error("EMBER_URL is not set in the MCP server environment.");
     }
     const args = InputSchema.parse(req.params.arguments ?? {});
     const cwd = args.cwd || process.env.PROJECT_CWD || process.cwd();
@@ -459,7 +459,7 @@ server.setRequestHandler(CallToolRequestSchema, async (req) => {
     const state = await readState(cwd);
     if (!state.isRepo) throw new Error(`${cwd} is not a git repository.`);
     if (!state.remoteRepo) {
-      throw new Error("No GitHub 'origin' remote — Cloud Code can only resume from a pushed repo.");
+      throw new Error("No GitHub 'origin' remote — Ember can only resume from a pushed repo.");
     }
 
     // 2. commit + push the in-flight work
@@ -480,7 +480,7 @@ server.setRequestHandler(CallToolRequestSchema, async (req) => {
     const transcript = await readFile(file); // raw .jsonl bytes (verbatim → native --resume)
 
     // 4. create the cloud session + get a presigned URL to upload the transcript.
-    const res = await fetch(`${CLOUD_CODE_URL}/api/cloud-code/sessions/port`, {
+    const res = await fetch(`${EMBER_URL}/api/ember/sessions/port`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({
@@ -518,7 +518,7 @@ server.setRequestHandler(CallToolRequestSchema, async (req) => {
     let warmed = false;
     if (sid) {
       try {
-        const w = await fetch(`${CLOUD_CODE_URL}/api/cloud-code/sessions/${sid}/warm`, {
+        const w = await fetch(`${EMBER_URL}/api/ember/sessions/${sid}/warm`, {
           method: "POST",
           signal: AbortSignal.timeout(60_000),
         });
@@ -528,14 +528,14 @@ server.setRequestHandler(CallToolRequestSchema, async (req) => {
       }
     }
 
-    // Deep link — built from CLOUD_CODE_URL (the server's DEPLOYMENT_URL may be unset).
+    // Deep link — built from EMBER_URL (the server's DEPLOYMENT_URL may be unset).
     const viewQ = args.view === "terminal" ? "&view=terminal" : "";
     const link =
-      sid ? `${CLOUD_CODE_URL}/cloud-code?session=${sid}${viewQ}` : data.url || "(no url returned)";
+      sid ? `${EMBER_URL}/ember?session=${sid}${viewQ}` : data.url || "(no url returned)";
 
     const sizeMb = (transcript.length / 1_048_576).toFixed(1);
     const summary = [
-      `✅ Ported to Cloud Code (native resume).`,
+      `✅ Ported to Ember (native resume).`,
       ``,
       `Repo: ${state.remoteRepo}`,
       `Branch: ${push.branch}${push.committed ? " (in-flight work committed + pushed)" : " (pushed)"}`,

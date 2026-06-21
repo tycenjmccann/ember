@@ -16,7 +16,7 @@
 
 <!--
   This is the Ember-branded repository root README. To ship it, copy this file to
-  the repo root as README.md (replacing the current "Cloud Code" README). All links
+  the repo root as README.md (replacing the current "Ember" README). All links
   and the logo <img> are root-relative and resolve from the repo root.
 -->
 

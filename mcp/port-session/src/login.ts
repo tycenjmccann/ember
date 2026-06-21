@@ -1,6 +1,6 @@
 /**
  * login.ts — read this laptop's coding-CLI subscription credential and hand it
- * to Cloud Code, so cloud sessions can run on the user's OWN plan (Claude
+ * to Ember, so cloud sessions can run on the user's OWN plan (Claude
  * Pro/Max, or a ChatGPT plan for Codex) instead of AWS Bedrock.
  *
  * Claude Code stores its subscription OAuth in:
@@ -75,7 +75,7 @@ async function readCodexAuth(): Promise<{ authJson: unknown; label?: string } | 
  * Gather the local subscription credential for one CLI.
  * `explicitToken` (claude only) overrides the keychain — pass the output of
  * `claude setup-token` for a long-lived headless token.
- * Returns the POST body for /api/cloud-code/auth, or throws with guidance.
+ * Returns the POST body for /api/ember/auth, or throws with guidance.
  */
 export async function gatherLoginBody(
   cli: Cli,

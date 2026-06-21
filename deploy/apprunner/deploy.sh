@@ -1,13 +1,13 @@
 #!/usr/bin/env bash
 #
-# deploy/apprunner/deploy.sh — Idempotent App Runner deployment for Cloud Code.
+# deploy/apprunner/deploy.sh — Idempotent App Runner deployment for Ember.
 #
 # Creates (if needed):
-#   1. ECR repo: cloud-code-web
+#   1. ECR repo: ember-web
 #   2. AppRunnerECRAccessRole (App Runner pulls from ECR)
-#   3. cloud-code-apprunner-instance role (runtime perms: AgentCore, DynamoDB, S3, Bedrock)
+#   3. ember-apprunner-instance role (runtime perms: AgentCore, DynamoDB, S3, Bedrock)
 #   4. Docker build + push (linux/amd64)
-#   5. App Runner service: cloud-code
+#   5. App Runner service: ember
 #
 # Output: DEPLOYMENT_URL (the public App Runner URL), persisted to .env.local.
 #
@@ -32,16 +32,16 @@ if [[ -n "${EXPECTED_ACCOUNT_ID:-}" && "$ACCOUNT_ID" != "$EXPECTED_ACCOUNT_ID" ]
   exit 1
 fi
 
-ECR_REPO="cloud-code-web"
+ECR_REPO="ember-web"
 ECR_URI="${ACCOUNT_ID}.dkr.ecr.${AWS_REGION}.amazonaws.com/${ECR_REPO}"
-SERVICE_NAME="cloud-code"
+SERVICE_NAME="ember"
 ECR_ACCESS_ROLE="AppRunnerECRAccessRole"
-INSTANCE_ROLE="cloud-code-apprunner-instance"
-ARTIFACT_BUCKET="${ARTIFACT_BUCKET:-agentcore-hub-artifacts-${ACCOUNT_ID}-${AWS_REGION}}"
-CLOUD_CODE_TABLE="${CLOUD_CODE_TABLE:-agentcore-hub-cloud-code-sessions}"
+INSTANCE_ROLE="ember-apprunner-instance"
+ARTIFACT_BUCKET="${ARTIFACT_BUCKET:-ember-artifacts-${ACCOUNT_ID}-${AWS_REGION}}"
+EMBER_TABLE="${EMBER_TABLE:-ember-sessions}"
 
 echo "═══════════════════════════════════════════════════════════════"
-echo "  App Runner Deploy — Cloud Code"
+echo "  App Runner Deploy — Ember"
 echo "  Account: $ACCOUNT_ID  Region: $AWS_REGION"
 echo "═══════════════════════════════════════════════════════════════"
 
@@ -75,9 +75,9 @@ if aws iam get-role --role-name "$INSTANCE_ROLE" >/dev/null 2>&1; then
   aws iam update-assume-role-policy --role-name "$INSTANCE_ROLE" --policy-document "$INSTANCE_TRUST" >/dev/null
 else
   aws iam create-role --role-name "$INSTANCE_ROLE" --assume-role-policy-document "$INSTANCE_TRUST" \
-    --description "Instance role for Cloud Code App Runner service" --output text >/dev/null
+    --description "Instance role for Ember App Runner service" --output text >/dev/null
 fi
-aws iam put-role-policy --role-name "$INSTANCE_ROLE" --policy-name "CloudCodeAppRunnerPerms" \
+aws iam put-role-policy --role-name "$INSTANCE_ROLE" --policy-name "EmberAppRunnerPerms" \
   --policy-document "{
     \"Version\": \"2012-10-17\",
     \"Statement\": [
@@ -99,7 +99,7 @@ aws iam put-role-policy --role-name "$INSTANCE_ROLE" --policy-name "CloudCodeApp
           \"dynamodb:GetItem\", \"dynamodb:PutItem\", \"dynamodb:UpdateItem\",
           \"dynamodb:DeleteItem\", \"dynamodb:Query\", \"dynamodb:Scan\"
         ],
-        \"Resource\": \"arn:aws:dynamodb:${AWS_REGION}:${ACCOUNT_ID}:table/${CLOUD_CODE_TABLE}\"
+        \"Resource\": \"arn:aws:dynamodb:${AWS_REGION}:${ACCOUNT_ID}:table/${EMBER_TABLE}\"
       },
       {
         \"Sid\": \"S3Artifacts\",
@@ -107,7 +107,7 @@ aws iam put-role-policy --role-name "$INSTANCE_ROLE" --policy-name "CloudCodeApp
         \"Action\": [\"s3:GetObject\", \"s3:PutObject\", \"s3:DeleteObject\", \"s3:ListBucket\"],
         \"Resource\": [
           \"arn:aws:s3:::${ARTIFACT_BUCKET}\",
-          \"arn:aws:s3:::${ARTIFACT_BUCKET}/cloud-code/*\"
+          \"arn:aws:s3:::${ARTIFACT_BUCKET}/ember/*\"
         ]
       },
       {
@@ -145,7 +145,7 @@ echo "  [5/5] App Runner service: $SERVICE_NAME"
 # Runtime env. HOSTNAME=0.0.0.0 + PORT=8080 so the standalone server binds where
 # App Runner's TCP health check looks. The rest is forwarded from .env.local.
 ENV_VARS='{"HOSTNAME":"0.0.0.0","PORT":"8080","NODE_ENV":"production"'
-for var in AWS_REGION CODING_AGENT_RUNTIME_ARN CLOUD_CODE_TABLE ARTIFACT_BUCKET NEXT_PUBLIC_BRAND_NAME; do
+for var in AWS_REGION CODING_AGENT_RUNTIME_ARN EMBER_TABLE ARTIFACT_BUCKET NEXT_PUBLIC_BRAND_NAME; do
   val="${!var:-}"
   [[ -n "$val" ]] && ENV_VARS+=", \"${var}\": \"${val//\"/\\\"}\""
 done
@@ -213,5 +213,5 @@ fi
 chmod 600 .env.local
 
 echo "═══════════════════════════════════════════════════════════════"
-echo "  Cloud Code deployed → $SERVICE_URL"
+echo "  Ember deployed → $SERVICE_URL"
 echo "═══════════════════════════════════════════════════════════════"

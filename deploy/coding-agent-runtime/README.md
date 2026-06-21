@@ -109,11 +109,11 @@ or `{ error }`.
 
 The `port-session` MCP (see [mcp/port-session](../../mcp/port-session/README.md))
 drives this for a laptop↔cloud handoff:
-- **port** ships the raw transcript to `s3://<bucket>/cloud-code/resume/<sid>/…`,
+- **port** ships the raw transcript to `s3://<bucket>/ember/resume/<sid>/…`,
   then `warm` pre-clones; the first turn passes `resume_transcript` + `branch` for
   a lossless `claude --resume`.
 - **pull** calls `checkpoint` → the runtime uploads the now-grown transcript to
-  `…/cloud-code/checkpoint/<sid>/…`; the laptop downloads it and resumes locally.
+  `…/ember/checkpoint/<sid>/…`; the laptop downloads it and resumes locally.
 - Slug rule (must match Claude's): `re.sub(r'[^a-zA-Z0-9]','-', realpath(cwd))`.
 
 ## Verified

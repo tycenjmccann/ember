@@ -1,5 +1,5 @@
 /**
- * Git helpers for the port handoff. Cloud Code can only see what's on the
+ * Git helpers for the port handoff. Ember can only see what's on the
  * remote, so before porting we must commit + push the in-flight work to a
  * branch. All commands run in the user's project cwd.
  */

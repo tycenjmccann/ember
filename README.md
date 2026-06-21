@@ -110,10 +110,10 @@ AWS_PROFILE=<your-profile> npm run dev          # http://localhost:3000
 
 | Path | What |
 |---|---|
-| `src/app/cloud-code/` | The UI — session sidebar, chat stream, live terminal, account/config sheets. |
+| `src/app/ember/` | The UI — session sidebar, chat stream, live terminal, account/config sheets. |
 | `src/app/cost/` | In-app cost calculator. |
-| `src/app/api/cloud-code/` | API routes: sessions CRUD, message (stream + buffered), shell presign, warm, checkpoint, port, config, auth. |
-| `src/lib/cloud-code/` | Runtime client, DynamoDB session store, S3 config/auth stores, shell wire protocol. |
+| `src/app/api/ember/` | API routes: sessions CRUD, message (stream + buffered), shell presign, warm, checkpoint, port, config, auth. |
+| `src/lib/ember/` | Runtime client, DynamoDB session store, S3 config/auth stores, shell wire protocol. |
 | `deploy/` | `install.sh` building blocks: stores, IAM role, VPC/EFS, runtime, App Runner. |
 | `deploy/coding-agent-runtime/` | The AgentCore runtime image + deploy (Claude Code + Codex, EFS workspace, OTel). |
 | `mcp/port-session/` | Local stdio MCP server — `port`, `pull`, `sync-config`, `login` tools. |
@@ -133,7 +133,7 @@ AWS_PROFILE=<your-profile> npm run dev          # http://localhost:3000
   grown session back.
 - **CLI config sync** — mirror your local Claude/Codex setup (CLAUDE.md, skills,
   agents, MCP servers) so cloud sessions are a clone of your laptop.
-- **Deep links** — `/cloud-code?session=<id>[&view=terminal]` opens a ported
+- **Deep links** — `/ember?session=<id>[&view=terminal]` opens a ported
   session on any device. Dark/light theme, mobile-first iOS-native UI.
 
 ## MCP server (laptop ⇄ cloud handoff)

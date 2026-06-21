@@ -1,13 +1,13 @@
 # port-session-mcp
 
 Local **stdio MCP server** that moves a live coding session between your laptop
-and **Cloud Code** — both directions. Close the laptop mid-task, resume the exact
+and **Ember** — both directions. Close the laptop mid-task, resume the exact
 session on your phone; pick it back up at your desk later. Same session id, full
 history, no context lost.
 
 ```
         ── port (laptop → cloud) ──▶
-you (local Claude Code)                         Cloud Code (cloud microVM)
+you (local Claude Code)                         Ember (cloud microVM)
         ◀── pull (cloud → laptop) ──
 ```
 
@@ -60,16 +60,16 @@ Add to your global MCP config (`~/.claude.json` → `mcpServers`):
   "mcpServers": {
     "port-session": {
       "command": "node",
-      "args": ["/absolute/path/to/cloud-code/mcp/port-session/dist/index.js"],
+      "args": ["/absolute/path/to/ember/mcp/port-session/dist/index.js"],
       "env": {
-        "CLOUD_CODE_URL": "https://<your-app-runner-url>"
+        "EMBER_URL": "https://<your-app-runner-url>"
       }
     }
   }
 }
 ```
 
-`CLOUD_CODE_URL` = the deployed app base URL. The tool reads git + the transcript
+`EMBER_URL` = the deployed app base URL. The tool reads git + the transcript
 for whatever directory it's launched in (its `cwd`), so run Claude Code from
 inside the repo you're porting. Reconnect (`/mcp`) after a rebuild to load changes.
 
@@ -88,13 +88,13 @@ inside the repo you're porting. Reconnect (`/mcp`) after a rebuild to load chang
 | `cwd` | server cwd | Project dir (transcript + git are read here). |
 
 Slash command's one comma arg: `view, title, first prompt, new branch` (all optional).
-Returns a deep link `<CLOUD_CODE_URL>/cloud-code?session=<id>` + the `/pull` command for the return leg.
+Returns a deep link `<EMBER_URL>/ember?session=<id>` + the `/pull` command for the return leg.
 
 ### `pull_session_from_cloud`  (slash: `/mcp__port-session__pull`)
 
 | Arg | Default | Notes |
 |---|---|---|
-| `session` | — (required) | The `cc-...` id or the full Cloud Code session URL. |
+| `session` | — (required) | The `cc-...` id or the full Ember session URL. |
 | `cwd` | server cwd | Project dir to resume into (where the transcript + branch land). |
 
 Brings the cloud's work home and prints `/exit` + `claude --resume <id>`.
@@ -102,7 +102,7 @@ Brings the cloud's work home and prints `/exit` + `claude --resume <id>`.
 ### `sync_cli_config`  (slash: `/mcp__port-session__sync-config`)
 
 **One-time setup** (re-run when your local config changes) — mirror this laptop's
-coding-CLI configuration to Cloud Code so every future cloud session is a clone of
+coding-CLI configuration to Ember so every future cloud session is a clone of
 your local setup. **Not** part of porting; it writes the per-user config bundle the
 runtime materializes on each turn (the same `/config` bundle you'd otherwise upload
 by hand).
@@ -144,6 +144,6 @@ is never uploaded (Codex `config.toml` ships verbatim — check it for inline se
 - **Single-user.** Uses the app's `userId: "default"`. Multi-user waits on the
   app-wide SSO work; this server would then send an auth token.
 - **No auth on the port/checkpoint endpoints / presigned URLs yet** — same posture
-  as the rest of Cloud Code today. Tighten before exposing publicly.
+  as the rest of Ember today. Tighten before exposing publicly.
 - **Pull skips a dirty local tree** (won't clobber uncommitted work) — it fetches
   the branch and tells you to stash/checkout manually.
