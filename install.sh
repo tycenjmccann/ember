@@ -6,7 +6,7 @@
 #   1. Preflight   — check aws/docker/node, resolve account, enforce guard
 #   2. Stores      — DynamoDB table + S3 bucket          (deploy/setup-stores.sh)
 #   3. Role        — coding runtime IAM execution role   (setup-coding-runtime-role.sh)
-#   4. Network     — default-VPC + EFS workspace         (setup-coding-efs.sh)
+#   4. Network     — VPC private subnets + NAT egress + EFS (setup-coding-efs.sh)
 #   5. Runtime     — build/push ARM64 image + deploy AgentCore runtime
 #   6. Web         — build/push web image + App Runner service
 #   7. Persist     — write .env.local with every resolved id/URL
@@ -74,8 +74,8 @@ if [ "$SKIP_RUNTIME" -eq 0 ]; then
   # shellcheck disable=SC1091
   source "$ROOT/deploy/coding-agent-runtime/setup-coding-runtime-role.sh"
 
-  # ─── 4. VPC + EFS ───────────────────────────────────────────────────────────
-  step "4/7  VPC + EFS workspace"
+  # ─── 4. VPC egress (NAT) + EFS ──────────────────────────────────────────────
+  step "4/7  VPC private subnets + NAT egress + EFS workspace"
   "$ROOT/deploy/coding-agent-runtime/setup-coding-efs.sh"
 
   # ─── 5. Runtime image + AgentCore runtime ───────────────────────────────────
