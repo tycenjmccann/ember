@@ -78,6 +78,17 @@ if [ "$WRITE" -eq 0 ]; then
   exit 0
 fi
 
+# --write must NOT register a placeholder URL: the MCP server would treat itself
+# as configured and every port/pull/login would hit https://<your-app-runner-url>,
+# leaving a broken server the user has to find and edit by hand. Fail fast and
+# tell them how to supply a real one. (Print mode above still shows a placeholder.)
+if [ -z "${EMBER_URL:-}" ]; then
+  echo "ERROR: --write needs a real EMBER_URL. Deploy the web tier first (so" >&2
+  echo "       .env.local has DEPLOYMENT_URL), or export EMBER_URL=<your-url>." >&2
+  echo "       Run without --write to print the config block instead." >&2
+  exit 1
+fi
+
 # --write: merge into ~/.claude.json with a one-time backup. python3 (a deploy
 # dependency) does the JSON surgery so we never clobber other mcpServers.
 python3 - "$CLAUDE_JSON" "$SERVER_NAME" "$DIST" "${EMBER_URL:-}" <<'PY'
