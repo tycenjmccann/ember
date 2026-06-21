@@ -27,7 +27,18 @@ import sys
 import uuid
 
 import boto3
-from botocore.exceptions import ClientError
+from botocore.config import Config
+from botocore.exceptions import BotoCoreError, ClientError
+
+
+def _runtime_id_from_arn(arn: str) -> str:
+    """Extract the agentRuntimeId GetAgentRuntime expects (e.g.
+    'ember_coding_runtime-xxxx') from a runtime ARN. The resource segment may
+    carry a ':<version>' suffix — strip it so GetAgentRuntime doesn't get a
+    '<id>:<version>' it won't resolve."""
+    if "/" not in arn:
+        return ""
+    return arn.rsplit("/", 1)[-1].split(":", 1)[0]
 
 
 def _load_env_file(path: str, prefix: str = "") -> None:
@@ -73,7 +84,7 @@ def _diagnose(region: str, runtime_arn: str, err: str) -> None:
     ec2 = boto3.client("ec2", region_name=region)
     control = boto3.client("bedrock-agentcore-control", region_name=region)
 
-    runtime_id = runtime_arn.rsplit("/", 1)[-1] if "/" in runtime_arn else ""
+    runtime_id = _runtime_id_from_arn(runtime_arn)
     health_fail = "424" in err or "health check" in err.lower()
 
     # 1. VPC egress — the #1 fresh-install failure. AgentCore ENIs get a PRIVATE
@@ -163,10 +174,16 @@ def main() -> int:
         return 0
 
     print("─── Smoke test: one real coding turn ─────────────────────")
-    print(f"  Runtime: {runtime_arn.rsplit('/', 1)[-1]}")
+    print(f"  Runtime: {_runtime_id_from_arn(runtime_arn)}")
     print("  Sending a trivial prompt (cold start can take 1-2 min)...")
 
-    client = boto3.client("bedrock-agentcore", region_name=region)
+    # A cold microVM can take well past the SDK's 60s default read timeout but
+    # still succeed — give it real headroom so a slow boot doesn't masquerade as
+    # a failure (the runtime itself caps a turn at ~1500s).
+    client = boto3.client(
+        "bedrock-agentcore", region_name=region,
+        config=Config(read_timeout=600, connect_timeout=10, retries={"max_attempts": 0}),
+    )
     session_id = f"verify-{uuid.uuid4().hex}{uuid.uuid4().hex}"[:48]
     payload = {
         "prompt": "Reply with exactly the text: EMBER_OK and nothing else.",
@@ -187,8 +204,15 @@ def main() -> int:
         if parsed.get("error"):
             raise RuntimeError(parsed["error"])
         answer = str(parsed.get("response", "")).strip()
-    except (ClientError, RuntimeError, ValueError, KeyError) as exc:
+    except (ClientError, BotoCoreError, RuntimeError, ValueError, KeyError) as exc:
+        # BotoCoreError covers ReadTimeoutError — a cold microVM that out-ran the
+        # read timeout, not a deploy fault. Surface it as inconclusive, not fail.
         msg = exc.response["Error"]["Message"] if isinstance(exc, ClientError) else str(exc)
+        if isinstance(exc, BotoCoreError) and not isinstance(exc, ClientError):
+            print("\n  INCONCLUSIVE — the turn didn't return before the timeout "
+                  "(likely a cold start).", file=sys.stderr)
+            print("  Retry once the microVM is warm:  python3 deploy/verify.py", file=sys.stderr)
+            return 1
         print(f"\n  FAIL — the runtime did not complete a turn.", file=sys.stderr)
         _diagnose(region, runtime_arn, msg)
         return 1
