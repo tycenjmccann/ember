@@ -79,16 +79,24 @@ echo "  VPC: $VPC_ID ($VPC_CIDR)"
 # VPC main table) for a 0.0.0.0/0 → igw-* route.
 _subnet_has_igw() {
   local sn="$1"
-  local rts
-  rts=$(aws ec2 describe-route-tables "${R[@]}" \
+  # A subnet's EFFECTIVE route table is its explicit association if it has one,
+  # otherwise the VPC main table. Resolve that single table first — never OR the
+  # two together, or a private subnet explicitly bound to a private table would
+  # be wrongly accepted just because the VPC main table happens to be public.
+  local explicit
+  explicit=$(aws ec2 describe-route-tables "${R[@]}" \
     --filters "Name=association.subnet-id,Values=$sn" \
-    --query "RouteTables[].Routes[?starts_with(GatewayId,'igw-')].GatewayId" \
-    --output text 2>/dev/null || echo "")
-  if [ -z "$rts" ]; then
+    --query "RouteTables[0].RouteTableId" --output text 2>/dev/null || echo "")
+  local rts
+  if [ -n "$explicit" ] && [ "$explicit" != "None" ]; then
+    rts=$(aws ec2 describe-route-tables "${R[@]}" --route-table-ids "$explicit" \
+      --query "RouteTables[0].Routes[?starts_with(GatewayId,'igw-')].GatewayId" \
+      --output text 2>/dev/null || echo "")
+  else
     # No explicit association → the subnet uses the VPC main route table.
     rts=$(aws ec2 describe-route-tables "${R[@]}" \
       --filters "Name=vpc-id,Values=$VPC_ID" "Name=association.main,Values=true" \
-      --query "RouteTables[].Routes[?starts_with(GatewayId,'igw-')].GatewayId" \
+      --query "RouteTables[0].Routes[?starts_with(GatewayId,'igw-')].GatewayId" \
       --output text 2>/dev/null || echo "")
   fi
   [ -n "$rts" ]
@@ -198,10 +206,14 @@ if [ "$NAT_ID" = "None" ] || [ -z "$NAT_ID" ]; then
     --subnet-id "$NAT_SUBNET" --allocation-id "$EIP_ALLOC" \
     --tag-specifications "ResourceType=natgateway,Tags=[{Key=Name,Value=$NAT_NAME}]" \
     --query "NatGateway.NatGatewayId" --output text)
-  echo "  [create] NAT $NAT_ID — waiting for available..."
-  aws ec2 wait nat-gateway-available "${R[@]}" --nat-gateway-ids "$NAT_ID"
+  echo "  [create] NAT $NAT_ID"
 fi
-echo "  NAT: $NAT_ID"
+# Always wait for 'available' — we reuse NAT gateways in 'pending' too (a rerun
+# after an interrupted/concurrent deploy), so the create-only waiter would let
+# install.sh deploy AgentCore against a not-yet-ready NAT and hit the same
+# no-egress failure. The waiter is a no-op on an already-available NAT.
+echo "  NAT: $NAT_ID — waiting for available..."
+aws ec2 wait nat-gateway-available "${R[@]}" --nat-gateway-ids "$NAT_ID"
 
 # ─── 5. Private route table (0.0.0.0/0 → NAT) + associations ───────────────────
 PRIV_RT=$(aws ec2 describe-route-tables "${R[@]}" \
