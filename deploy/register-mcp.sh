@@ -12,13 +12,20 @@
 # EMBER_URL is read from DEPLOYMENT_URL in .env.local (written by the App Runner
 # deploy). Override by exporting EMBER_URL before running.
 #
-# Idempotent: re-running --write updates the existing "ember" server in place.
+# Idempotent: re-running --write updates the existing server in place.
+#
+# The server name MUST be "port-session" (the default): the MCP's own code
+# hard-codes that token in the slash-command prefix it prints for follow-up
+# steps (/mcp__port-session__pull / sync-config) AND in the sync-config
+# self-exclusion. Renaming it here would make those printed commands dangle and
+# would no longer exclude the handoff server from a config sync. Override via
+# MCP_SERVER_NAME only if you also update src/index.ts + src/config.ts.
 
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]:-$0}")/.." && pwd)"
 WRITE=0
-SERVER_NAME="${MCP_SERVER_NAME:-ember}"
+SERVER_NAME="${MCP_SERVER_NAME:-port-session}"
 CLAUDE_JSON="${CLAUDE_CONFIG_FILE:-$HOME/.claude.json}"
 
 for arg in "$@"; do
@@ -74,12 +81,17 @@ fi
 # --write: merge into ~/.claude.json with a one-time backup. python3 (a deploy
 # dependency) does the JSON surgery so we never clobber other mcpServers.
 python3 - "$CLAUDE_JSON" "$SERVER_NAME" "$DIST" "${EMBER_URL:-}" <<'PY'
-import json, os, sys
+import json, os, stat, sys
 
 path, name, dist, url = sys.argv[1:5]
 data = {}
+# ~/.claude.json holds MCP env secrets and is typically 0600. Preserve that mode
+# on the backup AND the temp file we replace it with, so `--write` never widens
+# the permissions (Python's default open() would create 0644 under umask 022).
+mode = None
 if os.path.exists(path):
     try:
+        mode = stat.S_IMODE(os.stat(path).st_mode)
         with open(path) as f:
             data = json.load(f)
     except (OSError, json.JSONDecodeError):
@@ -87,7 +99,8 @@ if os.path.exists(path):
         sys.exit(1)
     bak = path + ".bak-ember-mcp"
     if not os.path.exists(bak):
-        with open(bak, "w") as f:
+        fd = os.open(bak, os.O_WRONLY | os.O_CREAT | os.O_EXCL, mode or 0o600)
+        with os.fdopen(fd, "w") as f:
             json.dump(data, f, indent=2)
         print(f"  backed up → {bak}")
 
@@ -100,8 +113,11 @@ servers[name] = {
 }
 
 tmp = path + ".tmp"
-with open(tmp, "w") as f:
+fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, mode or 0o600)
+with os.fdopen(fd, "w") as f:
     json.dump(data, f, indent=2)
+if mode is not None:
+    os.chmod(tmp, mode)  # O_CREAT mode is umask-masked; force it exactly
 os.replace(tmp, path)
 print(f"  wrote '{name}' MCP server → {path}")
 PY
