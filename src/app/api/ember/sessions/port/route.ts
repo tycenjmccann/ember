@@ -13,11 +13,18 @@
  * so the runtime resumes. Instant + serverless-robust — the user can close the
  * laptop immediately.
  *
- * Request:  { repo, branch?, claudeSessionId, cli?, title?, firstPrompt?, transcriptBytes? }
- * Response: { session, url, uploadUrl, transcriptKey }
- *   - url           = deep link to open on any device
- *   - uploadUrl     = presigned S3 PUT; MCP uploads the .jsonl here
- *   - transcriptKey = S3 key the runtime will fetch
+ * Git is FLEXIBLE (see the port-session MCP): gitMode is "pushed" (branch on
+ * origin), "bundle" (origin read-only → a git bundle the runtime layers on top),
+ * or "none" (no repo — conversation resumes in a bare workspace). repo is only
+ * required for pushed/bundle; the transcript ships in every mode.
+ *
+ * Request:  { gitMode, repo?, cloneUrl?, branch?, baseRef?, wantBundleUpload?,
+ *             claudeSessionId, cli?, title?, firstPrompt?, view? }
+ * Response: { session, url, uploadUrl, transcriptKey, bundleUploadUrl?, bundleKey? }
+ *   - url             = deep link to open on any device
+ *   - uploadUrl       = presigned S3 PUT; MCP uploads the .jsonl here
+ *   - transcriptKey   = S3 key the runtime will fetch
+ *   - bundleUploadUrl = presigned S3 PUT for the git bundle (bundle mode only)
  */
 
 import { NextRequest, NextResponse } from "next/server";
@@ -51,9 +58,12 @@ export async function POST(request: NextRequest) {
       return NextResponse.json({ error: "ARTIFACT_BUCKET not configured" }, { status: 503 });
     }
     const body = await request.json().catch(() => ({}));
+    const gitMode: "pushed" | "bundle" | "none" =
+      body.gitMode === "bundle" ? "bundle" : body.gitMode === "none" ? "none" : "pushed";
     const repo: string = (body.repo || "").trim();
-    if (!repo) {
-      return NextResponse.json({ error: "repo is required (owner/name or clone URL)" }, { status: 400 });
+    // repo is required to clone (pushed/bundle); "none" ships transcript only.
+    if (gitMode !== "none" && !repo) {
+      return NextResponse.json({ error: "repo is required for gitMode pushed/bundle (owner/name or clone URL)" }, { status: 400 });
     }
     const claudeSessionId: string = (body.claudeSessionId || "").trim();
     if (!claudeSessionId) {
@@ -62,9 +72,12 @@ export async function POST(request: NextRequest) {
 
     const cli: EmberCli = body.cli === "codex" ? "codex" : "claude";
     const authMode: EmberAuthMode = body.authMode === "subscription" ? "subscription" : "bedrock";
+    const cloneUrl: string | undefined = body.cloneUrl?.trim() || undefined;
+    const wantBundleUpload: boolean = Boolean(body.wantBundleUpload) && gitMode === "bundle";
     const branch: string | undefined = body.branch?.trim() || undefined;
     const firstPrompt: string | undefined = body.firstPrompt?.trim() || undefined;
-    const title: string = (body.title?.trim() || `Ported: ${repo}`).slice(0, 120);
+    const titleBase = repo || "session";
+    const title: string = (body.title?.trim() || `Ported: ${titleBase}`).slice(0, 120);
     // Surface the session opens in (sidebar tap restores it). Terminal only
     // makes sense for claude (--resume); codex always opens chat.
     const defaultView: "chat" | "terminal" =
@@ -75,6 +88,7 @@ export async function POST(request: NextRequest) {
 
     // Transcript lands in the shared artifact bucket, namespaced per session.
     const transcriptKey = `ember/resume/${sessionId}/${claudeSessionId}.jsonl`;
+    const bundleKey = wantBundleUpload ? `ember/resume/${sessionId}/work.bundle` : undefined;
 
     const session: EmberSession = {
       sessionId,
@@ -82,8 +96,11 @@ export async function POST(request: NextRequest) {
       title,
       cli,
       authMode,
-      repo,
+      repo: repo || undefined,
       branch,
+      gitMode,
+      cloneUrl,
+      resumeBundleKey: bundleKey,
       // Resume the laptop conversation natively from the uploaded transcript.
       claudeSessionId,
       resumeTranscriptKey: transcriptKey,
@@ -105,11 +122,25 @@ export async function POST(request: NextRequest) {
       }),
       { expiresIn: UPLOAD_EXPIRES }
     );
+    const bundleUploadUrl = bundleKey
+      ? await getSignedUrl(
+          s3,
+          new PutObjectCommand({
+            Bucket: ARTIFACT_BUCKET,
+            Key: bundleKey,
+            ContentType: "application/octet-stream",
+          }),
+          { expiresIn: UPLOAD_EXPIRES }
+        )
+      : undefined;
 
     const base = process.env.DEPLOYMENT_URL || request.nextUrl.origin || "";
     const url = `${base.replace(/\/$/, "")}/ember?session=${sessionId}`;
 
-    return NextResponse.json({ session, url, uploadUrl, transcriptKey }, { status: 201 });
+    return NextResponse.json(
+      { session, url, uploadUrl, transcriptKey, bundleUploadUrl, bundleKey },
+      { status: 201 }
+    );
   } catch (err) {
     console.error("[ember] port error:", err);
     return NextResponse.json({ error: (err as Error).message }, { status: 500 });

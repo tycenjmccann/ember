@@ -27,7 +27,7 @@ import {
 } from "@modelcontextprotocol/sdk/types.js";
 import { readFile } from "node:fs/promises";
 import { z } from "zod";
-import { readState, commitAndPush, pullBranch } from "./git.js";
+import { readState, prepareGitHandoff, pullBranch } from "./git.js";
 import { newestTranscript, sessionIdForTranscript, installLocalTranscript } from "./transcript.js";
 import { gatherBundle, type Cli } from "./config.js";
 import { gatherLoginBody } from "./login.js";
@@ -54,6 +54,14 @@ const InputSchema = z.object({
     .describe("Which surface the deep link opens. Default chat (mobile-friendly). 'terminal' auto-runs `claude --resume` in a live shell."),
   commitMessage: z.string().optional().describe("Commit message for the in-flight snapshot."),
   cwd: z.string().optional().describe("Project directory. Defaults to the server's cwd."),
+  repoDir: z
+    .string()
+    .optional()
+    .describe("Git repo dir, if it differs from where the transcript lives (e.g. Claude Code launched from a parent dir, code is in a subdir). Git ops run here; the transcript is still read from cwd."),
+  preferBundle: z
+    .boolean()
+    .optional()
+    .describe("Force bundle mode (ship a git bundle for the cloud to apply onto a clone of origin) even when origin is writable. Useful when you don't want to push a wip branch to a shared/upstream repo."),
 });
 
 const server = new Server(
@@ -453,39 +461,46 @@ server.setRequestHandler(CallToolRequestSchema, async (req) => {
       throw new Error("EMBER_URL is not set in the MCP server environment.");
     }
     const args = InputSchema.parse(req.params.arguments ?? {});
+    // Transcript is read from cwd (where Claude Code runs); git ops run in
+    // repoDir if given (handles the launched-from-parent / code-in-subdir split).
     const cwd = args.cwd || process.env.PROJECT_CWD || process.cwd();
+    const repoDir = args.repoDir || cwd;
 
-    // 1. git state
-    const state = await readState(cwd);
-    if (!state.isRepo) throw new Error(`${cwd} is not a git repository.`);
-    if (!state.remoteRepo) {
-      throw new Error("No GitHub 'origin' remote — Ember can only resume from a pushed repo.");
-    }
-
-    // 2. commit + push the in-flight work
-    const push = await commitAndPush(cwd, {
-      branch: args.branch,
-      message: args.commitMessage,
-      dirty: state.dirty,
-      currentBranch: state.branch,
-    });
-
-    // 3. locate the live transcript — its filename IS the Claude session id we'll
-    //    resume natively in the cloud.
+    // 1. locate the live transcript FIRST — it's the only hard requirement.
+    //    Its filename IS the Claude session id we resume natively in the cloud.
     const file = await newestTranscript(cwd);
     if (!file) {
-      throw new Error(`No Claude Code transcript found for ${cwd}. Run this from inside a Claude Code session.`);
+      throw new Error(
+        `No Claude Code transcript found for ${cwd}. Run this from inside a Claude Code session ` +
+        `(or pass cwd=<the dir Claude Code was launched in>).`
+      );
     }
     const claudeSessionId = sessionIdForTranscript(file);
     const transcript = await readFile(file); // raw .jsonl bytes (verbatim → native --resume)
 
-    // 4. create the cloud session + get a presigned URL to upload the transcript.
+    // 2. git handoff — best-effort, flexible. The transcript ships regardless;
+    //    git just determines whether (and how) the cloud also gets your code.
+    const state = await readState(repoDir);
+    let bundleBytes: Buffer | null = null;
+    const handoff = await prepareGitHandoff(repoDir, state, {
+      branch: args.branch,
+      message: args.commitMessage,
+      preferBundle: args.preferBundle,
+      writeArtifacts: async ({ bundle }) => { bundleBytes = bundle; },
+    });
+
+    // 3. create the cloud session + presigned upload URLs (transcript always;
+    //    bundle only when we produced one).
     const res = await fetch(`${EMBER_URL}/api/ember/sessions/port`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({
-        repo: state.remoteRepo,
-        branch: push.branch,
+        repo: handoff.mode === "none" ? undefined : state.remoteRepo,
+        cloneUrl: handoff.mode === "none" ? undefined : (handoff as any).cloneUrl,
+        gitMode: handoff.mode, // pushed | bundle | none
+        branch: handoff.mode === "none" ? undefined : (handoff as any).branch,
+        baseRef: handoff.mode === "bundle" ? (handoff as any).baseRef : undefined,
+        wantBundleUpload: Boolean(bundleBytes),
         claudeSessionId,
         firstPrompt: args.firstPrompt,
         cli: args.cli || "claude",
@@ -496,13 +511,14 @@ server.setRequestHandler(CallToolRequestSchema, async (req) => {
     const data = (await res.json().catch(() => ({}))) as {
       url?: string;
       uploadUrl?: string;
+      bundleUploadUrl?: string;
       error?: string;
       session?: { sessionId?: string };
     };
     if (!res.ok) throw new Error(data.error || `port endpoint returned ${res.status}`);
     if (!data.uploadUrl) throw new Error("port endpoint did not return an upload URL");
 
-    // 5. upload the raw transcript straight to S3 (presigned PUT — no big body
+    // 4. upload the raw transcript straight to S3 (presigned PUT — no big body
     //    through the app, no DynamoDB size cap).
     const up = await fetch(data.uploadUrl, {
       method: "PUT",
@@ -510,6 +526,16 @@ server.setRequestHandler(CallToolRequestSchema, async (req) => {
       body: transcript,
     });
     if (!up.ok) throw new Error(`transcript upload failed: ${up.status} ${up.statusText}`);
+
+    // 4b. upload the git bundle if we have one (bundle mode).
+    if (bundleBytes && data.bundleUploadUrl) {
+      const ub = await fetch(data.bundleUploadUrl, {
+        method: "PUT",
+        headers: { "Content-Type": "application/octet-stream" },
+        body: bundleBytes,
+      });
+      if (!ub.ok) throw new Error(`bundle upload failed: ${ub.status} ${ub.statusText}`);
+    }
 
     // 6. pre-warm the microVM now (clone + checkout + install transcript) so the
     //    session is hot the instant the user opens the link. Best-effort: we wait
@@ -534,15 +560,39 @@ server.setRequestHandler(CallToolRequestSchema, async (req) => {
       sid ? `${EMBER_URL}/ember?session=${sid}${viewQ}` : data.url || "(no url returned)";
 
     const sizeMb = (transcript.length / 1_048_576).toFixed(1);
+
+    // Mode-aware "what shipped / why / how" so a read-only or no-repo handoff is
+    // never silently degraded — the user knows exactly what the cloud has.
+    const codeLines: string[] = [];
+    if (handoff.mode === "pushed") {
+      codeLines.push(
+        `Code: branch \`${(handoff as any).branch}\`${(handoff as any).committed ? " (in-flight work committed +" : " ("}pushed to origin).`,
+        warmed
+          ? `Workspace: pre-warmed (repo cloned + branch checked out) — open and it's instant.`
+          : `Workspace: warms on first open (clone happens then).`
+      );
+    } else if (handoff.mode === "bundle") {
+      codeLines.push(
+        `Code: origin is read-only, so your commits shipped as a git BUNDLE.`,
+        `      The cloud clones ${state.remoteRepo} and applies the bundle on top —`,
+        `      your in-flight work is there without pushing to a repo you don't own.`
+      );
+    } else {
+      // none
+      codeLines.push(
+        `Code: NOT shipped (${(handoff as any).reason}).`,
+        `      The cloud agent resumes the conversation but starts from an empty`,
+        `      workspace. To bring code too: run port from inside a git repo, or`,
+        `      pass repoDir=<path> if your code lives in a subdir of where Claude`,
+        `      Code launched, or add a writable 'origin' remote.`
+      );
+    }
+
     const summary = [
       `✅ Ported to Ember (native resume).`,
       ``,
-      `Repo: ${state.remoteRepo}`,
-      `Branch: ${push.branch}${push.committed ? " (in-flight work committed + pushed)" : " (pushed)"}`,
       `Transcript: ${sizeMb} MB uploaded — the cloud agent resumes this exact session (claude --resume).`,
-      warmed
-        ? `Workspace: pre-warmed (repo cloned + branch checked out) — open and it's instant.`
-        : `Workspace: warms on first open (clone happens then).`,
+      ...codeLines,
       ``,
       `Open on any device:`,
       link,

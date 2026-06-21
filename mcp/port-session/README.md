@@ -85,7 +85,19 @@ inside the repo you're porting. Reconnect (`/mcp`) after a rebuild to load chang
 | `view` | `chat` | Surface the session opens in. `terminal` auto-runs `claude --resume` in a live PTY; persisted to the session so a sidebar tap reopens it the same way. |
 | `cli` | `claude` | Cloud CLI to resume with (`claude` or `codex`). |
 | `commitMessage` | auto | Message for the in-flight snapshot commit. |
-| `cwd` | server cwd | Project dir (transcript + git are read here). |
+| `cwd` | server cwd | Where the transcript is read (the dir Claude Code launched in). |
+| `repoDir` | = `cwd` | Git repo dir, when it differs from `cwd` (e.g. Claude Code launched from a parent, code is in a subdir). Git ops run here. |
+| `preferBundle` | `false` | Force bundle mode even if origin is writable (don't push a wip branch to a shared/upstream repo). |
+
+**Git is flexible** — the transcript always ships; how your *code* reaches the cloud adapts:
+
+| Mode | When | What the cloud does |
+|---|---|---|
+| `pushed` | origin is writable | commits + pushes a branch; cloud clones it |
+| `bundle` | origin is read-only (e.g. an aws-samples clone you don't own) or `preferBundle` | ships a git **bundle** of your in-flight commits; cloud clones the upstream and `git fetch`es the bundle on top — no push rights needed |
+| `none` | not a repo / no origin | ships only the transcript; the cloud resumes the conversation in a bare workspace |
+
+The result message tells you which mode ran and, for `none`, how to ship code too.
 
 Slash command's one comma arg: `view, title, first prompt, new branch` (all optional).
 Returns a deep link `<EMBER_URL>/ember?session=<id>` + the `/pull` command for the return leg.
