@@ -27,9 +27,6 @@ import json
 import os
 import sys
 
-import boto3
-from botocore.exceptions import ClientError
-
 
 def main() -> int:
     region = os.environ.get("AWS_REGION", "us-east-1")
@@ -38,6 +35,16 @@ def main() -> int:
         or os.environ.get("CLAUDE_MODEL")
         or "us.anthropic.claude-opus-4-6-v1"
     )
+
+    # boto3 is a runtime-path dependency (deploy.py), but --skip-runtime web-only
+    # redeploys also reach this preflight and may not have it installed. Import
+    # here and skip cleanly rather than crashing the whole install on import.
+    try:
+        import boto3
+        from botocore.exceptions import ClientError
+    except ImportError:
+        print("  ! Bedrock preflight skipped (boto3 not installed) — continuing.", file=sys.stderr)
+        return 0
 
     print(f"  Bedrock model access: checking {model} in {region} ...")
     client = boto3.client("bedrock-runtime", region_name=region)
@@ -57,8 +64,22 @@ def main() -> int:
     except ClientError as exc:
         code = exc.response["Error"]["Code"]
         msg = exc.response["Error"]["Message"]
-        # AccessDenied / not-authorized → model access genuinely not enabled.
-        if code in ("AccessDeniedException", "AccessDenied") or "access" in msg.lower():
+        low = msg.lower()
+        if code in ("AccessDeniedException", "AccessDenied"):
+            # Two very different AccessDenied causes — don't conflate them:
+            #   (a) the DEPLOYER principal lacks bedrock:InvokeModel. IAM phrases
+            #       this as "not authorized to perform: bedrock:InvokeModel".
+            #       The runtime SERVES turns under the execution role (granted by
+            #       setup-coding-runtime-role.sh later), not this principal — so
+            #       a deployer-perms gap does NOT mean model access is missing.
+            #       Warn, don't block.
+            #   (b) model access not enabled on the account — the actionable case.
+            deployer_perms = "not authorized to perform" in low and "invokemodel" in low.replace(" ", "")
+            if deployer_perms:
+                print(f"  ! Deployer principal lacks bedrock:InvokeModel — can't probe model", file=sys.stderr)
+                print(f"    access from here. The runtime role gets this permission later;", file=sys.stderr)
+                print(f"    the post-install smoke test will confirm the real path. Continuing.", file=sys.stderr)
+                return 0
             console = (f"https://{region}.console.aws.amazon.com/bedrock/home"
                        f"?region={region}#/modelaccess")
             print("", file=sys.stderr)
