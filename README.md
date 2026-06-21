@@ -1,6 +1,6 @@
 <div align="center">
 
-<img src="marketing/brand/logo/ember-lockup-dark.svg" alt="Ember" width="280" />
+<img src=".github/assets/ember-lockup-dark.svg" alt="Ember" width="280" />
 
 ### Keep your session warm.
 
