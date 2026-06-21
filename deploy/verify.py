@@ -30,20 +30,31 @@ import boto3
 from botocore.exceptions import ClientError
 
 
-def _load_env_local() -> None:
-    """Load .env.local (repo root) so a bare `python3 deploy/verify.py` has the
-    same ids install.sh wrote, without needing to `source` first."""
-    here = os.path.dirname(os.path.abspath(__file__))
-    path = os.path.abspath(os.path.join(here, "..", ".env.local"))
+def _load_env_file(path: str, prefix: str = "") -> None:
+    """Load KEY=VALUE / `export KEY=VALUE` lines into the environment without
+    overwriting anything already set."""
     if not os.path.exists(path):
         return
     with open(path) as f:
         for raw in f:
             line = raw.strip()
+            if line.startswith(prefix):
+                line = line[len(prefix):]
             if not line or line.startswith("#") or "=" not in line:
                 continue
             k, _, v = line.partition("=")
             os.environ.setdefault(k.strip(), v.strip().strip('"').strip("'"))
+
+
+def _load_env_local() -> None:
+    """Load the same ids install.sh wrote so a bare `python3 deploy/verify.py`
+    works without `source` first. efs.config holds CODING_EFS_FILESYSTEM_ID +
+    the VPC/subnet ids (it's written by setup-coding-efs.sh and only `source`d
+    into deploy.py's child process, so it never reaches .env.local) — the EFS
+    mount-target diagnosis needs it. Same load order deploy.py uses."""
+    here = os.path.dirname(os.path.abspath(__file__))
+    _load_env_file(os.path.join(here, "coding-agent-runtime", "efs.config"), prefix="export ")
+    _load_env_file(os.path.abspath(os.path.join(here, "..", ".env.local")))
 
 
 def _runtime_subnets(control, runtime_id: str) -> list[str]:
@@ -93,8 +104,23 @@ def _diagnose(region: str, runtime_arn: str, err: str) -> None:
             print("    AgentCore ENIs get a private IP only, so a public subnet gives", file=sys.stderr)
             print("    NO egress. The microVM can't reach ECR/Bedrock/CloudWatch and", file=sys.stderr)
             print("    fails its health check (this is your 424 + empty log group).", file=sys.stderr)
-            print("    Fix: re-run setup-coding-efs.sh (provisions private subnets +", file=sys.stderr)
-            print("    a NAT gateway), then re-run deploy.py.", file=sys.stderr)
+            # Only point at setup-coding-efs.sh if THIS checkout's copy actually
+            # provisions a NAT — otherwise re-running it just rebuilds the same
+            # public-subnet config and the operator loops on the failure.
+            here = os.path.dirname(os.path.abspath(__file__))
+            efs_script = os.path.join(here, "coding-agent-runtime", "setup-coding-efs.sh")
+            provisions_nat = False
+            try:
+                with open(efs_script) as f:
+                    provisions_nat = "create-nat-gateway" in f.read()
+            except OSError:
+                pass
+            if provisions_nat:
+                print("    Fix: re-run setup-coding-efs.sh (provisions private subnets +", file=sys.stderr)
+                print("    a NAT gateway), then re-run deploy.py.", file=sys.stderr)
+            else:
+                print("    Fix: put these subnets in private subnets with a 0.0.0.0/0 route", file=sys.stderr)
+                print("    to a NAT gateway, then re-run deploy.py to repoint the runtime.", file=sys.stderr)
             return
 
     # 2. Bedrock model access — turn reaches the CLI but Bedrock refuses.
