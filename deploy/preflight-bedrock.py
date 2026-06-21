@@ -58,7 +58,10 @@ def main() -> int:
     })
 
     try:
-        client.invoke_model(modelId=model, body=body)
+        client.invoke_model(
+            modelId=model, body=body,
+            contentType="application/json", accept="application/json",
+        )
         print("  ✓ Bedrock model access OK")
         return 0
     except ClientError as exc:
@@ -91,10 +94,19 @@ def main() -> int:
             print(f"    {console}", file=sys.stderr)
             print("    (or set ANTHROPIC_MODEL to a model you've already enabled).", file=sys.stderr)
             return 1
-        # ValidationException etc. — access works, our probe shape was off. The
-        # model is reachable; don't block the install on a probe-format quirk.
-        if code in ("ValidationException", "ThrottlingException", "ModelTimeoutException"):
+        # Throttling / model timeout reach the model AFTER the access check, so
+        # they prove access — don't block.
+        if code in ("ThrottlingException", "ModelTimeoutException"):
             print(f"  ✓ Bedrock reachable (probe returned {code} — access is granted)")
+            return 0
+        # ValidationException: the request is now well-formed (contentType +
+        # accept set), so this is more likely a model-id quirk than a granted
+        # model. Don't claim access — warn and let the post-install smoke test
+        # confirm the real path rather than block on an ambiguous signal.
+        if code == "ValidationException":
+            print(f"  ! Bedrock probe returned ValidationException ({msg[:120]}).", file=sys.stderr)
+            print(f"    Couldn't positively confirm access to {model}; the post-install", file=sys.stderr)
+            print(f"    smoke test will. Continuing.", file=sys.stderr)
             return 0
         # Unknown error — warn but don't block; the smoke test will catch a real
         # failure later with a fuller diagnosis.
