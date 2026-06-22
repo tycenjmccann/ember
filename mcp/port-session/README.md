@@ -95,9 +95,12 @@ inside the repo you're porting. Reconnect (`/mcp`) after a rebuild to load chang
 |---|---|---|
 | `pushed` | origin is writable | commits + pushes a branch; cloud clones it |
 | `bundle` | origin is read-only (e.g. an aws-samples clone you don't own) or `preferBundle` | ships a git **bundle** of your in-flight commits; cloud clones the upstream and `git fetch`es the bundle on top — no push rights needed |
-| `none` | not a repo / no origin | ships only the transcript; the cloud resumes the conversation in a bare workspace |
+| `selfContained` | **no usable remote** — no origin, unreachable, or not even a git repo yet | `git init`s if needed, commits everything, ships a **`bundle --all`** of the whole repo (history + branches); the cloud rebuilds a standalone repo from it. **Nothing leaves your AWS account — no GitHub, no push.** This is the "I never set up a remote and I'm in a hurry" path: it just works. Wire a real remote later with `git remote add` + push. |
+| `none` | truly empty workspace (no files) | ships only the transcript; the cloud resumes the conversation in a bare workspace |
 
-The result message tells you which mode ran and, for `none`, how to ship code too.
+You never have to set up a remote to port — if there isn't one, `selfContained`
+captures the whole project automatically. The result message tells you which mode
+ran and, for `selfContained`, how to push to a real remote later when you want to.
 
 Slash command's one comma arg: `view, title, first prompt, new branch` (all optional).
 Returns a deep link `<EMBER_URL>/ember?session=<id>` + the `/pull` command for the return leg.

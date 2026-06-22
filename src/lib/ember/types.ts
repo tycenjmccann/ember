@@ -49,15 +49,19 @@ export interface EmberSession {
   // runs `claude --resume claudeSessionId` for a lossless continuation.
   resumeTranscriptKey?: string;
   // How the laptop handed off its code (port-session MCP):
-  //   "pushed" — branch pushed to origin; the runtime clones + checks it out.
-  //   "bundle" — origin read-only; the runtime clones origin and `git fetch`es a
-  //              bundle (resumeBundleKey) to layer the laptop's commits on top.
-  //   "none"   — no repo shipped; bare workspace, conversation resumes only.
-  gitMode?: "pushed" | "bundle" | "none";
+  //   "pushed"        — branch pushed to origin; runtime clones + checks it out.
+  //   "bundle"        — origin read-only; runtime clones origin and git-fetches a
+  //                     bundle (resumeBundleKey) to layer the laptop's commits on top.
+  //   "selfContained" — no usable remote; the laptop shipped a `bundle --all`
+  //                     (resumeBundleKey) and the runtime rebuilds a standalone repo
+  //                     from it — no clone, no origin, stays in your account.
+  //   "none"          — no repo shipped; bare workspace, conversation resumes only.
+  gitMode?: "pushed" | "bundle" | "selfContained" | "none";
   // Explicit clone URL (the laptop's origin) — lets the runtime clone an upstream
   // it has no push rights to. Falls back to `repo` (owner/name) when absent.
   cloneUrl?: string;
-  // S3 key of a git bundle of the laptop's in-flight commits (gitMode="bundle").
+  // S3 key of a git bundle: the laptop's in-flight commits (gitMode="bundle") or
+  // the whole repo as `bundle --all` (gitMode="selfContained").
   resumeBundleKey?: string;
   // Which surface this session opens in (sidebar tap restores it). Set at port
   // time; defaults to chat. A ported terminal session auto-runs `claude --resume`

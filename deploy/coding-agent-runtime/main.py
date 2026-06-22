@@ -652,6 +652,61 @@ def _apply_resume_bundle(s3_key: str, workdir: str, session_id: str | None,
             pass
 
 
+def _rebuild_from_bundle(s3_key: str, session_id: str | None,
+                         branch: str | None = None) -> str:
+    """Self-contained mode: rebuild a STANDALONE repo from a `git bundle --all`
+    the laptop shipped (no origin, no clone). `git clone <bundle>` reconstructs
+    every branch + the full history into the session's EFS workspace; we then land
+    on a named branch so the agent works on a real branch (and pull-home works).
+
+    Idempotent + warm-safe: if the workspace already has a .git (a warm microVM, or
+    the pre-warm pass already rebuilt it), reuse it. Returns the workdir.
+
+    Raises on a missing/corrupt bundle — unlike bundle mode (which can fall back to
+    the clean clone), self-contained has NO other source for the code, so a failure
+    here is a real setup error the caller surfaces as 500."""
+    base = _session_dir(session_id)
+    wd = os.path.join(base, "workspace")
+    if os.path.isdir(os.path.join(wd, ".git")):
+        logger.info("selfcontained_warm")
+        return wd
+    if not (s3_key and ARTIFACT_BUCKET):
+        raise RuntimeError("self-contained port is missing its bundle (no resume_bundle/bucket)")
+    os.makedirs(base, exist_ok=True)
+
+    s3 = boto3.client("s3", region_name=os.environ.get("AWS_REGION", "us-east-1"))
+    obj = s3.get_object(Bucket=ARTIFACT_BUCKET, Key=s3_key)
+    raw = obj["Body"].read()
+    bundle_path = os.path.join(base, ".ember-all.bundle")
+    try:
+        with open(bundle_path, "wb") as f:
+            f.write(raw)
+        # Clone the bundle → a real repo with all refs; HEAD is the laptop's tip.
+        # (No separate `git bundle verify`: that needs to run inside a repo, which
+        # the runtime cwd isn't — and clone validates the bundle anyway, failing
+        # cleanly with the same diagnostic on a corrupt/truncated file.)
+        clone = subprocess.run(["git", "clone", bundle_path, wd],
+                               capture_output=True, text=True, timeout=300)
+        if clone.returncode != 0:
+            raise RuntimeError(f"bundle clone failed: {clone.stderr.strip()[:300]}")
+        # Drop the 'origin' the clone set to the local bundle file (it's gone after
+        # this function) so the workspace is truly standalone — `git remote add`
+        # later won't collide, and nothing points at a vanished path.
+        subprocess.run(["git", "remote", "remove", "origin"], cwd=wd,
+                       capture_output=True, text=True, timeout=30)
+        # Land on a NAMED branch (the bundle clone may be detached on HEAD).
+        local_branch = _safe_branch_name(branch)
+        subprocess.run(["git", "checkout", "-B", local_branch], cwd=wd,
+                       capture_output=True, text=True, timeout=60)
+        logger.info("selfcontained_rebuilt", extra={"branch": local_branch})
+        return wd
+    finally:
+        try:
+            os.remove(bundle_path)
+        except OSError:
+            pass
+
+
 def _checkout_branch(workdir: str, branch: str) -> None:
     """Fetch + check out the branch the laptop pushed its in-flight work to.
     Best-effort: a fresh clone lands on the default branch, so we move to the
@@ -953,9 +1008,10 @@ async def invocations(request: Request):
     resume_transcript = payload.get("resume_transcript")  # s3 key
     resume_session_id = payload.get("resume_session_id")
     branch = payload.get("branch")  # checkout this branch before the turn
-    # Flexible git handoff (port-session MCP): git_mode is pushed|bundle|none.
-    #   clone_url   — explicit origin to clone (may be an upstream we can't push to)
-    #   resume_bundle — s3 key of a git bundle to layer on top (bundle mode)
+    # Flexible git handoff (port-session MCP): git_mode is pushed|bundle|selfContained|none.
+    #   clone_url     — explicit origin to clone (may be an upstream we can't push to)
+    #   resume_bundle — s3 key of a git bundle: commits-on-top (bundle mode) OR a
+    #                   whole-repo `bundle --all` to rebuild standalone (selfContained)
     git_mode = payload.get("git_mode")
     clone_url = payload.get("clone_url")
     resume_bundle = payload.get("resume_bundle")
@@ -1006,15 +1062,21 @@ async def invocations(request: Request):
     # Workspace setup IS fatal — no workdir, no turn.
     try:
         _configure_git()
-        workdir = _ensure_workspace(repo, session_id, clone_url=clone_url)
-        # Bundle mode: clone the upstream (above), then layer the laptop's commits
-        # from the uploaded git bundle. Do this BEFORE branch checkout — the bundle
-        # detaches onto the laptop's tip, which is the state we want to resume on.
-        if git_mode == "bundle" and resume_bundle:
-            _apply_resume_bundle(resume_bundle, workdir, session_id, branch=branch)
-        # Land on the ported branch (pushed mode: the laptop's branch on origin).
-        elif branch:
-            _checkout_branch(workdir, branch)
+        # Self-contained: no origin — rebuild a standalone repo from the laptop's
+        # `bundle --all` (the no-remote / not-a-repo port). The bundle IS the only
+        # source of the code, so this replaces the clone entirely.
+        if git_mode == "selfContained" and resume_bundle:
+            workdir = _rebuild_from_bundle(resume_bundle, session_id, branch=branch)
+        else:
+            workdir = _ensure_workspace(repo, session_id, clone_url=clone_url)
+            # Bundle mode: clone the upstream (above), then layer the laptop's commits
+            # from the uploaded git bundle. Do this BEFORE branch checkout — the bundle
+            # detaches onto the laptop's tip, which is the state we want to resume on.
+            if git_mode == "bundle" and resume_bundle:
+                _apply_resume_bundle(resume_bundle, workdir, session_id, branch=branch)
+            # Land on the ported branch (pushed mode: the laptop's branch on origin).
+            elif branch:
+                _checkout_branch(workdir, branch)
         # Install a ported transcript and resume it natively. On success the turn
         # runs as `claude --resume <resume_session_id>` — true continuation.
         if cli == "claude" and resume_transcript and resume_session_id:

@@ -5,13 +5,19 @@
  * depending on what the laptop can do — so port is FLEXIBLE about git instead of
  * demanding a writable origin:
  *
- *   pushed  — origin is writable: commit + push a branch, cloud clones it.
- *   bundle  — repo exists but origin is read-only (e.g. an aws-samples clone you
- *             don't own): ship a `git bundle` of your in-flight commits + a diff
- *             of uncommitted work; the cloud clones the PUBLIC origin and applies
- *             the bundle on top. No push rights needed.
- *   none    — not a repo (or no origin): ship just the transcript; the cloud
- *             resumes the conversation in a bare workspace, no code.
+ *   pushed         — origin is writable: commit + push a branch, cloud clones it.
+ *   bundle         — repo exists but origin is read-only (e.g. an aws-samples
+ *                    clone you don't own): ship a `git bundle` of your in-flight
+ *                    commits; the cloud clones the PUBLIC origin and applies the
+ *                    bundle on top. No push rights needed.
+ *   selfContained  — NO usable remote (no origin, unreachable, or not even a git
+ *                    repo yet): we `git init` if needed, commit everything, and
+ *                    ship a `git bundle --all` (whole history + all branches). The
+ *                    cloud reconstructs a standalone repo from the bundle in its
+ *                    own EFS workspace — nothing leaves your AWS account, no
+ *                    GitHub, no push rights. This is the "I'm in a hurry and never
+ *                    set up a remote" path: it just works; wire a real remote later.
+ *   none           — nothing to ship as code (truly empty dir): transcript only.
  *
  * The transcript always ships regardless of git mode — it's just a file.
  * All commands run in the user's project cwd.
@@ -107,7 +113,99 @@ export async function canPushToOrigin(cwd: string): Promise<boolean> {
 export type GitHandoff =
   | { mode: "pushed"; branch: string; committed: boolean; cloneUrl?: string }
   | { mode: "bundle"; branch: string; committed: boolean; cloneUrl?: string; baseRef: string }
+  | { mode: "selfContained"; branch: string; committed: boolean; initialized: boolean }
   | { mode: "none"; reason: string };
+
+/** Does the dir contain anything worth shipping (ignoring .git)? */
+async function dirHasFiles(cwd: string): Promise<boolean> {
+  const { readdir } = await import("node:fs/promises");
+  try {
+    const entries = await readdir(cwd);
+    return entries.some((e) => e !== ".git");
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * Self-contained handoff: bundle the WHOLE repo (--all: every branch + tag + the
+ * current HEAD) into one file the cloud reconstructs standalone — no origin, no
+ * push. `git init`s + commits first if the dir isn't a repo yet. Returns the
+ * handoff descriptor, invoking writeAll with the bundle bytes for the caller to
+ * upload. Returns null only if there's genuinely nothing to ship (empty dir).
+ */
+type SelfContained = Extract<GitHandoff, { mode: "selfContained" }>;
+
+async function prepareSelfContained(
+  cwd: string,
+  state: GitState,
+  opts: {
+    branch?: string;
+    message?: string;
+    writeAll?: (bundle: Buffer) => Promise<void>;
+  }
+): Promise<SelfContained | null> {
+  let initialized = false;
+  let committed = false;
+
+  if (!state.isRepo) {
+    if (!(await dirHasFiles(cwd))) return null; // nothing to ship
+    await git(cwd, ["init"]);
+    // A repo with no commits can't be bundled; ensure an identity for the commit.
+    await ensureCommitIdentity(cwd);
+    initialized = true;
+  }
+
+  const startBranch = state.isRepo ? state.branch : await currentBranch(cwd);
+  const target = opts.branch || startBranch || "main";
+  if (target && target !== startBranch) {
+    await git(cwd, ["checkout", "-B", target]);
+  }
+
+  // Commit everything so the bundle is a complete snapshot. On a fresh init this
+  // is the first commit; on an existing repo it captures in-flight work.
+  const dirty = (await git(cwd, ["status", "--porcelain"])).length > 0;
+  const hasCommit = (await gitTry(cwd, ["rev-parse", "HEAD"])).ok;
+  if (dirty || !hasCommit) {
+    await git(cwd, ["add", "-A"]);
+    const msg = opts.message || `wip: port session to cloud (${new Date().toISOString()})`;
+    // --allow-empty so a repo with only ignored/empty content still gets a HEAD
+    // to bundle, rather than failing the whole port.
+    await git(cwd, ["commit", "--no-verify", "--allow-empty", "-m", msg]);
+    committed = true;
+  }
+
+  if (opts.writeAll) {
+    const { mkdtemp, readFile, rm } = await import("node:fs/promises");
+    const os = await import("node:os");
+    const pathMod = await import("node:path");
+    const tmp = await mkdtemp(pathMod.join(os.tmpdir(), "ember-bundle-"));
+    const bundlePath = pathMod.join(tmp, "all.bundle");
+    try {
+      // --all = every ref; add HEAD so a detached/odd state is still captured.
+      await git(cwd, ["bundle", "create", bundlePath, "--all", "HEAD"]);
+      await opts.writeAll(await readFile(bundlePath));
+    } finally {
+      await rm(tmp, { recursive: true, force: true });
+    }
+  }
+
+  return { mode: "selfContained", branch: target, committed, initialized };
+}
+
+async function currentBranch(cwd: string): Promise<string> {
+  const r = await gitTry(cwd, ["rev-parse", "--abbrev-ref", "HEAD"]);
+  return r.ok ? r.out : "main";
+}
+
+/** Ensure user.name/email exist for the commit (fresh `git init` may lack them). */
+async function ensureCommitIdentity(cwd: string): Promise<void> {
+  const name = await gitTry(cwd, ["config", "user.name"]);
+  if (!name.ok || !name.out) {
+    await git(cwd, ["config", "user.email", "ember@localhost"]);
+    await git(cwd, ["config", "user.name", "Ember Port"]);
+  }
+}
 
 /**
  * Prepare the repo for handoff, choosing the best available mode.
@@ -123,9 +221,21 @@ export async function prepareGitHandoff(
     message?: string;
     preferBundle?: boolean; // force bundle even if origin is writable
     writeArtifacts?: (a: { bundle: Buffer; patch: Buffer; baseRef: string }) => Promise<void>;
+    // Self-contained bundle (--all) bytes for the no-remote / not-a-repo path.
+    writeSelfContained?: (bundle: Buffer) => Promise<void>;
   }
 ): Promise<GitHandoff> {
-  if (!state.isRepo) return { mode: "none", reason: "not a git repository" };
+  // Not a git repo yet → self-contained: git init + commit + bundle --all (or
+  // 'none' if the dir is genuinely empty). Removes the "I never set up a repo"
+  // blocker — the cloud gets a real standalone repo from a bundle in your S3.
+  if (!state.isRepo) {
+    const sc = await prepareSelfContained(cwd, state, {
+      branch: opts.branch,
+      message: opts.message,
+      writeAll: opts.writeSelfContained,
+    });
+    return sc ?? { mode: "none", reason: "empty workspace (no files to ship)" };
+  }
 
   const target = opts.branch || state.branch;
   let committed = false;
@@ -205,6 +315,15 @@ export async function prepareGitHandoff(
     return { mode: "bundle", branch: target, committed, cloneUrl: state.originUrl, baseRef };
   }
 
+  // Repo with NO usable origin (none configured, or unreachable) → self-contained:
+  // bundle --all to S3, cloud rebuilds standalone. The in-flight commit above
+  // already happened, so prepareSelfContained just bundles + reports.
+  const sc = await prepareSelfContained(cwd, state, {
+    branch: opts.branch,
+    message: opts.message,
+    writeAll: opts.writeSelfContained,
+  });
+  if (sc) return { ...sc, committed: committed || sc.committed };
   return { mode: "none", reason: state.originUrl ? "origin not reachable" : "no origin remote" };
 }
 
