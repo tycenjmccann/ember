@@ -112,8 +112,8 @@ _effective_routes() {
 }
 
 # A subnet has internet egress if its effective route table carries a 0.0.0.0/0
-# route to ANYTHING that forwards out: a NAT gateway, transit gateway, ENI/instance
-# appliance (firewall/proxy), VPC peering, or a Gateway Load Balancer / firewall
+# route to something that actually forwards out: a NAT gateway, transit gateway,
+# ENI/instance appliance (firewall/proxy), or a Gateway Load Balancer / firewall
 # VPC endpoint. An igw-* default = a PUBLIC subnet (rejected — AgentCore ENIs are
 # private-IP-only, so an IGW route gives them no egress).
 _subnet_has_egress() {
@@ -125,9 +125,9 @@ routes = json.loads(sys.argv[1] or "[]")
 for r in routes:
     if r.get("DestinationCidrBlock") != "0.0.0.0/0":
         continue
-    # A blackhole route's target is gone (deleted NAT/TGW/ENI/peering) — it carries
-    # no traffic, so it must NOT count as egress (else BYO preflight passes on a
-    # stale route and we deploy a runtime with no real egress).
+    # A blackhole route's target is gone (deleted NAT/TGW/ENI) — it carries no
+    # traffic, so it must NOT count as egress (else BYO preflight passes on a stale
+    # route and we deploy a runtime with no real egress).
     if r.get("State", "active") == "blackhole":
         continue
     # A 0.0.0.0/0 route to a VPC endpoint is a Gateway Load Balancer / firewall
@@ -135,9 +135,11 @@ for r in routes:
     # default route, so a vpce- on 0.0.0.0/0 is always the GWLB path).
     if r.get("VpcEndpointId"):
         sys.exit(0)
-    # A NAT/TGW/peering/appliance default route = real egress for a private ENI.
-    for k in ("NatGatewayId", "TransitGatewayId", "VpcPeeringConnectionId",
-              "NetworkInterfaceId", "InstanceId", "GatewayId"):
+    # A NAT/TGW/appliance default route = real egress for a private ENI. NOTE: VPC
+    # peering (pcx-) is deliberately NOT here — peering does not support edge-to-edge
+    # routing to another VPC's IGW/NAT, so a 0.0.0.0/0 → pcx- gives no real internet.
+    for k in ("NatGatewayId", "TransitGatewayId", "NetworkInterfaceId",
+              "InstanceId", "GatewayId"):
         v = r.get(k)
         # igw-* = public subnet (no egress for a private ENI); vpce-* in GatewayId =
         # an S3/DynamoDB gateway endpoint (AWS-services-only). Neither counts.

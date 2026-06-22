@@ -71,18 +71,19 @@ def _load_env_local() -> None:
 def _route_is_egress(r: dict) -> bool:
     """True if a route is a usable 0.0.0.0/0 default route to the internet.
     Mirrors setup-coding-efs.sh's _subnet_has_egress so the diagnosis accepts the
-    SAME paths the BYO preflight accepts — NAT, transit gateway, VPC peering, an
-    ENI/instance appliance, or a Gateway Load Balancer / firewall VPC endpoint.
-    Rejects igw-* (public subnet — no egress for a private-IP ENI), vpce-* in
-    GatewayId (S3/DynamoDB gateway endpoint), and blackhole (dead target)."""
+    SAME paths the BYO preflight accepts — NAT, transit gateway, an ENI/instance
+    appliance, or a Gateway Load Balancer / firewall VPC endpoint. Rejects igw-*
+    (public subnet — no egress for a private-IP ENI), vpce-* in GatewayId
+    (S3/DynamoDB gateway endpoint), pcx-* (VPC peering has no edge-to-edge routing
+    to another VPC's IGW/NAT), and blackhole (dead target)."""
     if r.get("DestinationCidrBlock") != "0.0.0.0/0":
         return False
     if r.get("State", "active") == "blackhole":
         return False
     if r.get("VpcEndpointId"):  # GWLB / firewall endpoint = inspected egress
         return True
-    for k in ("NatGatewayId", "TransitGatewayId", "VpcPeeringConnectionId",
-              "NetworkInterfaceId", "InstanceId", "GatewayId"):
+    for k in ("NatGatewayId", "TransitGatewayId", "NetworkInterfaceId",
+              "InstanceId", "GatewayId"):
         v = r.get(k)
         if v and not str(v).startswith(("igw-", "vpce-")):
             return True
