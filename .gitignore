@@ -44,3 +44,7 @@ marketing/brand/logo/*.pbm
 
 # marketing workspace (internal — not part of the OSS package)
 marketing/
+
+# Python
+__pycache__/
+*.pyc
