@@ -44,12 +44,47 @@ private URL for one person, unacceptable for a team.
   `/api/ember/*`, including the port/checkpoint/presign endpoints.
 
 ### 2. Network isolation  *(the core enterprise selling point)*
+
+**Runs in your existing VPC. Creates only EFS. Never modifies your route tables.**
+That's the headline for a security review: the install is non-destructive to your
+networking. Set your VPC + two private subnets and `install.sh` provisions only an
+encrypted EFS workspace + an NFS security group inside them — no NAT, no route-table
+changes, nothing in your account mutated.
+
+```bash
+export CODING_VPC_ID=vpc-xxxxxxxx
+export CODING_PRIVATE_SUBNET_1=subnet-aaaaaaaa   # private, egress via your NAT/proxy
+export CODING_PRIVATE_SUBNET_2=subnet-bbbbbbbb   # second AZ (EFS mount targets are per-AZ)
+./install.sh
+```
+
+If you DON'T set those, install falls back to **provisioned mode**: it carves two
+private subnets + a NAT gateway for you (greenfield accounts). Either way the coding
+runtime runs in-VPC with a private-IP-only ENI.
+
+**BYO-egress preflight** — the supplied subnets must satisfy:
+- A `0.0.0.0/0` default route to your **NAT gateway, transit gateway, or egress
+  appliance** (install verifies this and fails loudly if absent — AgentCore ENIs are
+  private-IP-only, so a public/IGW subnet gives them no egress).
+- **Two distinct AZs** (EFS mount targets are per-AZ; one per subnet).
+- Outbound **TCP 2049** allowed within the runtime security group (for NFS to EFS).
+- **DNS resolution + DNS hostnames enabled** on the VPC.
+- That egress can reach **github.com** (Ember clones repos over HTTPS — there is no
+  VPC endpoint for GitHub; a NAT or a proxy allowlisting github.com is required),
+  plus the AWS endpoints the runtime uses (Bedrock, ECR, CloudWatch).
+
+**IAM the install needs in BYO mode** (no route-table writes): `ec2:CreateSecurityGroup`,
+`ec2:AuthorizeSecurityGroupIngress`, `ec2:Describe*`, and scoped `elasticfilesystem:*`
+(create filesystem / mount targets / access point). Provisioned mode additionally
+needs `ec2:CreateSubnet`, `ec2:*NatGateway*`, `ec2:*RouteTable*`, `ec2:AllocateAddress`.
+
+**Further hardening (optional):**
 - Put App Runner behind a **VPC connector**; reach DynamoDB/S3/Bedrock over **VPC
-  endpoints (PrivateLink)** so nothing transits the public internet.
-- The coding runtime already runs in-VPC (EFS). Add private-subnet + NAT (or a
-  fully private egress allowlist) so the agent can reach only approved Git hosts /
-  package registries.
-- Optional: private App Runner ingress + WAF, or front with an internal ALB.
+  endpoints (PrivateLink)** so AWS-service traffic skips the public internet (this
+  reduces NAT traffic but does NOT replace it — GitHub still needs real egress).
+- Restrict the runtime's egress to an allowlist of approved Git hosts / package
+  registries via your proxy or NAT-fronted firewall.
+- Private App Runner ingress + WAF, or front with an internal ALB.
 
 ### 3. Per-user credential isolation  *(security)*
 - Subscription tokens + ported transcripts live in S3 under `ember/{userId}/…`.

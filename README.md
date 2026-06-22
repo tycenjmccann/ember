@@ -65,6 +65,24 @@ the live URL at the end.
 > **Account guard.** Set `EXPECTED_ACCOUNT_ID` in `.env.local` and the deploy refuses to
 > run against any other account — protection against a wrong profile.
 
+### Run in your own VPC (enterprise / BYO networking)
+
+Already have a VPC with private subnets that route out through your NAT or egress proxy?
+Point Ember at them and the install creates **only EFS + an NFS security group** — it
+**never touches your route tables or creates a NAT**:
+
+```bash
+export CODING_VPC_ID=vpc-xxxxxxxx
+export CODING_PRIVATE_SUBNET_1=subnet-aaaaaaaa   # private, has 0.0.0.0/0 egress
+export CODING_PRIVATE_SUBNET_2=subnet-bbbbbbbb   # second AZ (EFS is per-AZ)
+./install.sh
+```
+
+The install verifies both subnets have an egress route and fails loudly if not. (That
+egress must reach `github.com` — Ember clones over HTTPS.) Leave these unset and install
+provisions private subnets + a NAT for you. Full preflight + IAM list in
+[`docs/ENTERPRISE.md`](docs/ENTERPRISE.md#2-network-isolation-the-core-enterprise-selling-point).
+
 ## Open-core
 
 MIT self-host, free, forever — the proof it runs in *your* account. The enterprise tier
