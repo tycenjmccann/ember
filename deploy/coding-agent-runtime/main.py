@@ -652,6 +652,19 @@ def _apply_resume_bundle(s3_key: str, workdir: str, session_id: str | None,
             pass
 
 
+def _selfcontained_workspace(session_id: str | None) -> str | None:
+    """Path of an already-rebuilt self-contained repo for this session, or None.
+
+    Self-contained ports live at `<session>/workspace` (a fixed name, NOT a
+    repo-slug), set by _rebuild_from_bundle. Later turns/checkpoint omit
+    git_mode + resume_bundle and carry no repo, so we detect the warm workspace
+    by its .git rather than relying on the caller re-sending the handoff fields."""
+    if not session_id:
+        return None
+    wd = os.path.join(_session_dir(session_id), "workspace")
+    return wd if os.path.isdir(os.path.join(wd, ".git")) else None
+
+
 def _rebuild_from_bundle(s3_key: str, session_id: str | None,
                          branch: str | None = None) -> str:
     """Self-contained mode: rebuild a STANDALONE repo from a `git bundle --all`
@@ -1067,6 +1080,15 @@ async def invocations(request: Request):
         # source of the code, so this replaces the clone entirely.
         if git_mode == "selfContained" and resume_bundle:
             workdir = _rebuild_from_bundle(resume_bundle, session_id, branch=branch)
+        elif _selfcontained_workspace(session_id) and not repo and not clone_url:
+            # Warm self-contained session on a LATER turn (or checkpoint): the
+            # caller only sends git_mode/resume_bundle on the seed turn, and there's
+            # no repo to re-derive a slug from. Reuse the standalone repo already on
+            # EFS — otherwise _ensure_workspace(None,…) returns the bare session root
+            # and the CLI runs OUTSIDE the shipped code (and checkpoint reads the
+            # wrong project slug).
+            workdir = _selfcontained_workspace(session_id)
+            logger.info("selfcontained_warm_reuse")
         else:
             workdir = _ensure_workspace(repo, session_id, clone_url=clone_url)
             # Bundle mode: clone the upstream (above), then layer the laptop's commits
