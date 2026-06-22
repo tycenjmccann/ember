@@ -21,6 +21,7 @@
 #   ./install.sh                          # full install
 #   ./install.sh --skip-runtime           # web only (runtime already deployed)
 #   ./install.sh --runtime-only           # backend only, no App Runner web
+#   ./install.sh --with-mcp               # also wire the port-session MCP into ~/.claude.json
 #
 # Optional env (sensible defaults, override in .env.local or the shell):
 #   AWS_REGION            default us-east-1
@@ -36,10 +37,12 @@ cd "$ROOT"
 
 SKIP_RUNTIME=0
 RUNTIME_ONLY=0
+WITH_MCP=0
 for arg in "$@"; do
   case "$arg" in
     --skip-runtime) SKIP_RUNTIME=1 ;;
     --runtime-only) RUNTIME_ONLY=1 ;;
+    --with-mcp) WITH_MCP=1 ;;
     -h|--help) grep '^#' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
     *) echo "Unknown flag: $arg" >&2; exit 1 ;;
   esac
@@ -153,9 +156,22 @@ step "Done"
 # shellcheck disable=SC1091
 source "$ROOT/.env.local" 2>/dev/null || true
 echo "  Ember is live → ${DEPLOYMENT_URL:-(see App Runner console)}"
+
+# Laptop ⇄ cloud MCP: --with-mcp builds + merges it into ~/.claude.json with
+# EMBER_URL pre-filled; otherwise print the ready-to-paste block + how to add it.
+if [ "$WITH_MCP" -eq 1 ]; then
+  step "MCP — wiring port-session into ~/.claude.json"
+  EMBER_URL="${DEPLOYMENT_URL:-}" "$ROOT/deploy/register-mcp.sh" --write || \
+    echo "  (MCP register skipped — run deploy/register-mcp.sh yourself)"
+fi
+
 echo ""
 echo "  Next:"
 echo "    • Open the URL and start a session (Bedrock works out of the box)."
 echo "    • To run on your own Claude Pro/Max or ChatGPT plan instead of Bedrock,"
 echo "      open Account & sign-in in the app, or use the port-session MCP login."
+if [ "$WITH_MCP" -eq 0 ]; then
+  echo "    • Laptop ⇄ cloud handoff: wire the MCP with  ./deploy/register-mcp.sh"
+  echo "      (prints the config block; add --write to merge it automatically)."
+fi
 echo "    • See cost math at  ${DEPLOYMENT_URL:-<url>}/cost"

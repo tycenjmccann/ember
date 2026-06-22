@@ -139,13 +139,17 @@ AWS_PROFILE=<your-profile> npm run dev          # http://localhost:3000
 
 ## MCP server (laptop ⇄ cloud handoff)
 
+One command builds it and wires it into your local Claude Code with `EMBER_URL`
+pre-filled from this deployment:
+
 ```bash
-npm run mcp:build      # builds mcp/port-session/dist
+./deploy/register-mcp.sh           # build + print the ready-to-paste config block
+./deploy/register-mcp.sh --write   # build + merge into ~/.claude.json (backs up first)
 ```
 
-Register it with your local Claude Code (`~/.claude.json` → `mcpServers`) — see
-[`mcp/port-session/README.md`](mcp/port-session/README.md) for the config block and
-the full tool reference (`port`, `pull`, `sync-config`, `login`).
+Or fold it into the install: `./install.sh --with-mcp`. Reconnect with `/mcp`
+afterwards. See [`mcp/port-session/README.md`](mcp/port-session/README.md) for the
+full tool reference (`port`, `pull`, `sync-config`, `login`).
 
 ## Going to production / company-wide
 
