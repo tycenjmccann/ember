@@ -64,6 +64,16 @@ echo "  Account: $ACCOUNT_ID   Region: $AWS_REGION"
 echo "  Table:   $EMBER_TABLE"
 echo "  Bucket:  $ARTIFACT_BUCKET"
 
+# Bedrock model access is opt-in per model on a new account. Check it NOW (secs)
+# rather than after ~10 min of image builds + provisioning. Blocks by default;
+# set SKIP_BEDROCK_PREFLIGHT=1 if you'll run BYO-plan (subscription) only.
+if [ "${SKIP_BEDROCK_PREFLIGHT:-0}" != "1" ]; then
+  if ! python3 "$ROOT/deploy/preflight-bedrock.py"; then
+    echo "  Set SKIP_BEDROCK_PREFLIGHT=1 to bypass (e.g. BYO-plan only)." >&2
+    exit 1
+  fi
+fi
+
 # ─── 2. Stores ────────────────────────────────────────────────────────────────
 step "2/7  DynamoDB table + S3 bucket"
 "$ROOT/deploy/setup-stores.sh"
