@@ -68,6 +68,24 @@ echo "────────────────────────�
 _tag() { aws ec2 create-tags "${R[@]}" --resources "$1" --tags "Key=Name,Value=$2" >/dev/null; }
 _az_of() { aws ec2 describe-subnets "${R[@]}" --subnet-ids "$1" --query "Subnets[0].AvailabilityZone" --output text; }
 
+# ─── 0. Rerun recovery: keep a BYO install BYO across a fresh shell ────────────
+# A prior run records its choice in efs.config. If the operator reruns WITHOUT
+# re-exporting CODING_PRIVATE_SUBNET_1/2, restore them (and the VPC) from that
+# file so an "idempotent" rerun doesn't silently flip to provisioned — which would
+# create a NAT/route table and repoint the runtime off the customer's subnets,
+# breaking the "never touch routing" guarantee. Live env vars still win (export
+# different subnets, or none + delete efs.config, to force a different mode).
+if [ -z "${CODING_PRIVATE_SUBNET_1:-}" ] && [ -z "${CODING_PRIVATE_SUBNET_2:-}" ] \
+   && [ -f "$CONFIG_FILE" ]; then
+  prev_mode=$(sed -n 's/^export CODING_EGRESS_MODE="\(.*\)"$/\1/p' "$CONFIG_FILE")
+  if [ "$prev_mode" = "byo" ]; then
+    CODING_PRIVATE_SUBNET_1=$(sed -n 's/^export CODING_SUBNET_1="\(.*\)"$/\1/p' "$CONFIG_FILE")
+    CODING_PRIVATE_SUBNET_2=$(sed -n 's/^export CODING_SUBNET_2="\(.*\)"$/\1/p' "$CONFIG_FILE")
+    CODING_VPC_ID="${CODING_VPC_ID:-$(sed -n 's/^export CODING_VPC_ID="\(.*\)"$/\1/p' "$CONFIG_FILE")}"
+    echo "  (reusing BYO subnets from prior efs.config — rerun stays BYO)"
+  fi
+fi
+
 # ─── 1. VPC (default unless overridden) ───────────────────────────────────────
 VPC_ID="${CODING_VPC_ID:-}"
 if [ -z "$VPC_ID" ]; then
@@ -86,6 +104,9 @@ echo "  VPC: $VPC_ID ($VPC_CIDR)"
 # ─── Mode select: BYO-EGRESS vs PROVISIONED ───────────────────────────────────
 # Supplying BOTH private subnets = "I own the networking" → BYO mode: create only
 # SG + EFS, never a NAT, never touch route tables. Anything else = provisioned.
+# (Recovery from a prior efs.config — for reruns from a fresh shell — happened
+# before VPC resolution above, so CODING_PRIVATE_SUBNET_1/2 are already set if the
+# last run was BYO.)
 if [ -n "${CODING_PRIVATE_SUBNET_1:-}" ] && [ -n "${CODING_PRIVATE_SUBNET_2:-}" ]; then
   EGRESS_MODE="byo"
 else
