@@ -40,6 +40,13 @@ const REGION = process.env.AWS_REGION || "us-east-1";
 const ARTIFACT_BUCKET = process.env.ARTIFACT_BUCKET || "";
 const UPLOAD_EXPIRES = 900; // 15 min to push the transcript
 
+// Best-effort owner/name from any clone URL (for the default session title).
+function parseRepoFromUrl(url?: string): string | undefined {
+  if (!url) return undefined;
+  const m = url.match(/[/:]([^/]+\/[^/]+?)(?:\.git)?\/?$/);
+  return m ? m[1] : undefined;
+}
+
 // First-prompt hint the auto-fired seed turn sends to the resumed agent. Kept
 // short — the real context lives in the resumed transcript, not in this prompt.
 function buildResumePrompt(opts: { branch?: string; firstPrompt?: string }): string {
@@ -61,9 +68,12 @@ export async function POST(request: NextRequest) {
     const gitMode: "pushed" | "bundle" | "none" =
       body.gitMode === "bundle" ? "bundle" : body.gitMode === "none" ? "none" : "pushed";
     const repo: string = (body.repo || "").trim();
-    // repo is required to clone (pushed/bundle); "none" ships transcript only.
-    if (gitMode !== "none" && !repo) {
-      return NextResponse.json({ error: "repo is required for gitMode pushed/bundle (owner/name or clone URL)" }, { status: 400 });
+    const cloneUrl: string | undefined = body.cloneUrl?.trim() || undefined;
+    // pushed/bundle need SOMETHING to clone — either owner/name (github) or an
+    // explicit cloneUrl (non-github / self-hosted origins where remoteRepo is
+    // undefined). "none" ships the transcript only.
+    if (gitMode !== "none" && !repo && !cloneUrl) {
+      return NextResponse.json({ error: "repo or cloneUrl is required for gitMode pushed/bundle" }, { status: 400 });
     }
     const claudeSessionId: string = (body.claudeSessionId || "").trim();
     if (!claudeSessionId) {
@@ -72,11 +82,10 @@ export async function POST(request: NextRequest) {
 
     const cli: EmberCli = body.cli === "codex" ? "codex" : "claude";
     const authMode: EmberAuthMode = body.authMode === "subscription" ? "subscription" : "bedrock";
-    const cloneUrl: string | undefined = body.cloneUrl?.trim() || undefined;
     const wantBundleUpload: boolean = Boolean(body.wantBundleUpload) && gitMode === "bundle";
     const branch: string | undefined = body.branch?.trim() || undefined;
     const firstPrompt: string | undefined = body.firstPrompt?.trim() || undefined;
-    const titleBase = repo || "session";
+    const titleBase = repo || parseRepoFromUrl(cloneUrl) || "session";
     const title: string = (body.title?.trim() || `Ported: ${titleBase}`).slice(0, 120);
     // Surface the session opens in (sidebar tap restores it). Terminal only
     // makes sense for claude (--resume); codex always opens chat.

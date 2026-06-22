@@ -49,6 +49,31 @@ export function parseRepo(remoteUrl: string): string | undefined {
   return m ? m[1] : undefined;
 }
 
+/**
+ * Produce a clone URL the CLOUD can use. The runtime only configures HTTPS PAT
+ * rewriting, so an `git@host:org/repo.git` SSH origin would fail there — convert
+ * it to `https://host/org/repo.git`. Also strip any embedded userinfo
+ * (`https://user:token@host/...`) so we never persist/return a credential.
+ * Returns undefined if there's nothing usable.
+ */
+export function normalizeCloneUrl(remoteUrl?: string): string | undefined {
+  if (!remoteUrl) return undefined;
+  const url = remoteUrl.trim();
+  // scp-like SSH: git@host:org/repo(.git)
+  const ssh = url.match(/^[\w.-]+@([\w.-]+):(.+?)(?:\.git)?\/?$/);
+  if (ssh) return `https://${ssh[1]}/${ssh[2]}.git`;
+  // ssh:// or https:// — drop userinfo (anything before @ in the authority).
+  const m = url.match(/^(https?|ssh):\/\/(?:[^@/]+@)?([^/]+)\/(.+?)(?:\.git)?\/?$/);
+  if (m) {
+    // An ssh:// URL's port (e.g. :22) is the SSH port — meaningless over HTTPS,
+    // so drop it. Keep an explicit port on an https:// origin.
+    const host = m[1] === "ssh" ? m[2].replace(/:\d+$/, "") : m[2];
+    return `https://${host}/${m[3]}.git`;
+  }
+  // Unknown shape (e.g. a local path) — return as-is, no credential to strip.
+  return url;
+}
+
 export async function readState(cwd: string): Promise<GitState> {
   try {
     await git(cwd, ["rev-parse", "--is-inside-work-tree"]);
@@ -59,8 +84,11 @@ export async function readState(cwd: string): Promise<GitState> {
   let remoteRepo: string | undefined;
   let originUrl: string | undefined;
   try {
-    originUrl = await git(cwd, ["remote", "get-url", "origin"]);
-    remoteRepo = parseRepo(originUrl);
+    const raw = await git(cwd, ["remote", "get-url", "origin"]);
+    remoteRepo = parseRepo(raw);
+    // Normalize for the cloud: SSH→HTTPS, strip embedded credentials. Push still
+    // uses the local `origin` remote (this URL is only what the cloud clones).
+    originUrl = normalizeCloneUrl(raw);
   } catch {
     /* no origin */
   }
