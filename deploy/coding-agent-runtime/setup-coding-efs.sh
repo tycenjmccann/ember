@@ -112,10 +112,10 @@ _effective_routes() {
 }
 
 # A subnet has internet egress if its effective route table carries a 0.0.0.0/0
-# route to ANYTHING that forwards out: a NAT gateway, transit gateway, an ENH/ENI
-# appliance (firewall/proxy), or a VPC peering/gateway-load-balancer endpoint.
-# An igw-* default would mean it's a PUBLIC subnet — rejected for the runtime
-# (AgentCore ENIs are private-IP-only, so an IGW route gives them no egress).
+# route to ANYTHING that forwards out: a NAT gateway, transit gateway, ENI/instance
+# appliance (firewall/proxy), VPC peering, or a Gateway Load Balancer / firewall
+# VPC endpoint. An igw-* default = a PUBLIC subnet (rejected — AgentCore ENIs are
+# private-IP-only, so an IGW route gives them no egress).
 _subnet_has_egress() {
   local sn="$1" routes
   routes=$(_effective_routes "$sn")
@@ -125,12 +125,22 @@ routes = json.loads(sys.argv[1] or "[]")
 for r in routes:
     if r.get("DestinationCidrBlock") != "0.0.0.0/0":
         continue
+    # A blackhole route's target is gone (deleted NAT/TGW/ENI/peering) — it carries
+    # no traffic, so it must NOT count as egress (else BYO preflight passes on a
+    # stale route and we deploy a runtime with no real egress).
+    if r.get("State", "active") == "blackhole":
+        continue
+    # A 0.0.0.0/0 route to a VPC endpoint is a Gateway Load Balancer / firewall
+    # endpoint = real inspected egress (S3/DynamoDB gateway endpoints never carry a
+    # default route, so a vpce- on 0.0.0.0/0 is always the GWLB path).
+    if r.get("VpcEndpointId"):
+        sys.exit(0)
     # A NAT/TGW/peering/appliance default route = real egress for a private ENI.
     for k in ("NatGatewayId", "TransitGatewayId", "VpcPeeringConnectionId",
               "NetworkInterfaceId", "InstanceId", "GatewayId"):
         v = r.get(k)
-        # igw-* = public subnet (no egress for a private ENI); vpce-* = a gateway
-        # endpoint (S3/DynamoDB only, not general internet). Neither counts.
+        # igw-* = public subnet (no egress for a private ENI); vpce-* in GatewayId =
+        # an S3/DynamoDB gateway endpoint (AWS-services-only). Neither counts.
         if v and not str(v).startswith(("igw-", "vpce-")):
             sys.exit(0)   # egress found
 sys.exit(1)               # no usable default route
