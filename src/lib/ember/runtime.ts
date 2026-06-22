@@ -61,9 +61,10 @@ export interface CodingTurnParams {
   resumeSessionId?: string;
   // Flexible git handoff. gitMode: "pushed" (clone + checkout branch), "bundle"
   // (clone cloneUrl, then git-fetch the uploaded bundle to layer the laptop's
-  // commits), or "none" (bare workspace). cloneUrl is the explicit origin (may
-  // be an upstream the account can't push to); resumeBundleKey is the bundle's S3 key.
-  gitMode?: "pushed" | "bundle" | "none";
+  // commits), "selfContained" (no origin — rebuild a standalone repo from a
+  // bundle --all), or "none" (bare workspace). cloneUrl is the explicit origin
+  // (may be an upstream the account can't push to); resumeBundleKey is the bundle's S3 key.
+  gitMode?: "pushed" | "bundle" | "selfContained" | "none";
   cloneUrl?: string;
   resumeBundleKey?: string;
 }
@@ -170,7 +171,7 @@ export async function warmCodingSession(params: {
   branch?: string;
   resumeTranscriptKey?: string;
   resumeSessionId?: string;
-  gitMode?: "pushed" | "bundle" | "none";
+  gitMode?: "pushed" | "bundle" | "selfContained" | "none";
   cloneUrl?: string;
   resumeBundleKey?: string;
   // Materialize the user's config bundle (skills/agents/MCP) as part of warming,

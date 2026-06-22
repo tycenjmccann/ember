@@ -487,6 +487,7 @@ server.setRequestHandler(CallToolRequestSchema, async (req) => {
       message: args.commitMessage,
       preferBundle: args.preferBundle,
       writeArtifacts: async ({ bundle }) => { bundleBytes = bundle; },
+      writeSelfContained: async (bundle) => { bundleBytes = bundle; },
     });
 
     // 3. create the cloud session + presigned upload URLs (transcript always;
@@ -497,7 +498,7 @@ server.setRequestHandler(CallToolRequestSchema, async (req) => {
       body: JSON.stringify({
         repo: handoff.mode === "none" ? undefined : state.remoteRepo,
         cloneUrl: handoff.mode === "none" ? undefined : (handoff as any).cloneUrl,
-        gitMode: handoff.mode, // pushed | bundle | none
+        gitMode: handoff.mode, // pushed | bundle | selfContained | none
         branch: handoff.mode === "none" ? undefined : (handoff as any).branch,
         baseRef: handoff.mode === "bundle" ? (handoff as any).baseRef : undefined,
         wantBundleUpload: Boolean(bundleBytes),
@@ -577,14 +578,32 @@ server.setRequestHandler(CallToolRequestSchema, async (req) => {
         `      The cloud clones ${state.remoteRepo} and applies the bundle on top —`,
         `      your in-flight work is there without pushing to a repo you don't own.`
       );
+    } else if (handoff.mode === "selfContained") {
+      // The no-remote / not-a-repo path: whole repo shipped to Ember's own
+      // workspace (S3 → EFS). No GitHub, nothing left your account.
+      codeLines.push(
+        (handoff as any).initialized
+          ? `Code: no git repo here, so Ember initialized one and shipped the whole`
+          : `Code: no remote set up, so your whole repo shipped to Ember's workspace`,
+        (handoff as any).initialized
+          ? `      workspace to its own cloud workspace (a self-contained git bundle).`
+          : `      as a self-contained git bundle (history + all branches).`,
+        `      It lives in your AWS account only — no GitHub, nothing pushed.`,
+        warmed
+          ? `Workspace: pre-warmed (repo rebuilt + ready) — open and it's instant.`
+          : `Workspace: rebuilds on first open.`,
+        ``,
+        `      Want to push this somewhere later? From the cloud session (or back`,
+        `      here) just \`git remote add origin <url> && git push -u origin ${(handoff as any).branch}\`.`
+      );
     } else {
       // none
       codeLines.push(
         `Code: NOT shipped (${(handoff as any).reason}).`,
         `      The cloud agent resumes the conversation but starts from an empty`,
-        `      workspace. To bring code too: run port from inside a git repo, or`,
-        `      pass repoDir=<path> if your code lives in a subdir of where Claude`,
-        `      Code launched, or add a writable 'origin' remote.`
+        `      workspace. To bring code too: run port from inside a folder with`,
+        `      files, or pass repoDir=<path> if your code lives in a subdir of`,
+        `      where Claude Code launched.`
       );
     }
 

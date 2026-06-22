@@ -15,7 +15,9 @@
  *
  * Git is FLEXIBLE (see the port-session MCP): gitMode is "pushed" (branch on
  * origin), "bundle" (origin read-only → a git bundle the runtime layers on top),
- * or "none" (no repo — conversation resumes in a bare workspace). repo is only
+ * "selfContained" (NO usable remote → a `bundle --all` of the whole repo the
+ * runtime rebuilds standalone, nothing leaves the account), or "none" (truly
+ * empty — conversation resumes in a bare workspace). repo/cloneUrl is only
  * required for pushed/bundle; the transcript ships in every mode.
  *
  * Request:  { gitMode, repo?, cloneUrl?, branch?, baseRef?, wantBundleUpload?,
@@ -24,7 +26,7 @@
  *   - url             = deep link to open on any device
  *   - uploadUrl       = presigned S3 PUT; MCP uploads the .jsonl here
  *   - transcriptKey   = S3 key the runtime will fetch
- *   - bundleUploadUrl = presigned S3 PUT for the git bundle (bundle mode only)
+ *   - bundleUploadUrl = presigned S3 PUT for the git bundle (bundle + selfContained)
  */
 
 import { NextRequest, NextResponse } from "next/server";
@@ -65,14 +67,18 @@ export async function POST(request: NextRequest) {
       return NextResponse.json({ error: "ARTIFACT_BUCKET not configured" }, { status: 503 });
     }
     const body = await request.json().catch(() => ({}));
-    const gitMode: "pushed" | "bundle" | "none" =
-      body.gitMode === "bundle" ? "bundle" : body.gitMode === "none" ? "none" : "pushed";
+    const gitMode: "pushed" | "bundle" | "selfContained" | "none" =
+      body.gitMode === "bundle" ? "bundle"
+      : body.gitMode === "selfContained" ? "selfContained"
+      : body.gitMode === "none" ? "none"
+      : "pushed";
     const repo: string = (body.repo || "").trim();
     const cloneUrl: string | undefined = body.cloneUrl?.trim() || undefined;
     // pushed/bundle need SOMETHING to clone — either owner/name (github) or an
     // explicit cloneUrl (non-github / self-hosted origins where remoteRepo is
-    // undefined). "none" ships the transcript only.
-    if (gitMode !== "none" && !repo && !cloneUrl) {
+    // undefined). selfContained ships a bundle --all instead (no origin); "none"
+    // ships the transcript only.
+    if ((gitMode === "pushed" || gitMode === "bundle") && !repo && !cloneUrl) {
       return NextResponse.json({ error: "repo or cloneUrl is required for gitMode pushed/bundle" }, { status: 400 });
     }
     const claudeSessionId: string = (body.claudeSessionId || "").trim();
@@ -82,7 +88,10 @@ export async function POST(request: NextRequest) {
 
     const cli: EmberCli = body.cli === "codex" ? "codex" : "claude";
     const authMode: EmberAuthMode = body.authMode === "subscription" ? "subscription" : "bedrock";
-    const wantBundleUpload: boolean = Boolean(body.wantBundleUpload) && gitMode === "bundle";
+    // Both bundle (commits-on-top) and selfContained (whole-repo --all) upload a
+    // bundle; the runtime tells them apart by gitMode.
+    const wantBundleUpload: boolean =
+      Boolean(body.wantBundleUpload) && (gitMode === "bundle" || gitMode === "selfContained");
     const branch: string | undefined = body.branch?.trim() || undefined;
     const firstPrompt: string | undefined = body.firstPrompt?.trim() || undefined;
     const titleBase = repo || parseRepoFromUrl(cloneUrl) || "session";
