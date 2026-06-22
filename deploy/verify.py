@@ -68,6 +68,27 @@ def _load_env_local() -> None:
     _load_env_file(os.path.abspath(os.path.join(here, "..", ".env.local")))
 
 
+def _route_is_egress(r: dict) -> bool:
+    """True if a route is a usable 0.0.0.0/0 default route to the internet.
+    Mirrors setup-coding-efs.sh's _subnet_has_egress so the diagnosis accepts the
+    SAME paths the BYO preflight accepts — NAT, transit gateway, VPC peering, an
+    ENI/instance appliance, or a Gateway Load Balancer / firewall VPC endpoint.
+    Rejects igw-* (public subnet — no egress for a private-IP ENI), vpce-* in
+    GatewayId (S3/DynamoDB gateway endpoint), and blackhole (dead target)."""
+    if r.get("DestinationCidrBlock") != "0.0.0.0/0":
+        return False
+    if r.get("State", "active") == "blackhole":
+        return False
+    if r.get("VpcEndpointId"):  # GWLB / firewall endpoint = inspected egress
+        return True
+    for k in ("NatGatewayId", "TransitGatewayId", "VpcPeeringConnectionId",
+              "NetworkInterfaceId", "InstanceId", "GatewayId"):
+        v = r.get(k)
+        if v and not str(v).startswith(("igw-", "vpce-")):
+            return True
+    return False
+
+
 def _runtime_subnets(control, runtime_id: str) -> list[str]:
     try:
         rt = control.get_agent_runtime(agentRuntimeId=runtime_id)
@@ -103,16 +124,15 @@ def _diagnose(region: str, runtime_arn: str, err: str) -> None:
                     {"Name": "vpc-id", "Values": [vpc]},
                     {"Name": "association.main", "Values": ["true"]},
                 ]).get("RouteTables", [])
-            has_nat = any(
-                r.get("DestinationCidrBlock") == "0.0.0.0/0" and r.get("NatGatewayId")
-                for rt in rts for r in rt.get("Routes", [])
+            has_egress = any(
+                _route_is_egress(r) for rt in rts for r in rt.get("Routes", [])
             )
-            if not has_nat:
+            if not has_egress:
                 bad.append(sn)
         byo = os.environ.get("CODING_EGRESS_MODE") == "byo"
         if bad:
-            print("  ✗ NO INTERNET EGRESS — the runtime's subnets have no 0.0.0.0/0", file=sys.stderr)
-            print(f"    route to a NAT gateway: {', '.join(bad)}", file=sys.stderr)
+            print("  ✗ NO INTERNET EGRESS — the runtime's subnets have no usable", file=sys.stderr)
+            print(f"    0.0.0.0/0 route (NAT/transit-gateway/appliance): {', '.join(bad)}", file=sys.stderr)
             print("    AgentCore ENIs get a private IP only, so a public subnet gives", file=sys.stderr)
             print("    NO egress. The microVM can't reach ECR/Bedrock/CloudWatch and", file=sys.stderr)
             print("    fails its health check (this is your 424 + empty log group).", file=sys.stderr)
