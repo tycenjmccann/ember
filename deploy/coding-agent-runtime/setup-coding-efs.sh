@@ -103,10 +103,23 @@ echo "  VPC: $VPC_ID ($VPC_CIDR)"
 
 # ─── Mode select: BYO-EGRESS vs PROVISIONED ───────────────────────────────────
 # Supplying BOTH private subnets = "I own the networking" → BYO mode: create only
-# SG + EFS, never a NAT, never touch route tables. Anything else = provisioned.
+# SG + EFS, never a NAT, never touch route tables. Neither = provisioned.
 # (Recovery from a prior efs.config — for reruns from a fresh shell — happened
 # before VPC resolution above, so CODING_PRIVATE_SUBNET_1/2 are already set if the
 # last run was BYO.)
+#
+# Reject EXACTLY ONE supplied: it's an attempted-BYO typo, not a provisioned run.
+# Falling through to provisioned would seed PRIV_1/2 from the single value and then
+# reassociate THAT customer subnet's route table — a destructive surprise on the
+# path the operator meant to be non-destructive. Both-or-neither, hard fail.
+if { [ -n "${CODING_PRIVATE_SUBNET_1:-}" ] && [ -z "${CODING_PRIVATE_SUBNET_2:-}" ]; } \
+   || { [ -z "${CODING_PRIVATE_SUBNET_1:-}" ] && [ -n "${CODING_PRIVATE_SUBNET_2:-}" ]; }; then
+  echo "ERROR: set BOTH CODING_PRIVATE_SUBNET_1 and CODING_PRIVATE_SUBNET_2 for BYO" >&2
+  echo "       mode (two subnets in distinct AZs — EFS mount targets are per-AZ), or" >&2
+  echo "       set neither to let this script provision subnets + a NAT. Only one was" >&2
+  echo "       given: SUBNET_1='${CODING_PRIVATE_SUBNET_1:-}' SUBNET_2='${CODING_PRIVATE_SUBNET_2:-}'." >&2
+  exit 1
+fi
 if [ -n "${CODING_PRIVATE_SUBNET_1:-}" ] && [ -n "${CODING_PRIVATE_SUBNET_2:-}" ]; then
   EGRESS_MODE="byo"
 else
