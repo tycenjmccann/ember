@@ -124,8 +124,22 @@ fi
 step "6/7  Build web image + deploy App Runner"
 "$ROOT/deploy/apprunner/deploy.sh"
 
-# ─── 7. Done ──────────────────────────────────────────────────────────────────
-step "7/7  Done"
+# ─── 7. Smoke test ────────────────────────────────────────────────────────────
+# Run ONE real coding turn so a broken deploy fails loudly here (with the cause)
+# instead of silently 424-ing on the user's first session. Non-fatal: a cold
+# microVM can exceed this check's patience, and the web tier is already up — but
+# verify.py prints the actual root cause (no egress / Bedrock access / EFS) when
+# it can find one.
+if [ "$SKIP_RUNTIME" -eq 0 ]; then
+  step "7/7  Smoke test (one real turn)"
+  # shellcheck disable=SC1091
+  source "$ROOT/.env.local" 2>/dev/null || true
+  python3 "$ROOT/deploy/verify.py" || \
+    echo "  (smoke test did not pass — see the diagnosis above; the web URL is still live below)"
+fi
+
+# ─── Done ──────────────────────────────────────────────────────────────────────
+step "Done"
 # shellcheck disable=SC1091
 source "$ROOT/.env.local" 2>/dev/null || true
 echo "  Ember is live → ${DEPLOYMENT_URL:-(see App Runner console)}"
