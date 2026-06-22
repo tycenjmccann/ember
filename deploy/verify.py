@@ -68,6 +68,28 @@ def _load_env_local() -> None:
     _load_env_file(os.path.abspath(os.path.join(here, "..", ".env.local")))
 
 
+def _route_is_egress(r: dict) -> bool:
+    """True if a route is a usable 0.0.0.0/0 default route to the internet.
+    Mirrors setup-coding-efs.sh's _subnet_has_egress so the diagnosis accepts the
+    SAME paths the BYO preflight accepts — NAT, transit gateway, an ENI/instance
+    appliance, or a Gateway Load Balancer / firewall VPC endpoint. Rejects igw-*
+    (public subnet — no egress for a private-IP ENI), vpce-* in GatewayId
+    (S3/DynamoDB gateway endpoint), pcx-* (VPC peering has no edge-to-edge routing
+    to another VPC's IGW/NAT), and blackhole (dead target)."""
+    if r.get("DestinationCidrBlock") != "0.0.0.0/0":
+        return False
+    if r.get("State", "active") == "blackhole":
+        return False
+    if r.get("VpcEndpointId"):  # GWLB / firewall endpoint = inspected egress
+        return True
+    for k in ("NatGatewayId", "TransitGatewayId", "NetworkInterfaceId",
+              "InstanceId", "GatewayId"):
+        v = r.get(k)
+        if v and not str(v).startswith(("igw-", "vpce-")):
+            return True
+    return False
+
+
 def _runtime_subnets(control, runtime_id: str) -> list[str]:
     try:
         rt = control.get_agent_runtime(agentRuntimeId=runtime_id)
@@ -103,21 +125,26 @@ def _diagnose(region: str, runtime_arn: str, err: str) -> None:
                     {"Name": "vpc-id", "Values": [vpc]},
                     {"Name": "association.main", "Values": ["true"]},
                 ]).get("RouteTables", [])
-            has_nat = any(
-                r.get("DestinationCidrBlock") == "0.0.0.0/0" and r.get("NatGatewayId")
-                for rt in rts for r in rt.get("Routes", [])
+            has_egress = any(
+                _route_is_egress(r) for rt in rts for r in rt.get("Routes", [])
             )
-            if not has_nat:
+            if not has_egress:
                 bad.append(sn)
+        byo = os.environ.get("CODING_EGRESS_MODE") == "byo"
         if bad:
-            print("  ✗ NO INTERNET EGRESS — the runtime's subnets have no 0.0.0.0/0", file=sys.stderr)
-            print(f"    route to a NAT gateway: {', '.join(bad)}", file=sys.stderr)
+            print("  ✗ NO INTERNET EGRESS — the runtime's subnets have no usable", file=sys.stderr)
+            print(f"    0.0.0.0/0 route (NAT/transit-gateway/appliance): {', '.join(bad)}", file=sys.stderr)
             print("    AgentCore ENIs get a private IP only, so a public subnet gives", file=sys.stderr)
             print("    NO egress. The microVM can't reach ECR/Bedrock/CloudWatch and", file=sys.stderr)
             print("    fails its health check (this is your 424 + empty log group).", file=sys.stderr)
-            # Only point at setup-coding-efs.sh if THIS checkout's copy actually
-            # provisions a NAT — otherwise re-running it just rebuilds the same
-            # public-subnet config and the operator loops on the failure.
+            if byo:
+                print("    BYO mode: these are YOUR subnets — add a 0.0.0.0/0 route to your", file=sys.stderr)
+                print("    NAT/transit-gateway/egress appliance, then re-run deploy.py. (Or", file=sys.stderr)
+                print("    unset CODING_PRIVATE_SUBNET_1/2 to let install provision a NAT.)", file=sys.stderr)
+                return
+            # Provisioned mode: only point at setup-coding-efs.sh if THIS checkout's
+            # copy actually provisions a NAT — otherwise re-running it just rebuilds
+            # the same public-subnet config and the operator loops on the failure.
             here = os.path.dirname(os.path.abspath(__file__))
             efs_script = os.path.join(here, "coding-agent-runtime", "setup-coding-efs.sh")
             provisions_nat = False
@@ -132,6 +159,16 @@ def _diagnose(region: str, runtime_arn: str, err: str) -> None:
             else:
                 print("    Fix: put these subnets in private subnets with a 0.0.0.0/0 route", file=sys.stderr)
                 print("    to a NAT gateway, then re-run deploy.py to repoint the runtime.", file=sys.stderr)
+            return
+        # 424 but the subnets DO have a NAT/egress route → in BYO mode the likely
+        # cause is the egress path itself can't reach github.com/Bedrock (a proxy
+        # allowlist or firewall), not missing routing. Say so rather than fall to
+        # the generic "check the logs" tail.
+        if byo:
+            print("  ✗ HEALTH CHECK FAILED but your subnets DO have an egress route.", file=sys.stderr)
+            print("    Likely your egress path can't reach the endpoints the runtime needs", file=sys.stderr)
+            print("    (Bedrock, ECR, CloudWatch, and github.com for clones). Check that", file=sys.stderr)
+            print("    your NAT/proxy/firewall allows them, then re-run deploy.py.", file=sys.stderr)
             return
 
     # 2. Bedrock model access — turn reaches the CLI but Bedrock refuses.

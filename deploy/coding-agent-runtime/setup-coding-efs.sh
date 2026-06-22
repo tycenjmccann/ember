@@ -13,22 +13,35 @@
 #   "Using a public subnet does not provide internet connectivity ... place it in
 #    private subnets with a route to a NAT Gateway."
 #
-# This script, in the account's DEFAULT VPC (override with CODING_VPC_ID):
-#   - reuses/creates 2 PRIVATE subnets in distinct supported AZs
-#   - reuses/creates a NAT gateway (in a public subnet) + its route table
-#     (0.0.0.0/0 → NAT) and associates the private subnets
-#   - a security group allowing NFS (2049) within itself
-#   - an EFS filesystem (encrypted, elastic) + a mount target per private-subnet AZ
-#   - an EFS access point (POSIX root /workspace, uid/gid 0)
+# Two egress modes, auto-selected by what you supply — no flag:
+#
+#   PROVISIONED (default — nothing set): in the account's DEFAULT VPC (override
+#   with CODING_VPC_ID), this script creates the networking for you:
+#     - 2 PRIVATE subnets in distinct AZs
+#     - a NAT gateway (in a public subnet) + a private route table (0.0.0.0/0 →
+#       NAT), and associates the private subnets to it
+#     - SG (NFS 2049 within itself) + EFS (encrypted, elastic) + mount targets +
+#       access point
+#
+#   BYO-EGRESS (you set CODING_PRIVATE_SUBNET_1 + _2): you bring subnets that
+#   ALREADY have internet egress (a NAT/transit-gateway/proxy default route).
+#   This is the enterprise path: we create ONLY the SG + EFS in your subnets and
+#   NEVER touch your route tables or create a NAT. Non-destructive — nothing in
+#   your VPC is mutated. We verify each supplied subnet has a 0.0.0.0/0 route and
+#   FAIL LOUDLY (rather than deploy a runtime that 424s) if egress is missing.
+#
+#   NOTE: BYO assumes your subnets' egress can reach github.com (Ember clones
+#   repos from GitHub over the public internet — there is no VPC endpoint for
+#   that). A NAT or an egress proxy that allows github.com is required.
 #
 # Idempotent: tags resources with Name=ember-coding-* and reuses them.
 # Writes efs.config (sourced by deploy.py).
 #
 # Overrides (export before running):
 #   CODING_VPC_ID              use a specific VPC instead of the default
-#   CODING_PRIVATE_SUBNET_1/2  use pre-made private subnets (skip auto-carve)
-#   CODING_NAT_SUBNET          public subnet to place the NAT in
-#   CODING_PRIVATE_PREFIX      new-subnet prefix length to carve (default 20)
+#   CODING_PRIVATE_SUBNET_1/2  bring your own subnets (sets BYO-EGRESS mode)
+#   CODING_NAT_SUBNET          (provisioned mode) public subnet to place the NAT
+#   CODING_PRIVATE_PREFIX      (provisioned mode) new-subnet prefix to carve (default 20)
 #
 # Usage:
 #   source deploy/config.sh
@@ -55,6 +68,24 @@ echo "────────────────────────�
 _tag() { aws ec2 create-tags "${R[@]}" --resources "$1" --tags "Key=Name,Value=$2" >/dev/null; }
 _az_of() { aws ec2 describe-subnets "${R[@]}" --subnet-ids "$1" --query "Subnets[0].AvailabilityZone" --output text; }
 
+# ─── 0. Rerun recovery: keep a BYO install BYO across a fresh shell ────────────
+# A prior run records its choice in efs.config. If the operator reruns WITHOUT
+# re-exporting CODING_PRIVATE_SUBNET_1/2, restore them (and the VPC) from that
+# file so an "idempotent" rerun doesn't silently flip to provisioned — which would
+# create a NAT/route table and repoint the runtime off the customer's subnets,
+# breaking the "never touch routing" guarantee. Live env vars still win (export
+# different subnets, or none + delete efs.config, to force a different mode).
+if [ -z "${CODING_PRIVATE_SUBNET_1:-}" ] && [ -z "${CODING_PRIVATE_SUBNET_2:-}" ] \
+   && [ -f "$CONFIG_FILE" ]; then
+  prev_mode=$(sed -n 's/^export CODING_EGRESS_MODE="\(.*\)"$/\1/p' "$CONFIG_FILE")
+  if [ "$prev_mode" = "byo" ]; then
+    CODING_PRIVATE_SUBNET_1=$(sed -n 's/^export CODING_SUBNET_1="\(.*\)"$/\1/p' "$CONFIG_FILE")
+    CODING_PRIVATE_SUBNET_2=$(sed -n 's/^export CODING_SUBNET_2="\(.*\)"$/\1/p' "$CONFIG_FILE")
+    CODING_VPC_ID="${CODING_VPC_ID:-$(sed -n 's/^export CODING_VPC_ID="\(.*\)"$/\1/p' "$CONFIG_FILE")}"
+    echo "  (reusing BYO subnets from prior efs.config — rerun stays BYO)"
+  fi
+fi
+
 # ─── 1. VPC (default unless overridden) ───────────────────────────────────────
 VPC_ID="${CODING_VPC_ID:-}"
 if [ -z "$VPC_ID" ]; then
@@ -70,6 +101,119 @@ VPC_CIDR=$(aws ec2 describe-vpcs "${R[@]}" --vpc-ids "$VPC_ID" \
   --query "Vpcs[0].CidrBlock" --output text)
 echo "  VPC: $VPC_ID ($VPC_CIDR)"
 
+# ─── Mode select: BYO-EGRESS vs PROVISIONED ───────────────────────────────────
+# Supplying BOTH private subnets = "I own the networking" → BYO mode: create only
+# SG + EFS, never a NAT, never touch route tables. Neither = provisioned.
+# (Recovery from a prior efs.config — for reruns from a fresh shell — happened
+# before VPC resolution above, so CODING_PRIVATE_SUBNET_1/2 are already set if the
+# last run was BYO.)
+#
+# Reject EXACTLY ONE supplied: it's an attempted-BYO typo, not a provisioned run.
+# Falling through to provisioned would seed PRIV_1/2 from the single value and then
+# reassociate THAT customer subnet's route table — a destructive surprise on the
+# path the operator meant to be non-destructive. Both-or-neither, hard fail.
+if { [ -n "${CODING_PRIVATE_SUBNET_1:-}" ] && [ -z "${CODING_PRIVATE_SUBNET_2:-}" ]; } \
+   || { [ -z "${CODING_PRIVATE_SUBNET_1:-}" ] && [ -n "${CODING_PRIVATE_SUBNET_2:-}" ]; }; then
+  echo "ERROR: set BOTH CODING_PRIVATE_SUBNET_1 and CODING_PRIVATE_SUBNET_2 for BYO" >&2
+  echo "       mode (two subnets in distinct AZs — EFS mount targets are per-AZ), or" >&2
+  echo "       set neither to let this script provision subnets + a NAT. Only one was" >&2
+  echo "       given: SUBNET_1='${CODING_PRIVATE_SUBNET_1:-}' SUBNET_2='${CODING_PRIVATE_SUBNET_2:-}'." >&2
+  exit 1
+fi
+if [ -n "${CODING_PRIVATE_SUBNET_1:-}" ] && [ -n "${CODING_PRIVATE_SUBNET_2:-}" ]; then
+  EGRESS_MODE="byo"
+else
+  EGRESS_MODE="provisioned"
+fi
+echo "  Egress mode: $EGRESS_MODE"
+
+# The effective route table of a subnet = its explicit association, else the VPC
+# main table. Resolve that ONE table (never OR them — see _subnet_has_igw) and
+# return its Routes JSON so callers can test for any default (0.0.0.0/0) route.
+_effective_routes() {
+  local sn="$1" explicit
+  explicit=$(aws ec2 describe-route-tables "${R[@]}" \
+    --filters "Name=association.subnet-id,Values=$sn" \
+    --query "RouteTables[0].RouteTableId" --output text 2>/dev/null || echo "")
+  if [ -n "$explicit" ] && [ "$explicit" != "None" ]; then
+    aws ec2 describe-route-tables "${R[@]}" --route-table-ids "$explicit" \
+      --query "RouteTables[0].Routes" --output json 2>/dev/null || echo "[]"
+  else
+    aws ec2 describe-route-tables "${R[@]}" \
+      --filters "Name=vpc-id,Values=$VPC_ID" "Name=association.main,Values=true" \
+      --query "RouteTables[0].Routes" --output json 2>/dev/null || echo "[]"
+  fi
+}
+
+# A subnet has internet egress if its effective route table carries a 0.0.0.0/0
+# route to something that actually forwards out: a NAT gateway, transit gateway,
+# ENI/instance appliance (firewall/proxy), or a Gateway Load Balancer / firewall
+# VPC endpoint. An igw-* default = a PUBLIC subnet (rejected — AgentCore ENIs are
+# private-IP-only, so an IGW route gives them no egress).
+_subnet_has_egress() {
+  local sn="$1" routes
+  routes=$(_effective_routes "$sn")
+  python3 - "$routes" <<'PY'
+import json, sys
+routes = json.loads(sys.argv[1] or "[]")
+for r in routes:
+    if r.get("DestinationCidrBlock") != "0.0.0.0/0":
+        continue
+    # A blackhole route's target is gone (deleted NAT/TGW/ENI) — it carries no
+    # traffic, so it must NOT count as egress (else BYO preflight passes on a stale
+    # route and we deploy a runtime with no real egress).
+    if r.get("State", "active") == "blackhole":
+        continue
+    # A 0.0.0.0/0 route to a VPC endpoint is a Gateway Load Balancer / firewall
+    # endpoint = real inspected egress (S3/DynamoDB gateway endpoints never carry a
+    # default route, so a vpce- on 0.0.0.0/0 is always the GWLB path).
+    if r.get("VpcEndpointId"):
+        sys.exit(0)
+    # A NAT/TGW/appliance default route = real egress for a private ENI. NOTE: VPC
+    # peering (pcx-) is deliberately NOT here — peering does not support edge-to-edge
+    # routing to another VPC's IGW/NAT, so a 0.0.0.0/0 → pcx- gives no real internet.
+    for k in ("NatGatewayId", "TransitGatewayId", "NetworkInterfaceId",
+              "InstanceId", "GatewayId"):
+        v = r.get(k)
+        # igw-* = public subnet (no egress for a private ENI); vpce-* in GatewayId =
+        # an S3/DynamoDB gateway endpoint (AWS-services-only). Neither counts.
+        if v and not str(v).startswith(("igw-", "vpce-")):
+            sys.exit(0)   # egress found
+sys.exit(1)               # no usable default route
+PY
+}
+
+# ─── BYO mode: verify egress on the supplied subnets, then skip all NAT/routing ─
+if [ "$EGRESS_MODE" = "byo" ]; then
+  PRIV_1="$CODING_PRIVATE_SUBNET_1"
+  PRIV_2="$CODING_PRIVATE_SUBNET_2"
+  echo "  Using your subnets: $PRIV_1, $PRIV_2 (route tables will NOT be modified)"
+  bad_egress=""
+  for sn in "$PRIV_1" "$PRIV_2"; do
+    # Confirm the subnet exists in this VPC before probing its routes.
+    sn_vpc=$(aws ec2 describe-subnets "${R[@]}" --subnet-ids "$sn" \
+      --query "Subnets[0].VpcId" --output text 2>/dev/null || echo "None")
+    if [ "$sn_vpc" != "$VPC_ID" ]; then
+      echo "ERROR: subnet $sn is not in VPC $VPC_ID (got: $sn_vpc)." >&2
+      echo "       Set CODING_VPC_ID to the subnets' VPC, or fix the subnet ids." >&2
+      exit 1
+    fi
+    if ! _subnet_has_egress "$sn"; then bad_egress="$bad_egress $sn"; fi
+  done
+  if [ -n "$bad_egress" ]; then
+    echo "ERROR: no internet egress on:$bad_egress" >&2
+    echo "       BYO mode needs subnets whose route table has a 0.0.0.0/0 route to a" >&2
+    echo "       NAT gateway, transit gateway, or egress appliance (AgentCore ENIs are" >&2
+    echo "       private-IP-only — a public/IGW subnet gives them NO egress and the" >&2
+    echo "       runtime will 424 on every turn). Fix the routing on these subnets, OR" >&2
+    echo "       unset CODING_PRIVATE_SUBNET_1/2 to let this script provision a NAT." >&2
+    exit 1
+  fi
+  echo "  ✓ egress verified (0.0.0.0/0 default route present on both subnets)"
+  # Skip sections 2/4/5 entirely; jump to SG + EFS.
+fi
+
+if [ "$EGRESS_MODE" = "provisioned" ]; then
 # ─── 2. A public subnet to host the NAT gateway ───────────────────────────────
 # NAT must live in a subnet that ROUTES to an internet gateway. The real
 # definition of "public" is an IGW route in the associated route table — NOT
@@ -257,6 +401,7 @@ for sn in "$PRIV_1" "$PRIV_2"; do
   fi
 done
 echo "  Private route table: $PRIV_RT (0.0.0.0/0 → $NAT_ID)"
+fi  # end provisioned-mode networking (sections 2–5)
 
 # ─── 6. Security group (NFS within itself) ────────────────────────────────────
 SG_ID=$(aws ec2 describe-security-groups "${R[@]}" \
@@ -340,17 +485,26 @@ echo "  AccessPoint: $AP_ARN"
 # CODING_SUBNET_1/2 are the PRIVATE subnets (NAT egress) — this is what the
 # runtime's networkConfiguration must use so its private-IP ENI can reach
 # ECR/Bedrock/CloudWatch.
-cat > "$CONFIG_FILE" <<EOF
-# Generated by setup-coding-efs.sh — sourced by deploy.py. Not committed.
-export CODING_VPC_ID="$VPC_ID"
-export CODING_SUBNET_1="$PRIV_1"
-export CODING_SUBNET_2="$PRIV_2"
-export CODING_SECURITY_GROUP="$SG_ID"
-export CODING_EFS_FILESYSTEM_ID="$FS_ID"
-export CODING_EFS_ACCESS_POINT_ARN="$AP_ARN"
-export CODING_NAT_GATEWAY_ID="$NAT_ID"
-export CODING_PRIVATE_ROUTE_TABLE="$PRIV_RT"
-EOF
+{
+  echo "# Generated by setup-coding-efs.sh — sourced by deploy.py. Not committed."
+  echo "export CODING_EGRESS_MODE=\"$EGRESS_MODE\""
+  echo "export CODING_VPC_ID=\"$VPC_ID\""
+  echo "export CODING_SUBNET_1=\"$PRIV_1\""
+  echo "export CODING_SUBNET_2=\"$PRIV_2\""
+  echo "export CODING_SECURITY_GROUP=\"$SG_ID\""
+  echo "export CODING_EFS_FILESYSTEM_ID=\"$FS_ID\""
+  echo "export CODING_EFS_ACCESS_POINT_ARN=\"$AP_ARN\""
+  # NAT + route table only exist in provisioned mode; in BYO they're the
+  # customer's and we never created them, so leave them out of our config.
+  if [ "$EGRESS_MODE" = "provisioned" ]; then
+    echo "export CODING_NAT_GATEWAY_ID=\"$NAT_ID\""
+    echo "export CODING_PRIVATE_ROUTE_TABLE=\"$PRIV_RT\""
+  fi
+} > "$CONFIG_FILE"
 
 echo ""
-echo "OK VPC + NAT + EFS ready → $CONFIG_FILE"
+if [ "$EGRESS_MODE" = "byo" ]; then
+  echo "OK EFS ready in your VPC (no NAT/routing changes) → $CONFIG_FILE"
+else
+  echo "OK VPC + NAT + EFS ready → $CONFIG_FILE"
+fi

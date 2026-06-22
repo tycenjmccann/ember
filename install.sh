@@ -29,6 +29,16 @@
 #   ARTIFACT_BUCKET       default ember-artifacts-<account>-<region>
 #   GITHUB_PAT            (optional) for private-repo clone/push from the runtime
 #   EXPECTED_ACCOUNT_ID   (optional) refuse to deploy to any other account
+#
+# Networking — two modes (auto-selected, no flag):
+#   PROVISIONED (default): we create private subnets + a NAT + EFS for you.
+#   BYO-EGRESS: bring your own VPC + subnets that ALREADY have internet egress;
+#     we create ONLY the EFS + an NFS security group and NEVER touch your routing.
+#     Set both to enable:
+#       CODING_VPC_ID            your VPC
+#       CODING_PRIVATE_SUBNET_1  a private subnet (0.0.0.0/0 → your NAT/proxy)
+#       CODING_PRIVATE_SUBNET_2  a second, in a different AZ (EFS is per-AZ)
+#     (BYO assumes that egress can reach github.com — Ember clones over HTTPS.)
 
 set -euo pipefail
 
@@ -87,8 +97,13 @@ if [ "$SKIP_RUNTIME" -eq 0 ]; then
   # shellcheck disable=SC1091
   source "$ROOT/deploy/coding-agent-runtime/setup-coding-runtime-role.sh"
 
-  # ─── 4. VPC egress (NAT) + EFS ──────────────────────────────────────────────
-  step "4/7  VPC private subnets + NAT egress + EFS workspace"
+  # ─── 4. VPC egress + EFS ────────────────────────────────────────────────────
+  # BYO-egress when both private subnets are supplied; else we provision NAT.
+  if [ -n "${CODING_PRIVATE_SUBNET_1:-}" ] && [ -n "${CODING_PRIVATE_SUBNET_2:-}" ]; then
+    step "4/7  EFS workspace in your VPC (BYO egress — routing untouched)"
+  else
+    step "4/7  VPC private subnets + NAT egress + EFS workspace"
+  fi
   "$ROOT/deploy/coding-agent-runtime/setup-coding-efs.sh"
 
   # ─── 5. Runtime image + AgentCore runtime ───────────────────────────────────
