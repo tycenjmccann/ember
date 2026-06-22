@@ -58,8 +58,9 @@ npm install
 ```
 
 `install.sh` is idempotent and stands up everything end to end — DynamoDB + S3, the IAM
-execution role, an EFS workspace on your VPC, the AgentCore coding runtime (Claude Code +
-Codex), and a public App Runner URL. It prints the live URL at the end.
+execution role, VPC private subnets with a NAT gateway for runtime egress + an EFS workspace,
+the AgentCore coding runtime (Claude Code + Codex), and a public App Runner URL. It prints
+the live URL at the end.
 
 > **Account guard.** Set `EXPECTED_ACCOUNT_ID` in `.env.local` and the deploy refuses to
 > run against any other account — protection against a wrong profile.
