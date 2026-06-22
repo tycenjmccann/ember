@@ -64,6 +64,11 @@ export async function POST(
         branch: session.branch,
         resumeTranscriptKey: session.resumeTranscriptKey,
         resumeSessionId: session.claudeSessionId,
+        // Flexible git handoff: how the laptop shipped its code (pushed branch,
+        // git bundle on a read-only origin, or none) + the explicit clone URL.
+        gitMode: session.gitMode,
+        cloneUrl: session.cloneUrl,
+        resumeBundleKey: session.resumeBundleKey,
       }
     : {};
 

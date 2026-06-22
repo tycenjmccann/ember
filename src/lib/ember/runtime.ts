@@ -59,6 +59,13 @@ export interface CodingTurnParams {
   branch?: string;
   resumeTranscriptKey?: string;
   resumeSessionId?: string;
+  // Flexible git handoff. gitMode: "pushed" (clone + checkout branch), "bundle"
+  // (clone cloneUrl, then git-fetch the uploaded bundle to layer the laptop's
+  // commits), or "none" (bare workspace). cloneUrl is the explicit origin (may
+  // be an upstream the account can't push to); resumeBundleKey is the bundle's S3 key.
+  gitMode?: "pushed" | "bundle" | "none";
+  cloneUrl?: string;
+  resumeBundleKey?: string;
 }
 
 function buildTurnPayload(params: CodingTurnParams): Record<string, unknown> {
@@ -78,6 +85,9 @@ function buildTurnPayload(params: CodingTurnParams): Record<string, unknown> {
   if (params.branch) payload.branch = params.branch;
   if (params.resumeTranscriptKey) payload.resume_transcript = params.resumeTranscriptKey;
   if (params.resumeSessionId) payload.resume_session_id = params.resumeSessionId;
+  if (params.gitMode) payload.git_mode = params.gitMode;
+  if (params.cloneUrl) payload.clone_url = params.cloneUrl;
+  if (params.resumeBundleKey) payload.resume_bundle = params.resumeBundleKey;
   return payload;
 }
 
@@ -160,6 +170,9 @@ export async function warmCodingSession(params: {
   branch?: string;
   resumeTranscriptKey?: string;
   resumeSessionId?: string;
+  gitMode?: "pushed" | "bundle" | "none";
+  cloneUrl?: string;
+  resumeBundleKey?: string;
   // Materialize the user's config bundle (skills/agents/MCP) as part of warming,
   // so an opened session is hot AND has the user's tools without a chat turn.
   userId?: string;
@@ -178,6 +191,9 @@ export async function warmCodingSession(params: {
   if (params.branch) payload.branch = params.branch;
   if (params.resumeTranscriptKey) payload.resume_transcript = params.resumeTranscriptKey;
   if (params.resumeSessionId) payload.resume_session_id = params.resumeSessionId;
+  if (params.gitMode) payload.git_mode = params.gitMode;
+  if (params.cloneUrl) payload.clone_url = params.cloneUrl;
+  if (params.resumeBundleKey) payload.resume_bundle = params.resumeBundleKey;
   if (params.userId) payload.user_id = params.userId;
   if (params.configVersion) payload.config_version = params.configVersion;
   if (params.authMode) payload.auth_mode = params.authMode;

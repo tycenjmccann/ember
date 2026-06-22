@@ -527,12 +527,19 @@ def _checkpoint_transcript(session_id: str, workdir: str) -> dict:
     return {"key": key, "bytes": len(data), "branch": branch}
 
 
-def _ensure_workspace(repo: str | None, session_id: str | None = None) -> str:
+def _ensure_workspace(repo: str | None, session_id: str | None = None,
+                      clone_url: str | None = None) -> str:
     """Return the working dir for this session. If repo given and not yet cloned,
     clone it under the session's own dir (on EFS, so a re-invoke with the same
-    runtimeSessionId finds it warm — no re-clone)."""
+    runtimeSessionId finds it warm — no re-clone).
+
+    clone_url overrides the URL derived from repo — used by the port handoff so
+    the cloud clones the laptop's exact origin (which may be a public upstream the
+    account has no push rights to; bundle mode then layers the laptop's commits)."""
     base = _session_dir(session_id)
-    if not repo:
+    # A non-github / self-hosted port can ship clone_url WITHOUT an owner/name
+    # repo. Treat clone_url as the clonable target then (slug derived from it).
+    if not repo and not clone_url:
         # A chat resume with no repo just needs a cwd. Tolerate a degraded EFS
         # mount (makedirs can raise FileExistsError when the path exists but isn't
         # a dir) — fall back to any usable existing dir rather than 500 the turn.
@@ -544,24 +551,105 @@ def _ensure_workspace(repo: str | None, session_id: str | None = None) -> str:
             if os.path.isdir(base):
                 return base
             return WORKSPACE_ROOT if os.path.isdir(WORKSPACE_ROOT) else "/tmp"
-    if not _valid_repo(repo):
+    if repo and not _valid_repo(repo):
         raise ValueError(
             f"'{repo}' is not a valid repository. Use 'owner/name' or a full "
             f"clone URL. (A bare owner can't be cloned — leave repo empty and "
             f"ask the agent to 'gh repo list {repo}' instead.)"
         )
-    slug = _slugify_repo(repo)
+    slug = _slugify_repo(repo or clone_url or "default")
     wd = os.path.join(base, slug)
     if os.path.isdir(os.path.join(wd, ".git")):
         logger.info("workspace_warm", extra={"slug": slug})
         return wd
     os.makedirs(base, exist_ok=True)
-    clone_url = repo if repo.startswith(("http://", "https://", "git@")) else f"https://github.com/{repo}.git"
-    logger.info("workspace_cloning", extra={"slug": slug, "url": clone_url.split("@")[-1]})
-    res = subprocess.run(["git", "clone", clone_url, wd], capture_output=True, text=True, timeout=300)
+    url = clone_url or (repo if repo.startswith(("http://", "https://", "git@")) else f"https://github.com/{repo}.git")
+    logger.info("workspace_cloning", extra={"slug": slug, "url": url.split("@")[-1]})
+    res = subprocess.run(["git", "clone", url, wd], capture_output=True, text=True, timeout=300)
     if res.returncode != 0:
         raise RuntimeError(f"git clone failed: {res.stderr.strip()[:400]}")
     return wd
+
+
+def _safe_branch_name(name: str | None) -> str:
+    """A git-legal local branch name. Falls back to a stable default so bundle
+    mode always lands on a NAMED branch (never detached HEAD) — that's what lets
+    pull-home bring cloud commits back via a real branch."""
+    cand = (name or "").strip()
+    if re.fullmatch(r"[A-Za-z0-9._/-]{1,200}", cand) and not cand.startswith("-"):
+        return cand
+    return "ember/ported-work"
+
+
+def _apply_resume_bundle(s3_key: str, workdir: str, session_id: str | None,
+                         branch: str | None = None) -> bool:
+    """Bundle mode: download the laptop's git bundle from S3 and layer its commits
+    onto the freshly-cloned upstream. The bundle holds base..HEAD (the laptop's
+    in-flight commits); we fetch all its refs and check out its tip ON A NAMED
+    BRANCH so the workspace matches the laptop without push access to origin —
+    and so checkpoint/pull-home can return cloud commits on a real branch (a
+    detached HEAD would make pull try origin/HEAD and lose them).
+
+    Idempotent per warm microVM via a marker. Best-effort: a bad/missing bundle
+    leaves the clean clone in place (the agent can still work) rather than failing
+    the turn. Returns True if the bundle's work was checked out."""
+    if not (s3_key and ARTIFACT_BUCKET and os.path.isdir(os.path.join(workdir, ".git"))):
+        return False
+    marker = os.path.join(_session_dir(session_id), ".bundle-applied")
+    try:
+        if os.path.exists(marker):
+            with open(marker) as f:
+                if f.read().strip() == s3_key:
+                    return True  # already applied on this warm VM
+    except OSError:
+        pass
+    try:
+        s3 = boto3.client("s3", region_name=os.environ.get("AWS_REGION", "us-east-1"))
+        obj = s3.get_object(Bucket=ARTIFACT_BUCKET, Key=s3_key)
+        raw = obj["Body"].read()
+    except Exception as exc:  # noqa: BLE001 — missing bundle is non-fatal
+        logger.warning("bundle_fetch_failed", extra={"key": s3_key, "error": str(exc)[:200]})
+        return False
+
+    bundle_path = os.path.join(workdir, ".ember-work.bundle")
+    try:
+        with open(bundle_path, "wb") as f:
+            f.write(raw)
+        # Verify it's a real bundle before fetching (clean error if not).
+        verify = subprocess.run(["git", "bundle", "verify", bundle_path], cwd=workdir,
+                                capture_output=True, text=True, timeout=60)
+        if verify.returncode != 0:
+            logger.warning("bundle_verify_failed", extra={"err": verify.stderr.strip()[:200]})
+            return False
+        # Fetch every ref the bundle carries into a namespace, then check out its tip.
+        fetch = subprocess.run(
+            ["git", "fetch", bundle_path, "+refs/heads/*:refs/remotes/ember-port/*", "HEAD"],
+            cwd=workdir, capture_output=True, text=True, timeout=120)
+        if fetch.returncode != 0:
+            logger.warning("bundle_fetch_refs_failed", extra={"err": fetch.stderr.strip()[:200]})
+            return False
+        # FETCH_HEAD is the bundle's HEAD (the laptop's tip). Land it on a NAMED
+        # branch (-B = create or reset) so the workspace isn't on a detached HEAD —
+        # checkpoint reads a real branch name and pull-home can fast-forward it.
+        local_branch = _safe_branch_name(branch)
+        co = subprocess.run(["git", "checkout", "-B", local_branch, "FETCH_HEAD"], cwd=workdir,
+                            capture_output=True, text=True, timeout=60)
+        if co.returncode != 0:
+            logger.warning("bundle_checkout_failed", extra={"err": co.stderr.strip()[:200]})
+            return False
+        os.makedirs(os.path.dirname(marker), exist_ok=True)
+        with open(marker, "w") as f:
+            f.write(s3_key)
+        logger.info("bundle_applied", extra={"key": s3_key, "branch": local_branch})
+        return True
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("bundle_apply_failed", extra={"error": str(exc)[:200]})
+        return False
+    finally:
+        try:
+            os.remove(bundle_path)
+        except OSError:
+            pass
 
 
 def _checkout_branch(workdir: str, branch: str) -> None:
@@ -865,6 +953,12 @@ async def invocations(request: Request):
     resume_transcript = payload.get("resume_transcript")  # s3 key
     resume_session_id = payload.get("resume_session_id")
     branch = payload.get("branch")  # checkout this branch before the turn
+    # Flexible git handoff (port-session MCP): git_mode is pushed|bundle|none.
+    #   clone_url   — explicit origin to clone (may be an upstream we can't push to)
+    #   resume_bundle — s3 key of a git bundle to layer on top (bundle mode)
+    git_mode = payload.get("git_mode")
+    clone_url = payload.get("clone_url")
+    resume_bundle = payload.get("resume_bundle")
 
     # On resume, recover the repo the conversation was started in (so we land in
     # the same cwd Claude Code scoped the session to) when the caller omits it.
@@ -912,9 +1006,14 @@ async def invocations(request: Request):
     # Workspace setup IS fatal — no workdir, no turn.
     try:
         _configure_git()
-        workdir = _ensure_workspace(repo, session_id)
-        # Land on the ported branch (the laptop pushed its in-flight work there).
-        if branch:
+        workdir = _ensure_workspace(repo, session_id, clone_url=clone_url)
+        # Bundle mode: clone the upstream (above), then layer the laptop's commits
+        # from the uploaded git bundle. Do this BEFORE branch checkout — the bundle
+        # detaches onto the laptop's tip, which is the state we want to resume on.
+        if git_mode == "bundle" and resume_bundle:
+            _apply_resume_bundle(resume_bundle, workdir, session_id, branch=branch)
+        # Land on the ported branch (pushed mode: the laptop's branch on origin).
+        elif branch:
             _checkout_branch(workdir, branch)
         # Install a ported transcript and resume it natively. On success the turn
         # runs as `claude --resume <resume_session_id>` — true continuation.

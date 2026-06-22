@@ -48,6 +48,17 @@ export interface EmberSession {
   // S3 key of the raw laptop transcript (.jsonl). The runtime downloads it and
   // runs `claude --resume claudeSessionId` for a lossless continuation.
   resumeTranscriptKey?: string;
+  // How the laptop handed off its code (port-session MCP):
+  //   "pushed" — branch pushed to origin; the runtime clones + checks it out.
+  //   "bundle" — origin read-only; the runtime clones origin and `git fetch`es a
+  //              bundle (resumeBundleKey) to layer the laptop's commits on top.
+  //   "none"   — no repo shipped; bare workspace, conversation resumes only.
+  gitMode?: "pushed" | "bundle" | "none";
+  // Explicit clone URL (the laptop's origin) — lets the runtime clone an upstream
+  // it has no push rights to. Falls back to `repo` (owner/name) when absent.
+  cloneUrl?: string;
+  // S3 key of a git bundle of the laptop's in-flight commits (gitMode="bundle").
+  resumeBundleKey?: string;
   // Which surface this session opens in (sidebar tap restores it). Set at port
   // time; defaults to chat. A ported terminal session auto-runs `claude --resume`
   // in the PTY instead of firing the chat seed.
