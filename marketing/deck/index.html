@@ -1,0 +1,554 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>ember — keep your session warm</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Bricolage+Grotesque:opsz,wght@12..96,400;12..96,600;12..96,700;12..96,800&family=JetBrains+Mono:wght@400;600&display=swap" rel="stylesheet">
+<style>
+:root{
+  --ember-50:#fff3e6;--ember-100:#ffe1c2;--ember-200:#ffc187;--ember-300:#ff9d4d;
+  --ember-400:#ff7a1a;--ember-500:#ff6a00;--ember-600:#f25c00;--ember-700:#cc4a00;
+  --ember-800:#a23a00;--ember-900:#7a2c00;
+  --night-0:#000000;--night-1:#0e0d0c;--night-2:#1a1816;--night-3:#2a2724;--night-4:#3a3531;
+  --ash:#8a8079;--smoke:#c9c2bb;--bone:#f5efe8;
+  --coal:radial-gradient(circle,#ffd089 0%,#ff7a1a 38%,#ff4d00 70%,#7a2c00 100%);
+  --glow-grad:linear-gradient(180deg,#ffb24d 0%,#ff7a1a 45%,#ff4d00 100%);
+  --bloom:0 0 24px rgba(255,106,0,.4);
+  --btn-glow:0 2px 16px rgba(255,106,0,.35);
+  --font-display:'Bricolage Grotesque',system-ui,sans-serif;
+  --font-body:-apple-system,BlinkMacSystemFont,'SF Pro Text',system-ui,sans-serif;
+  --font-mono:'JetBrains Mono','SF Mono',ui-monospace,monospace;
+}
+*{box-sizing:border-box;margin:0;padding:0}
+html,body{height:100%}
+body{
+  background:var(--night-0);color:var(--bone);font-family:var(--font-body);
+  -webkit-font-smoothing:antialiased;letter-spacing:-.01em;line-height:1.55;overflow:hidden;
+}
+h1,h2,h3{font-family:var(--font-display);letter-spacing:-.03em;line-height:1.04;font-weight:700;overflow-wrap:break-word}
+.ember-text{background:var(--glow-grad);-webkit-background-clip:text;background-clip:text;-webkit-text-fill-color:transparent}
+.mono{font-family:var(--font-mono)}
+
+/* ---------- deck mechanics ---------- */
+.deck{height:100vh;width:100vw;overflow:hidden;position:relative}
+.slide{
+  position:absolute;inset:0;height:100vh;width:100vw;
+  display:flex;flex-direction:column;justify-content:center;
+  padding:6vh 8vw;opacity:0;visibility:hidden;
+  transition:opacity .55s ease;
+  background:radial-gradient(120% 90% at 50% 18%,#15110d 0%,#0a0807 42%,#000 100%);
+}
+.slide.active{opacity:1;visibility:visible;z-index:2}
+.slide-inner{max-width:1180px;width:100%;margin:0 auto;position:relative;z-index:3}
+
+/* ambient glow + sparks per slide */
+.glow-pool{position:absolute;border-radius:50%;filter:blur(70px);pointer-events:none;z-index:1;opacity:.55}
+.gp-a{width:560px;height:560px;background:radial-gradient(circle,rgba(255,106,0,.42),transparent 68%);right:-120px;bottom:-160px}
+.gp-b{width:420px;height:420px;background:radial-gradient(circle,rgba(255,77,0,.30),transparent 70%);left:-120px;top:-120px}
+.sparks{position:absolute;inset:0;overflow:hidden;pointer-events:none;z-index:1}
+.spark{position:absolute;width:3px;height:3px;border-radius:50%;background:#ffb24d;box-shadow:0 0 6px #ff7a1a;opacity:0;animation:rise linear infinite}
+@keyframes rise{0%{opacity:0;transform:translateY(0) scale(1)}12%{opacity:.9}100%{opacity:0;transform:translateY(-340px) translateX(var(--sx,20px)) scale(.3)}}
+
+/* ---------- ember mark ---------- */
+.mark{display:inline-block;vertical-align:middle}
+.breathe{animation:breathe 2.8s ease-in-out infinite;transform-origin:center}
+@keyframes breathe{0%,100%{filter:brightness(1)}50%{filter:brightness(1.22) drop-shadow(0 0 18px rgba(255,106,0,.7))}}
+
+/* ---------- typography helpers ---------- */
+.kicker{font-family:var(--font-mono);font-size:.82rem;letter-spacing:.22em;text-transform:uppercase;color:var(--ember-400);margin-bottom:1.4rem}
+.slide h1{font-size:clamp(2.6rem,6vw,5rem);font-weight:800}
+.slide h2{font-size:clamp(2rem,4.4vw,3.4rem);font-weight:800;margin-bottom:1.6rem}
+.lead{font-size:clamp(1.1rem,1.7vw,1.5rem);color:var(--smoke);max-width:780px;font-weight:400}
+.tagline{font-size:clamp(1.3rem,2.2vw,1.9rem);color:var(--bone);margin-top:1.2rem;font-weight:400}
+.tagline em{font-style:normal;color:var(--ember-400)}
+.muted{color:var(--ash)}
+
+/* layout primitives */
+.grid2{display:grid;grid-template-columns:1fr 1fr;gap:2.4rem;align-items:start}
+.grid3{display:grid;grid-template-columns:repeat(3,1fr);gap:1.6rem}
+.card{background:linear-gradient(180deg,rgba(26,24,22,.9),rgba(14,13,12,.92));border:1px solid var(--night-3);border-radius:18px;padding:1.7rem 1.6rem}
+.card h3{font-size:1.25rem;margin-bottom:.6rem;color:var(--bone)}
+.card p{font-size:1rem;color:var(--smoke);line-height:1.5}
+.card .ic{display:block;margin-bottom:.8rem;color:var(--ember-400);width:26px;height:26px}
+.card .ic svg{width:26px;height:26px;display:block}
+.pill{display:inline-block;font-family:var(--font-mono);font-size:.8rem;color:var(--ember-300);border:1px solid var(--night-4);border-radius:999px;padding:.3rem .8rem;background:rgba(255,106,0,.06)}
+
+ul.checks{list-style:none;display:flex;flex-direction:column;gap:1rem;margin-top:.4rem}
+ul.checks li{font-size:clamp(1.05rem,1.5vw,1.35rem);color:var(--bone);display:flex;gap:.9rem;align-items:flex-start}
+ul.checks li b{color:var(--ember-400);font-weight:700}
+.dot{flex:0 0 auto;width:11px;height:11px;border-radius:50%;background:var(--coal);box-shadow:var(--bloom);margin-top:.5rem}
+
+/* tables */
+table{width:100%;border-collapse:collapse;font-size:clamp(.92rem,1.25vw,1.12rem)}
+th,td{text-align:left;padding:1rem 1.1rem;border-bottom:1px solid var(--night-3);vertical-align:top}
+thead th{font-family:var(--font-mono);font-size:.78rem;letter-spacing:.12em;text-transform:uppercase;color:var(--ash);font-weight:600}
+tbody tr td:first-child{color:var(--smoke)}
+tr.us{background:linear-gradient(90deg,rgba(255,106,0,.14),rgba(255,106,0,.03));}
+tr.us td{color:var(--bone);font-weight:600;border-bottom:1px solid var(--ember-800)}
+tr.us td:first-child{color:var(--ember-400)}
+.yes{color:#ff6a6a;font-weight:600}
+.no{color:#34c759;font-weight:700}
+
+/* warm states row */
+.states{display:flex;gap:1.6rem;flex-wrap:wrap;margin-top:1.2rem}
+.state{flex:1;min-width:220px;background:rgba(14,13,12,.9);border:1px solid var(--night-3);border-radius:16px;padding:1.4rem}
+.state .lbl{font-family:var(--font-mono);font-size:.85rem;letter-spacing:.12em;text-transform:uppercase;display:flex;align-items:center;gap:.6rem;margin-bottom:.6rem}
+.s-warm{width:12px;height:12px;border-radius:50%;background:var(--coal);box-shadow:var(--bloom);animation:breathe 2.6s ease-in-out infinite}
+.s-idle{width:12px;height:12px;border-radius:50%;background:var(--ember-300);opacity:.7}
+.s-cold{width:12px;height:12px;border-radius:50%;background:var(--ash)}
+.state p{color:var(--smoke);font-size:.98rem}
+
+/* cost */
+.bignum{font-family:var(--font-display);font-weight:800;font-size:clamp(3.5rem,9vw,7rem);line-height:.9}
+.bars{display:flex;align-items:flex-end;gap:2rem;height:280px;max-width:440px;margin-top:1rem}
+.bar{flex:1;display:flex;flex-direction:column;justify-content:flex-end;align-items:center;gap:.8rem;height:100%}
+.bar .col{width:90%;border-radius:12px 12px 0 0;position:relative}
+.bar .lbl{font-family:var(--font-mono);font-size:.85rem;color:var(--smoke);text-align:center}
+.bar .val{font-family:var(--font-display);font-weight:800;font-size:1.4rem;color:var(--bone)}
+
+.flow{display:flex;align-items:center;gap:1rem;flex-wrap:wrap;font-family:var(--font-mono);margin-top:1.6rem}
+.flow .node{background:var(--night-2);border:1px solid var(--night-4);border-radius:13px;padding:.9rem 1.2rem;font-size:1rem;color:var(--bone)}
+.flow .node.hot{border-color:var(--ember-600);box-shadow:var(--btn-glow);color:var(--ember-300)}
+.flow .arr{color:var(--ember-500);font-size:1.4rem}
+
+.steps{display:flex;gap:1.2rem;margin-top:1.2rem}
+.step{flex:1;background:rgba(14,13,12,.85);border:1px solid var(--night-3);border-radius:16px;padding:1.5rem;position:relative}
+.step .n{font-family:var(--font-display);font-weight:800;font-size:2.4rem;color:var(--ember-600);line-height:1}
+.step h3{margin:.6rem 0 .5rem;font-size:1.2rem}
+.step p{color:var(--smoke);font-size:.95rem}
+
+.roadmap{display:flex;flex-direction:column;gap:.9rem;margin-top:.6rem}
+.rm{display:flex;gap:1rem;align-items:center;font-size:1.05rem}
+.rm .tag{font-family:var(--font-mono);font-size:.72rem;letter-spacing:.1em;text-transform:uppercase;padding:.3rem .7rem;border-radius:999px;flex:0 0 auto;width:120px;text-align:center}
+.rm .now{background:var(--ember-600);color:#fff}
+.rm .next{background:rgba(255,106,0,.14);color:var(--ember-300);border:1px solid var(--ember-800)}
+.rm .later{background:var(--night-3);color:var(--ash)}
+.rm span.txt{color:var(--smoke)}
+.rm span.txt b{color:var(--bone);font-weight:600}
+
+.ask{display:grid;grid-template-columns:repeat(3,1fr);gap:1.4rem;margin-top:1.6rem}
+.ask .a{background:linear-gradient(180deg,rgba(255,106,0,.10),rgba(14,13,12,.9));border:1px solid var(--ember-800);border-radius:18px;padding:1.6rem}
+.ask .a .big{font-family:var(--font-display);font-weight:800;font-size:2.2rem;color:var(--ember-400)}
+.ask .a p{color:var(--smoke);margin-top:.4rem;font-size:.98rem}
+
+.team{display:grid;grid-template-columns:repeat(2,1fr);gap:1.4rem;margin-top:1.4rem}
+.tmember{background:rgba(14,13,12,.85);border:1px solid var(--night-3);border-radius:18px;padding:1.6rem;display:flex;gap:1.2rem;align-items:center}
+.tmember .av{width:64px;height:64px;border-radius:50%;flex:0 0 auto;background:radial-gradient(circle at 40% 35%,#3a3531,#15110d);border:1px solid var(--night-4)}
+.tmember h3{font-size:1.15rem}.tmember p{color:var(--ash);font-size:.92rem}
+
+/* center slides */
+.slide.center .slide-inner{text-align:center}
+.slide.center .lead{margin:1.4rem auto 0}
+
+/* nav */
+.nav{position:fixed;bottom:22px;left:50%;transform:translateX(-50%);z-index:50;display:flex;align-items:center;gap:14px;font-family:var(--font-mono);font-size:.8rem;color:var(--ash);background:rgba(10,8,7,.6);border:1px solid var(--night-3);border-radius:999px;padding:.5rem .9rem;backdrop-filter:blur(8px)}
+.nav button{background:none;border:0;color:var(--ash);cursor:pointer;font-size:1.1rem;line-height:1;padding:0 4px}
+.nav button:hover{color:var(--ember-400)}
+.nav .count{color:var(--smoke)}
+.progress{position:fixed;top:0;left:0;height:3px;background:var(--glow-grad);z-index:60;transition:width .4s ease;box-shadow:0 0 10px rgba(255,106,0,.6)}
+.footer-tag{position:fixed;bottom:24px;left:36px;z-index:40;font-family:var(--font-mono);font-size:.72rem;letter-spacing:.16em;text-transform:uppercase;color:var(--night-4)}
+.footer-tag .c{color:var(--ember-700)}
+
+/* ---------- responsive ---------- */
+@media (max-width:900px){
+  .slide{padding:5vh 6vw;justify-content:flex-start;overflow-y:auto;overflow-x:hidden}
+  .slide-inner{margin-top:3vh;min-width:0}
+  .grid2,.grid3,.steps,.states,.ask,.team{min-width:0}
+  .grid2{grid-template-columns:1fr;gap:1.4rem}
+  .grid3{grid-template-columns:1fr;gap:1rem}
+  .steps{flex-direction:column;gap:1rem}
+  .states{flex-direction:column;gap:1rem}
+  .ask{grid-template-columns:1fr;gap:1rem}
+  .team{grid-template-columns:1fr;gap:1rem}
+  .card,.step,.state,.a,.tmember{min-width:0;max-width:100%}
+  .card p,.lead,.tagline,.step p,.state p,.rm span.txt{overflow-wrap:break-word;word-break:break-word}
+  .bars{height:220px;max-width:100%}
+  .flow{font-size:.85rem;gap:.6rem}
+  .flow .node{padding:.7rem .9rem;font-size:.85rem}
+  /* wedge table → horizontal scroll instead of clipping */
+  .slide-inner > table{display:block;overflow-x:auto;-webkit-overflow-scrolling:touch}
+  th,td{padding:.7rem .8rem;white-space:nowrap}
+  .footer-tag{display:none}
+  .rm{flex-wrap:wrap}
+  .rm .tag{width:auto}
+}
+@media (max-width:560px){
+  .slide{padding:4.5vh 5vw 12vh}
+  .slide h1{font-size:clamp(2.2rem,11vw,3.4rem)}
+  .slide h2{font-size:clamp(1.6rem,7.5vw,2.4rem)}
+  .lead{font-size:1.02rem}
+  .tagline{font-size:1.15rem}
+  .card{padding:1.2rem 1.1rem}
+  .nav{bottom:14px}
+}
+/* never let a slide clip its content horizontally */
+.slide-inner{max-width:min(1180px,100%)}
+</style>
+</head>
+<body>
+<div class="progress" id="progress"></div>
+<div class="deck" id="deck">
+
+<!-- ============ 1 · TITLE ============ -->
+<section class="slide center active">
+  <div class="glow-pool gp-a" style="right:auto;left:50%;bottom:auto;top:54%;transform:translate(-50%,-50%);width:760px;height:760px;opacity:.7"></div>
+  <div class="sparks" data-sparks="14"></div>
+  <div class="slide-inner">
+    <div class="mark breathe" style="margin-bottom:1.6rem">
+      <svg width="120" height="120" viewBox="0 0 256 256" aria-label="ember mark">
+        <defs>
+          <linearGradient id="t-top" x1="0" y1="0" x2="0" y2="1"><stop offset="0%" stop-color="#4c463f"/><stop offset="55%" stop-color="#312c28"/><stop offset="100%" stop-color="#201c19"/></linearGradient>
+          <linearGradient id="t-face" x1="0" y1="0" x2="0" y2="1"><stop offset="0%" stop-color="#2a2421"/><stop offset="100%" stop-color="#140f0d"/></linearGradient>
+          <radialGradient id="t-cA" cx="50%" cy="40%" r="62%"><stop offset="0%" stop-color="#fff0cf"/><stop offset="26%" stop-color="#ffc15a"/><stop offset="52%" stop-color="#ff7a1a"/><stop offset="78%" stop-color="#ff3300"/><stop offset="100%" stop-color="#7a1c00"/></radialGradient>
+          <radialGradient id="t-cB" cx="50%" cy="40%" r="62%"><stop offset="0%" stop-color="#ffe6a8"/><stop offset="34%" stop-color="#ff9a3a"/><stop offset="66%" stop-color="#ff4d00"/><stop offset="100%" stop-color="#6e1900"/></radialGradient>
+          <radialGradient id="t-bed" cx="50%" cy="45%" r="55%"><stop offset="0%" stop-color="#ff8a2a" stop-opacity="0.9"/><stop offset="45%" stop-color="#ff4d00" stop-opacity="0.42"/><stop offset="100%" stop-color="#ff4d00" stop-opacity="0"/></radialGradient>
+          <radialGradient id="t-end" cx="50%" cy="50%" r="50%"><stop offset="0%" stop-color="#ffb24d"/><stop offset="55%" stop-color="#ff5a00"/><stop offset="100%" stop-color="#8f2000"/></radialGradient>
+        </defs>
+        <ellipse cx="130" cy="196" rx="116" ry="28" fill="url(#t-bed)"/>
+        <path d="M52 86 L190 72 Q214 70 218 90 L220 98 Q222 114 198 117 L60 130 Q46 131 44 113 L42 100 Q41 88 52 86 Z" fill="url(#t-top)"/>
+        <path d="M44 113 Q46 131 60 130 L198 117 Q222 114 222 134 L222 146 Q222 165 200 167 L62 170 Q46 171 44 153 Z" fill="url(#t-face)"/>
+        <ellipse cx="46" cy="134" rx="13" ry="24" fill="#19120e"/>
+        <ellipse cx="46" cy="134" rx="8.5" ry="17" fill="url(#t-end)"/>
+        <ellipse cx="46" cy="131" rx="3.5" ry="7" fill="#fff0cf" opacity="0.8"/>
+        <ellipse cx="92" cy="172" rx="26" ry="20" fill="url(#t-cA)"/>
+        <ellipse cx="138" cy="176" rx="30" ry="22" fill="url(#t-cB)"/>
+        <ellipse cx="182" cy="170" rx="24" ry="18" fill="url(#t-cA)"/>
+        <ellipse cx="114" cy="160" rx="20" ry="15" fill="url(#t-cB)"/>
+        <ellipse cx="160" cy="158" rx="19" ry="14" fill="url(#t-cA)"/>
+        <ellipse cx="70" cy="162" rx="16" ry="12" fill="url(#t-cB)"/>
+        <circle cx="138" cy="170" r="5" fill="#fff0cf" opacity="0.85"/>
+      </svg>
+    </div>
+    <h1 style="font-size:clamp(3.4rem,9vw,7rem);font-weight:800">ember</h1>
+    <p class="tagline">Keep your session <em>warm.</em></p>
+    <p class="lead">Coding agents — Claude Code &amp; Codex — running in <b style="color:var(--bone)">your</b> cloud. Not ours.</p>
+    <p class="muted mono" style="margin-top:2.4rem;font-size:.85rem;letter-spacing:.18em">OPEN-CORE · SELF-HOST + ENTERPRISE · INVESTOR DECK 2026</p>
+  </div>
+</section>
+
+<!-- ============ 2 · PROBLEM ============ -->
+<section class="slide">
+  <div class="glow-pool gp-b"></div>
+  <div class="slide-inner">
+    <p class="kicker">The problem</p>
+    <h2>Every coding agent runs on <span class="ember-text">someone else's</span> cloud.</h2>
+    <div class="grid3" style="margin-top:.6rem">
+      <div class="card"><span class="ic"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M6.5 18a4.5 4.5 0 0 1 0-9 6 6 0 0 1 11.6 1.7A3.8 3.8 0 0 1 17.5 18Z"/></svg></span><h3>Their infrastructure</h3><p>Claude Code on the web and OpenAI Codex run on vendor-managed servers. Your repo is checked out on a machine you don't control.</p></div>
+      <div class="card"><span class="ic"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><rect x="4.5" y="10.5" width="15" height="10" rx="2"/><path d="M8 10.5V7.5a4 4 0 0 1 8 0v3"/></svg></span><h3>Their model, locked</h3><p>One vendor, one model family. No Bedrock, no in-VPC inference, no choice for your compliance team.</p></div>
+      <div class="card"><span class="ic"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="8.5"/><path d="M6 6l12 12"/></svg></span><h3>Security says no</h3><p>"Our proprietary code can't leave the building." The agent is brilliant — and dead on arrival in the security review.</p></div>
+    </div>
+    <p class="lead" style="margin-top:2rem">The capability is real. The <b style="color:var(--bone)">deployment posture</b> is the blocker.</p>
+  </div>
+</section>
+
+<!-- ============ 3 · WHY NOW ============ -->
+<section class="slide">
+  <div class="glow-pool gp-a"></div>
+  <div class="sparks" data-sparks="8"></div>
+  <div class="slide-inner">
+    <p class="kicker">Why now</p>
+    <h2>The category got validated — then <span class="ember-text">locked down.</span></h2>
+    <div class="grid2" style="margin-top:.4rem">
+      <div>
+        <ul class="checks">
+          <li><span class="dot"></span><span><b>Jun 2026:</b> OpenAI acquired Gitpod / Ona — cloud coding agents are now a strategic land-grab.</span></li>
+          <li><span class="dot"></span><span>Anthropic ships Claude Code on the web — on <b>Anthropic-managed</b> infrastructure.</span></li>
+          <li><span class="dot"></span><span>Both proved demand. Both kept it on <b>their</b> cloud, on <b>their</b> model.</span></li>
+        </ul>
+      </div>
+      <div class="card" style="align-self:center;background:linear-gradient(180deg,rgba(255,106,0,.12),rgba(14,13,12,.92));border-color:var(--ember-800)">
+        <p class="mono" style="color:var(--ember-300);font-size:.85rem;letter-spacing:.12em;margin-bottom:.9rem">THE QUESTION EVERY PLATFORM TEAM IS NOW ASKING</p>
+        <p style="font-size:clamp(1.3rem,2.2vw,1.9rem);color:var(--bone);font-family:var(--font-display);font-weight:700;line-height:1.25">"Can it run in <span class="ember-text">our VPC</span>, on <span class="ember-text">our bill</span>, on the model our compliance team approved?"</p>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- ============ 4 · PRODUCT ============ -->
+<section class="slide">
+  <div class="glow-pool gp-a"></div>
+  <div class="slide-inner">
+    <p class="kicker">The product</p>
+    <h2>Claude Code + Codex on the web — <span class="ember-text">in your AWS account.</span></h2>
+    <p class="lead">Hand it a repo and a task. It clones, codes, builds, and opens a PR — server-side, on a warm per-session micro-VM. Close the laptop; resume from any device.</p>
+    <div class="grid3" style="margin-top:1.8rem">
+      <div class="card"><span class="ic"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M13 3c.5 3-1.5 4.5-2.8 6C8.5 11 7.5 13 8 15a4 4 0 0 0 8 0c0-2-1.3-3.4-1.3-5.5C16.8 11 18 13 18 15a6 6 0 0 1-12 0c0-4 3.5-6 4-9 .3-1.6 1-2.4 1-3Z"/></svg></span><h3>Warm micro-VMs</h3><p>Per-session Bedrock AgentCore runtime with a persistent EFS workspace. Resumable; never cold.</p></div>
+      <div class="card"><span class="ic"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M3 7h6l3 5 3-5h3M18 4l3 3-3 3M3 17h6l3-5M18 14l3 3-3 3h-3"/></svg></span><h3>Model-agnostic</h3><p>Claude <i>and</i> Codex, switchable per session. BYO plan or Bedrock pay-per-token, in-VPC.</p></div>
+      <div class="card"><span class="ic"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><rect x="7" y="3" width="10" height="18" rx="2.2"/><path d="M11 18h2"/></svg></span><h3>Any device</h3><p>Live web terminal over presigned wss://. Port a laptop session up; pull the grown session home.</p></div>
+    </div>
+    <div class="flow">
+      <span class="node">laptop · Claude Code / Codex</span>
+      <span class="arr">──port──▶</span>
+      <span class="node hot">ember · AgentCore micro-VM · your account</span>
+      <span class="arr">──pull──▶</span>
+      <span class="node">laptop</span>
+    </div>
+  </div>
+</section>
+
+<!-- ============ 5 · THE WEDGE ============ -->
+<section class="slide">
+  <div class="glow-pool gp-b"></div>
+  <div class="slide-inner">
+    <p class="kicker">The wedge</p>
+    <h2>Your code. Your keys. Your bill. Your model.<br><span class="ember-text">Nothing leaves your account.</span></h2>
+    <table style="margin-top:1.4rem">
+      <thead><tr><th>Offering</th><th>Where the agent runs</th><th>Model</th><th>Code leaves your account?</th></tr></thead>
+      <tbody>
+        <tr><td>Claude Code on the web</td><td>Anthropic-managed cloud</td><td>Claude only</td><td class="yes">Yes</td></tr>
+        <tr><td>OpenAI Codex + Ona / Gitpod</td><td>OpenAI-managed cloud</td><td>OpenAI only</td><td class="yes">Yes</td></tr>
+        <tr class="us"><td>ember</td><td>Your AWS account</td><td>Claude + Codex + Bedrock</td><td class="no">No</td></tr>
+      </tbody>
+    </table>
+  </div>
+</section>
+
+<!-- ============ 6 · KEEP YOUR SESSION WARM ============ -->
+<section class="slide">
+  <div class="glow-pool gp-a" style="right:50%;transform:translateX(50%);bottom:-220px;width:720px;height:720px;opacity:.5"></div>
+  <div class="sparks" data-sparks="12"></div>
+  <div class="slide-inner">
+    <p class="kicker">The feeling</p>
+    <h2>Close the laptop. <span class="ember-text">It's still burning.</span></h2>
+    <p class="lead">A banked fire doesn't go out when you walk away. Neither does your session. Warm / idle / cold isn't a metaphor — it's the actual mechanic.</p>
+    <div class="states">
+      <div class="state"><div class="lbl"><span class="s-warm"></span> warm</div><p>Active micro-VM, holding heat. Reopen on any device and it flares back instantly — same workspace, same context, still running.</p></div>
+      <div class="state"><div class="lbl"><span class="s-idle"></span> idle</div><p>Coals dimming. Paused but resumable; infra cost drifts toward zero while it waits for you.</p></div>
+      <div class="state"><div class="lbl"><span class="s-cold"></span> cold</div><p>Gone out — by choice. Tear it down; the EFS checkout and transcript persist for next time.</p></div>
+    </div>
+    <p class="tagline" style="margin-top:1.6rem">Fire a task. Go to the beach bonfire. <em>The build keeps going while you don't.</em></p>
+  </div>
+</section>
+
+<!-- ============ 7 · COST MODEL ============ -->
+<section class="slide">
+  <div class="glow-pool gp-b"></div>
+  <div class="slide-inner">
+    <p class="kicker">The cost model</p>
+    <h2>BYO plan = <span class="ember-text">$0 marginal LLM.</span> Infra is a rounding error.</h2>
+    <div class="grid2" style="margin-top:1rem;align-items:center">
+      <div>
+        <div class="bars">
+          <div class="bar">
+            <div class="val">$2–20<span class="muted" style="font-size:.8rem">/heavy session</span></div>
+            <div class="col" style="height:78%;background:var(--glow-grad)"></div>
+            <div class="lbl">Bedrock<br>pay-per-token</div>
+          </div>
+          <div class="bar">
+            <div class="val ember-text">$0</div>
+            <div class="col" style="height:3%;background:var(--night-4)"></div>
+            <div class="lbl">Bring your own<br>Claude / ChatGPT plan</div>
+          </div>
+        </div>
+      </div>
+      <div>
+        <ul class="checks">
+          <li><span class="dot"></span><span>The LLM is <b>~95% of total cost</b> — and <b>$0 marginal</b> if you connect a plan you already pay for.</span></li>
+          <li><span class="dot"></span><span>App Runner pauses to ~$0; AgentCore charges only active session-hours; DynamoDB + S3 are <b>cents</b>.</span></li>
+          <li><span class="dot"></span><span>Bedrock pay-per-token stays in-VPC for compliance-restricted repos.</span></li>
+          <li><span class="dot"></span><span class="mono" style="font-size:.95rem;color:var(--ember-300)">live calculator ships at /cost</span></li>
+        </ul>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- ============ 8 · BUSINESS MODEL ============ -->
+<section class="slide">
+  <div class="glow-pool gp-a"></div>
+  <div class="slide-inner">
+    <p class="kicker">Business model</p>
+    <h2>Open-core. MIT lights the fire; <span class="ember-text">enterprise pays to keep it lit.</span></h2>
+    <div class="grid2" style="margin-top:1rem">
+      <div class="card">
+        <span class="pill">MIT core · free</span>
+        <h3 style="margin-top:.9rem">Top of funnel</h3>
+        <p>Self-host build runs in your account in an afternoon. It's the proof — and the distribution. Anyone with an AWS account can stand it up. Developers adopt; champions form inside the org.</p>
+      </div>
+      <div class="card" style="border-color:var(--ember-800);background:linear-gradient(180deg,rgba(255,106,0,.10),rgba(14,13,12,.92))">
+        <span class="pill" style="color:#fff;background:var(--ember-600);border-color:var(--ember-600)">Enterprise · paid</span>
+        <h3 style="margin-top:.9rem">The monetized layer</h3>
+        <p>SSO, VPC/PrivateLink, per-user secret isolation, audit export, admin console, support SLA. Sold per-seat or via AWS Marketplace for procurement-friendly co-sell.</p>
+      </div>
+    </div>
+    <p class="lead" style="margin-top:1.8rem">The <b style="color:var(--bone)">GitLab / Supabase playbook</b> — open core wins the bottoms-up adoption, the enterprise tier closes the security review.</p>
+  </div>
+</section>
+
+<!-- ============ 9 · ENTERPRISE FEATURES ============ -->
+<section class="slide">
+  <div class="glow-pool gp-b"></div>
+  <div class="slide-inner">
+    <p class="kicker">Enterprise tier</p>
+    <h2>What closes the <span class="ember-text">security review.</span></h2>
+    <div class="grid3" style="margin-top:.6rem">
+      <div class="card"><span class="ic"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><circle cx="8" cy="8" r="4.5"/><path d="M11 11l8 8M16 16l2-2M19 19l1.5-1.5"/></svg></span><h3>SSO &amp; multi-tenant</h3><p>Cognito or SAML/OIDC federation to Okta, Entra, Google. Real <span class="mono">sub</span> stamped on every session, config, and secret.</p></div>
+      <div class="card"><span class="ic"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M12 3l7 3v5c0 4.5-3 8-7 10-4-2-7-5.5-7-10V6Z"/></svg></span><h3>VPC / PrivateLink</h3><p>App Runner behind a VPC connector; DynamoDB, S3, Bedrock reached over VPC endpoints. Nothing transits the public internet.</p></div>
+      <div class="card"><span class="ic"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><circle cx="7" cy="9" r="4"/><path d="M9.8 11.5 19 20.7M15 16.7l2-2M18 19.7l1.7-1.7"/></svg></span><h3>Per-user secrets</h3><p>Secrets Manager + per-user KMS grants; ABAC on the <span class="mono">userId</span> tag. Short-lived scoped GitHub App tokens, not a shared PAT.</p></div>
+      <div class="card"><span class="ic"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M6 3h9l4 4v14H6Z"/><path d="M14 3v5h5M9 12h6M9 16h6"/></svg></span><h3>Immutable audit</h3><p>Every turn, shell command, file write, model + token count → write-once store the customer owns. CloudTrail data events on the artifact bucket.</p></div>
+      <div class="card"><span class="ic"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="8.5"/><path d="M12 7v10M9.5 9.3c0-1.1 1.1-1.8 2.5-1.8s2.5.7 2.5 1.8-1.1 1.6-2.5 1.9-2.5.8-2.5 1.9 1.1 1.8 2.5 1.8 2.5-.7 2.5-1.8"/></svg></span><h3>Cost governance</h3><p>Per-user / per-team budget caps and quotas. Pause or downgrade the model when exceeded.</p></div>
+      <div class="card"><span class="ic"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M4 7h10M18 7h2M4 17h2M10 17h10"/><circle cx="16" cy="7" r="2.2"/><circle cx="8" cy="17" r="2.2"/></svg></span><h3>Admin console</h3><p>Org dashboard: users, active sessions, spend, audit search. Repo &amp; model allowlists; SSO group → permission mapping.</p></div>
+    </div>
+  </div>
+</section>
+
+<!-- ============ 10 · MARKET ============ -->
+<section class="slide">
+  <div class="glow-pool gp-a"></div>
+  <div class="slide-inner">
+    <p class="kicker">Market · who's asking</p>
+    <h2>Security &amp; platform teams at <span class="ember-text">50–500-person</span> eng orgs.</h2>
+    <p class="lead">Big enough to have a security review and a compliance bar; small enough to move without a year-long procurement cycle. Already on AWS. Already paying for Claude / ChatGPT seats.</p>
+    <div class="grid3" style="margin-top:1.8rem">
+      <div class="card"><h3 style="color:var(--ember-400)">Maya</h3><p class="mono" style="color:var(--ash);font-size:.8rem;letter-spacing:.1em;margin-bottom:.5rem">THE MAKER</p><p>Indie dev on a Claude Max plan. "I have to babysit the terminal — I can't step away." Ember: fire a task, close the lid, live your day.</p></div>
+      <div class="card"><h3 style="color:var(--ember-400)">Dev</h3><p class="mono" style="color:var(--ash);font-size:.8rem;letter-spacing:.1em;margin-bottom:.5rem">THE STAFF ENG</p><p>Senior eng at a growing co. "Security won't let our code touch a vendor cloud." Ember: runs in your VPC, your bill, logs in your CloudWatch.</p></div>
+      <div class="card"><h3 style="color:var(--ember-400)">Priya</h3><p class="mono" style="color:var(--ash);font-size:.8rem;letter-spacing:.1em;margin-bottom:.5rem">THE PLATFORM LEAD</p><p>Owns eng platform + security. "Post-Ona, leadership wants agentic coding without the data-exfil risk." Ember: self-host the core, buy the tier.</p></div>
+    </div>
+  </div>
+</section>
+
+<!-- ============ 11 · GO TO MARKET ============ -->
+<section class="slide">
+  <div class="glow-pool gp-b"></div>
+  <div class="slide-inner">
+    <p class="kicker">Go to market</p>
+    <h2>Land with the open core. Expand <span class="ember-text">pilot → department → org.</span></h2>
+    <div class="steps">
+      <div class="step">
+        <div class="n">1</div><h3>Pilot</h3>
+        <p>Single team, private deploy. SSO + VPC isolation — the demo that closes a security review. Champion already adopted the MIT core.</p>
+        <span class="pill" style="margin-top:1rem">auth · network isolation</span>
+      </div>
+      <div class="step">
+        <div class="n">2</div><h3>Department</h3>
+        <p>Per-user secret isolation + audit export. Compliance signs off; spend rolls onto a team budget.</p>
+        <span class="pill" style="margin-top:1rem">secrets · audit</span>
+      </div>
+      <div class="step">
+        <div class="n">3</div><h3>Org-wide</h3>
+        <p>Budgets, quotas, admin console. AWS Marketplace listing → procurement-friendly purchasing &amp; co-sell motion with AWS.</p>
+        <span class="pill" style="margin-top:1rem">governance · marketplace</span>
+      </div>
+    </div>
+    <p class="lead" style="margin-top:1.8rem">Bottoms-up adoption funds the enterprise conversation — no cold outbound required.</p>
+  </div>
+</section>
+
+<!-- ============ 12 · TRACTION / ROADMAP / ASK ============ -->
+<section class="slide">
+  <div class="glow-pool gp-a"></div>
+  <div class="sparks" data-sparks="8"></div>
+  <div class="slide-inner">
+    <p class="kicker">Traction · roadmap · ask</p>
+    <h2>Shipping today. <span class="ember-text">Hardening toward the paid tier.</span></h2>
+    <div class="roadmap">
+      <div class="rm"><span class="tag now">Shipping</span><span class="txt"><b>One-command self-host</b> — micro-VM runtime, BYO-plan or Bedrock, live terminal, laptop⇄cloud port/pull MCP.</span></div>
+      <div class="rm"><span class="tag next">Next</span><span class="txt"><b>Pilot tier</b> — SSO + VPC/PrivateLink isolation. The security-review demo.</span></div>
+      <div class="rm"><span class="tag next">Next</span><span class="txt"><b>Department tier</b> — per-user secret isolation + immutable audit export.</span></div>
+      <div class="rm"><span class="tag later">Later</span><span class="txt"><b>Org tier</b> — budgets, admin console, AWS Marketplace co-sell.</span></div>
+    </div>
+    <div class="ask">
+      <div class="a"><div class="big">[ Seed ]</div><p>Raising to convert the open-source momentum into the enterprise tier and a Marketplace listing.</p></div>
+      <div class="a"><div class="big">[ # ]</div><p>Placeholder: self-host installs, GitHub stars, design-partner pilots.</p></div>
+      <div class="a"><div class="big">[ Use ]</div><p>Eng hires for auth + isolation, AWS co-sell motion, design-partner success.</p></div>
+    </div>
+  </div>
+</section>
+
+<!-- ============ 13 · TEAM ============ -->
+<section class="slide">
+  <div class="glow-pool gp-b"></div>
+  <div class="slide-inner">
+    <p class="kicker">Team</p>
+    <h2>Built by people who <span class="ember-text">live in the terminal.</span></h2>
+    <div class="team">
+      <div class="tmember"><div class="av"></div><div><h3>[ Founder name ]</h3><p>Placeholder — background, prior exits / scale, why this team for this problem.</p></div></div>
+      <div class="tmember"><div class="av"></div><div><h3>[ Co-founder / eng ]</h3><p>Placeholder — AWS / platform / security depth; open-source track record.</p></div></div>
+      <div class="tmember"><div class="av"></div><div><h3>[ Advisor ]</h3><p>Placeholder — enterprise GTM / dev-tools distribution.</p></div></div>
+      <div class="tmember"><div class="av"></div><div><h3>[ Advisor ]</h3><p>Placeholder — AWS Marketplace / co-sell relationships.</p></div></div>
+    </div>
+  </div>
+</section>
+
+<!-- ============ 14 · CLOSING CTA ============ -->
+<section class="slide center">
+  <div class="glow-pool gp-a" style="right:auto;left:50%;bottom:auto;top:50%;transform:translate(-50%,-50%);width:820px;height:820px;opacity:.65"></div>
+  <div class="sparks" data-sparks="16"></div>
+  <div class="slide-inner">
+    <div class="mark breathe" style="margin-bottom:1.4rem">
+      <svg width="92" height="92" viewBox="0 0 256 256" aria-label="ember mark">
+        <defs>
+          <radialGradient id="c-cA" cx="50%" cy="40%" r="62%"><stop offset="0%" stop-color="#fff0cf"/><stop offset="26%" stop-color="#ffc15a"/><stop offset="52%" stop-color="#ff7a1a"/><stop offset="78%" stop-color="#ff3300"/><stop offset="100%" stop-color="#7a1c00"/></radialGradient>
+          <radialGradient id="c-cB" cx="50%" cy="40%" r="62%"><stop offset="0%" stop-color="#ffe6a8"/><stop offset="34%" stop-color="#ff9a3a"/><stop offset="66%" stop-color="#ff4d00"/><stop offset="100%" stop-color="#6e1900"/></radialGradient>
+          <radialGradient id="c-bed" cx="50%" cy="45%" r="55%"><stop offset="0%" stop-color="#ff8a2a" stop-opacity="0.9"/><stop offset="45%" stop-color="#ff4d00" stop-opacity="0.42"/><stop offset="100%" stop-color="#ff4d00" stop-opacity="0"/></radialGradient>
+        </defs>
+        <ellipse cx="130" cy="196" rx="116" ry="28" fill="url(#c-bed)"/>
+        <ellipse cx="92" cy="172" rx="26" ry="20" fill="url(#c-cA)"/>
+        <ellipse cx="138" cy="176" rx="30" ry="22" fill="url(#c-cB)"/>
+        <ellipse cx="182" cy="170" rx="24" ry="18" fill="url(#c-cA)"/>
+        <ellipse cx="114" cy="160" rx="20" ry="15" fill="url(#c-cB)"/>
+        <ellipse cx="160" cy="158" rx="19" ry="14" fill="url(#c-cA)"/>
+        <ellipse cx="70" cy="162" rx="16" ry="12" fill="url(#c-cB)"/>
+        <circle cx="138" cy="170" r="5" fill="#fff0cf" opacity="0.85"/>
+      </svg>
+    </div>
+    <h1 style="font-size:clamp(2.8rem,7vw,6rem)">Keep your session <span class="ember-text">warm.</span></h1>
+    <p class="lead" style="margin-top:1.4rem">Coding agents in your own cloud. Your code, your keys, your bill, your model — nothing leaves your account.</p>
+    <p class="mono" style="margin-top:2.4rem;color:var(--ember-400);font-size:1rem;letter-spacing:.04em">git clone · ./install.sh · go outside</p>
+  </div>
+</section>
+
+</div>
+
+<!-- nav -->
+<div class="nav">
+  <button id="prev" aria-label="previous">◀</button>
+  <span class="count"><span id="cur">1</span> / <span id="total">14</span></span>
+  <button id="next" aria-label="next">▶</button>
+</div>
+<div class="footer-tag">ember <span class="c">·</span> keep your session warm</div>
+
+<script>
+const slides=[...document.querySelectorAll('.slide')];
+let i=0;
+const cur=document.getElementById('cur'),tot=document.getElementById('total'),prog=document.getElementById('progress');
+tot.textContent=slides.length;
+function show(n){
+  i=Math.max(0,Math.min(slides.length-1,n));
+  slides.forEach((s,k)=>s.classList.toggle('active',k===i));
+  cur.textContent=i+1;
+  prog.style.width=((i+1)/slides.length*100)+'%';
+}
+function nextS(){show(i+1);setHash()} function prevS(){show(i-1);setHash()}
+function setHash(){history.replaceState(null,'','#'+(i+1))}
+function fromHash(){const n=parseInt(location.hash.slice(1),10);if(n>=1&&n<=slides.length)show(n-1)}
+addEventListener('hashchange',fromHash);
+document.getElementById('next').onclick=nextS;
+document.getElementById('prev').onclick=prevS;
+addEventListener('keydown',e=>{
+  if(['ArrowRight','PageDown',' '].includes(e.key)){e.preventDefault();nextS()}
+  else if(['ArrowLeft','PageUp'].includes(e.key)){e.preventDefault();prevS()}
+  else if(e.key==='Home'){show(0)} else if(e.key==='End'){show(slides.length-1)}
+});
+// click right/left half to advance (presenter friendly)
+addEventListener('click',e=>{ if(e.target.closest('.nav'))return; e.clientX>innerWidth*0.5?nextS():prevS(); });
+// build sparks
+document.querySelectorAll('[data-sparks]').forEach(c=>{
+  const n=+c.dataset.sparks;
+  for(let s=0;s<n;s++){
+    const sp=document.createElement('span');sp.className='spark';
+    sp.style.left=(Math.random()*100)+'%';
+    sp.style.bottom=(Math.random()*30)+'%';
+    sp.style.setProperty('--sx',(Math.random()*60-30)+'px');
+    sp.style.animationDuration=(3+Math.random()*4)+'s';
+    sp.style.animationDelay=(Math.random()*5)+'s';
+    c.appendChild(sp);
+  }
+});
+if(location.hash)fromHash();else show(0);
+</script>
+</body>
+</html>

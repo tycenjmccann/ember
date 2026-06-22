@@ -42,8 +42,9 @@ marketing/brand/logo/final_v2/_layers/
 marketing/brand/logo/gen_sheets*.py
 marketing/brand/logo/*.pbm
 
-# marketing workspace (internal — not part of the OSS package)
-marketing/
+# NOTE (private fork only): the public repo ignores all of marketing/.
+# Here we TRACK marketing/ (brand, site, deck, launch) but keep secrets +
+# scratch ignored via the rules above. Do not push this fork to the public remote.
 
 # Python
 __pycache__/
