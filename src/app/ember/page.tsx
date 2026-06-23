@@ -1,7 +1,7 @@
 "use client";
 
 import { useState, useEffect, useCallback, useRef } from "react";
-import { Plus, Cloud, ArrowUp, Trash2, GitBranch, MessageSquare, TerminalSquare, Settings, Upload, Check, ChevronDown, ChevronLeft, X, KeyRound, Server, UserCircle } from "lucide-react";
+import { Plus, Cloud, ArrowUp, Square, Trash2, GitBranch, MessageSquare, TerminalSquare, Settings, Upload, Check, ChevronDown, ChevronLeft, X, KeyRound, Server, UserCircle } from "lucide-react";
 import dynamic from "next/dynamic";
 import { sseData } from "@/lib/sse";
 import { MarkdownRenderer } from "@/components/ember/MarkdownRenderer";
@@ -31,6 +31,12 @@ export default function EmberPage() {
   const [active, setActive] = useState<EmberSession | null>(null);
   const [draft, setDraft] = useState("");
   const [sending, setSending] = useState(false);
+  const [stopping, setStopping] = useState(false);
+  // Aborts the in-flight turn's fetch/stream on Stop; the ref lets the Stop
+  // button reach the live controller. `stoppedRef` marks an abort as deliberate
+  // so the stream-drop recovery path (for mobile backgrounding) is skipped.
+  const turnAbort = useRef<AbortController | null>(null);
+  const stoppedRef = useRef(false);
   const [showNew, setShowNew] = useState(false);
   const [showConfig, setShowConfig] = useState(false);
   const [showAccount, setShowAccount] = useState(false);
@@ -188,6 +194,9 @@ export default function EmberPage() {
     // before the turn began (502/config error, buffered Codex error), which must
     // surface as before rather than spin in "Reconnecting…" forever.
     let streamStarted = false;
+    const abort = new AbortController();
+    turnAbort.current = abort;
+    stoppedRef.current = false;
     try {
       const canStream = active.cli === "claude";
       const res = await fetch(
@@ -196,6 +205,7 @@ export default function EmberPage() {
           method: "POST",
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify(displayAs ? { prompt, displayPrompt: displayAs } : { prompt }),
+          signal: abort.signal,
         }
       );
 
@@ -226,7 +236,29 @@ export default function EmberPage() {
         fetchSessions();
       }
     } catch (err) {
-      if (streamStarted) {
+      if (stoppedRef.current) {
+        // Deliberate Stop (Ctrl-C) — NOT a dropped stream. The server killed the
+        // turn; any partial work is on disk and the conversation resumes on the
+        // next message. Close out the in-flight bubble and prompt for redirection
+        // instead of running the mobile-drop recovery.
+        setActive((s) => {
+          if (!s) return s;
+          const turns = s.turns.slice();
+          const last = turns[turns.length - 1];
+          const note = "⏹ Stopped. What should Claude do instead?";
+          if (last?.role === "agent") {
+            turns[turns.length - 1] = {
+              role: "agent",
+              text: last.text ? `${last.text}\n\n${note}` : note,
+              at: last.at,
+            };
+          } else {
+            turns.push({ role: "agent", text: note, at: new Date().toISOString() });
+          }
+          return { ...s, turns };
+        });
+        fetchSessions();
+      } else if (streamStarted) {
         // The stream dropped after starting — most often a phone backgrounding/
         // locking mid-turn. The server keeps running the turn and persists the
         // reply regardless, so don't strand a dead "Network Error" bubble: try to
@@ -249,8 +281,28 @@ export default function EmberPage() {
         );
       }
     } finally {
+      turnAbort.current = null;
       setSending(false);
       requestAnimationFrame(() => inputRef.current?.focus());
+    }
+  };
+
+  // Stop a running turn — the chat "Ctrl-C". Abort the client stream AND tell the
+  // server to halt the headless CLI (StopRuntimeSession), which also kicks off a
+  // background re-warm so the next message lands on a hot VM. Partial work stays
+  // on disk; the conversation resumes on the next turn.
+  const stopTurn = async () => {
+    if (!active || !sending || stopping) return;
+    setStopping(true);
+    stoppedRef.current = true;
+    const sid = active.sessionId;
+    try {
+      // Fire the server stop first (kills the CLI + starts the re-warm), then
+      // abort the local stream so the loop above falls into the stopped branch.
+      await fetch(`/api/ember/sessions/${sid}/stop`, { method: "POST" }).catch(() => {});
+    } finally {
+      turnAbort.current?.abort();
+      setStopping(false);
     }
   };
 
@@ -578,12 +630,22 @@ export default function EmberPage() {
                     className="flex-1 bg-transparent resize-none outline-none text-[16px] leading-6 py-1.5 max-h-[140px] placeholder:text-[var(--color-text-muted)]"
                   />
                 </div>
-                {/* Mic when the composer is empty, send when there's something to send.
-                    Dictation streams straight into `draft` for review before sending. */}
-                {draft.trim() && !voiceActive ? (
+                {/* While a turn runs: a Stop button (chat Ctrl-C) replaces send/mic.
+                    Otherwise mic when the composer is empty, send when there's text. */}
+                {sending ? (
+                  <button
+                    onClick={stopTurn}
+                    disabled={stopping}
+                    data-testid="cc-stop"
+                    className="press-sm w-[34px] h-[34px] mb-0.5 rounded-full text-white flex items-center justify-center transition-all flex-shrink-0 disabled:opacity-50"
+                    style={{ background: "var(--ios-red)" }}
+                    aria-label="Stop"
+                  >
+                    <Square className="w-3.5 h-3.5" strokeWidth={0} fill="currentColor" />
+                  </button>
+                ) : draft.trim() && !voiceActive ? (
                   <button
                     onClick={send}
-                    disabled={sending}
                     data-testid="cc-send"
                     className="press-sm w-[34px] h-[34px] mb-0.5 rounded-full text-white flex items-center justify-center transition-all flex-shrink-0 disabled:opacity-40"
                     style={{ background: "var(--ios-blue)" }}
@@ -593,7 +655,6 @@ export default function EmberPage() {
                   </button>
                 ) : (
                   <VoiceButton
-                    disabled={sending}
                     onText={(t) => setDraft(t)}
                     onError={(m) => setToast(m)}
                     onActiveChange={setVoiceActive}
