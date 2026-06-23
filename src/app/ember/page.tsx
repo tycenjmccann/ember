@@ -47,8 +47,10 @@ export default function EmberPage() {
 
   // Set while a turn's stream dropped before its reply was recovered (mobile
   // background/lock). The server finishes + persists the turn regardless; we
-  // re-sync from it on the next visibility/focus until the reply lands.
+  // re-sync from it while the tab is visible until the reply lands. Bumping
+  // recoverNonce (re-)arms the polling effect even when the tab never lost focus.
   const pendingRecover = useRef<{ sid: string; baseCount: number } | null>(null);
+  const [recoverNonce, setRecoverNonce] = useState(0);
 
   const fetchSessions = useCallback(async () => {
     const res = await fetch("/api/ember/sessions");
@@ -181,6 +183,11 @@ export default function EmberPage() {
     setActive((s) =>
       s ? { ...s, turns: [...s.turns, { role: "user", text: displayAs ?? prompt, at: new Date().toISOString() }] } : s
     );
+    // True only once the SSE body started arriving — distinguishes a recoverable
+    // mid-stream drop (the turn is running server-side) from a real failure
+    // before the turn began (502/config error, buffered Codex error), which must
+    // surface as before rather than spin in "Reconnecting…" forever.
+    let streamStarted = false;
     try {
       const canStream = active.cli === "claude";
       const res = await fetch(
@@ -193,6 +200,7 @@ export default function EmberPage() {
       );
 
       if (canStream && res.body && res.headers.get("content-type")?.includes("event-stream")) {
+        streamStarted = true;
         setActive((s) =>
           s ? { ...s, turns: [...s.turns, { role: "agent", text: "", at: new Date().toISOString() }] } : s
         );
@@ -217,17 +225,28 @@ export default function EmberPage() {
         setActive(data.session);
         fetchSessions();
       }
-    } catch {
-      // The stream dropped (most often a phone backgrounding/locking mid-turn).
-      // The server keeps running the turn and persists the reply regardless, so
-      // don't strand a dead "Network Error" bubble: try to recover the finished
-      // reply now, and if it isn't written yet, arm a re-sync on the next
-      // focus/visibility instead of showing a hard failure.
-      const recovered = await recoverActiveTurn(sid, baseCount);
-      if (!recovered) {
-        pendingRecover.current = { sid, baseCount };
-        flash("Reconnecting — your reply is still coming.");
-        fetchSessions();
+    } catch (err) {
+      if (streamStarted) {
+        // The stream dropped after starting — most often a phone backgrounding/
+        // locking mid-turn. The server keeps running the turn and persists the
+        // reply regardless, so don't strand a dead "Network Error" bubble: try to
+        // recover the finished reply now, and if it isn't written yet, arm a
+        // re-sync (recoverNonce) that polls while the tab is visible.
+        const recovered = await recoverActiveTurn(sid, baseCount);
+        if (!recovered) {
+          pendingRecover.current = { sid, baseCount };
+          setRecoverNonce((n) => n + 1);
+          flash("Reconnecting — your reply is still coming.");
+          fetchSessions();
+        }
+      } else {
+        // Failed before the turn ran (config/502/Codex error). Surface it.
+        flash((err as Error).message);
+        setActive((s) =>
+          s
+            ? { ...s, turns: [...s.turns, { role: "agent", text: `⚠ ${(err as Error).message}`, at: new Date().toISOString() }] }
+            : s
+        );
       }
     } finally {
       setSending(false);
@@ -235,25 +254,46 @@ export default function EmberPage() {
     }
   };
 
-  // Re-sync a dropped turn when the tab comes back (mobile reopen / refocus).
-  // Retries until the server-side reply is persisted, then clears the flag.
+  // Re-sync a dropped turn. Two triggers: tab refocus/visibility (mobile reopen)
+  // AND a poll while the tab is already visible — the drop can happen with the
+  // tab in the foreground (or focus fires before the fetch rejects), so we can't
+  // wait on a future focus event. Re-armed by recoverNonce; gives up after a
+  // bounded window so a turn that truly never persists doesn't poll forever.
   useEffect(() => {
-    const attempt = async () => {
-      const p = pendingRecover.current;
-      if (!p || document.visibilityState !== "visible") return;
-      if (await recoverActiveTurn(p.sid, p.baseCount)) {
-        pendingRecover.current = null;
-        fetchSessions();
-      }
-    };
-    document.addEventListener("visibilitychange", attempt);
-    window.addEventListener("focus", attempt);
-    attempt();
-    return () => {
+    if (!pendingRecover.current) return;
+    let stopped = false;
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    const deadline = Date.now() + 10 * 60_000; // match the runtime's ~max turn
+
+    const finish = () => {
+      stopped = true;
+      if (timer) clearTimeout(timer);
       document.removeEventListener("visibilitychange", attempt);
       window.removeEventListener("focus", attempt);
     };
-  }, [recoverActiveTurn, fetchSessions]);
+
+    async function attempt() {
+      const p = pendingRecover.current;
+      if (stopped || !p) return finish();
+      if (document.visibilityState !== "visible") return; // resume on next focus
+      if (await recoverActiveTurn(p.sid, p.baseCount)) {
+        pendingRecover.current = null;
+        fetchSessions();
+        return finish();
+      }
+      if (Date.now() > deadline) {
+        pendingRecover.current = null;
+        flash("Couldn't reconnect — reopen the session to see the latest.");
+        return finish();
+      }
+      timer = setTimeout(attempt, 4000);
+    }
+
+    document.addEventListener("visibilitychange", attempt);
+    window.addEventListener("focus", attempt);
+    attempt();
+    return finish;
+  }, [recoverNonce, recoverActiveTurn, fetchSessions]);
 
   const remove = async (id: string) => {
     await fetch(`/api/ember/sessions/${id}`, { method: "DELETE" });
