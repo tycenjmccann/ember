@@ -42,10 +42,14 @@ export default function ShellTerminal({
   const [err, setErr] = useState<string | null>(null);
   // Resume should fire exactly once per attach, even if onopen re-runs.
   const resumedRef = useRef(false);
-  // Live socket + terminal refs so the mobile key-bar (rendered below) can send
+  // Live socket + terminal refs so the key accessory bar (below) can send
   // control bytes and re-focus the TUI after a tap.
   const wsRef = useRef<WebSocket | null>(null);
   const termRef = useRef<Terminal | null>(null);
+  // Accessory bar collapse toggle (persisted so it stays how the user left it).
+  const [keysOpen, setKeysOpen] = useState(true);
+  // Held-key auto-repeat (hold an arrow to scroll a long TUI menu).
+  const repeatRef = useRef<ReturnType<typeof setInterval> | null>(null);
 
   useEffect(() => {
     let ws: WebSocket | null = null;
@@ -180,8 +184,24 @@ export default function ShellTerminal({
       term?.dispose();
       wsRef.current = null;
       termRef.current = null;
+      if (repeatRef.current) clearInterval(repeatRef.current);
     };
   }, [sessionId]);
+
+  // Restore the bar's open/closed preference.
+  useEffect(() => {
+    if (typeof window === "undefined") return;
+    const saved = window.localStorage.getItem("ember.shellKeys");
+    if (saved != null) setKeysOpen(saved === "1");
+  }, []);
+  const toggleKeys = () => {
+    setKeysOpen((v) => {
+      const next = !v;
+      try { window.localStorage.setItem("ember.shellKeys", next ? "1" : "0"); } catch { /* private mode */ }
+      return next;
+    });
+    termRef.current?.focus();
+  };
 
   // Send raw bytes to the PTY, then return focus to the terminal so the soft
   // keyboard stays attached to it (tapping a button blurs xterm otherwise).
@@ -190,19 +210,31 @@ export default function ShellTerminal({
     if (ws?.readyState === WebSocket.OPEN) ws.send(encodeStdin(seq));
     termRef.current?.focus();
   };
+  // Press: fire once, then auto-repeat while held (arrows/backspace only).
+  const startKey = (seq: string, repeat?: boolean) => {
+    sendKey(seq);
+    if (!repeat) return;
+    if (repeatRef.current) clearInterval(repeatRef.current);
+    repeatRef.current = setInterval(() => sendKey(seq), 110);
+  };
+  const stopKey = () => {
+    if (repeatRef.current) { clearInterval(repeatRef.current); repeatRef.current = null; }
+  };
 
   // Keys a phone soft-keyboard can't produce but Claude Code's TUI prompts need
   // (↑/↓ to move a selection, Enter to confirm, Esc to cancel, Tab, Ctrl-C).
-  // ESC sequences are the standard xterm input codes.
-  const KEYS: { label: string; seq: string; wide?: boolean }[] = [
-    { label: "Esc", seq: "\x1b" },
-    { label: "Tab", seq: "\t" },
-    { label: "↑", seq: "\x1b[A" },
-    { label: "↓", seq: "\x1b[B" },
-    { label: "←", seq: "\x1b[D" },
-    { label: "→", seq: "\x1b[C" },
-    { label: "⏎ Enter", seq: "\r", wide: true },
-    { label: "Ctrl-C", seq: "\x03" },
+  // ESC sequences are the standard xterm input codes. `repeat` = hold-to-repeat;
+  // `accent` = primary key (Enter) gets the accent fill.
+  type Key = { label: string; seq: string; repeat?: boolean; accent?: boolean; wide?: boolean };
+  const KEYS: Key[] = [
+    { label: "esc", seq: "\x1b" },
+    { label: "tab", seq: "\t" },
+    { label: "⌃C", seq: "\x03" },
+    { label: "←", seq: "\x1b[D", repeat: true },
+    { label: "↓", seq: "\x1b[B", repeat: true },
+    { label: "↑", seq: "\x1b[A", repeat: true },
+    { label: "→", seq: "\x1b[C", repeat: true },
+    { label: "return", seq: "\r", accent: true, wide: true },
   ];
 
   return (
@@ -233,24 +265,66 @@ export default function ShellTerminal({
         onClick={() => termRef.current?.focus()}
         className="flex-1 min-h-0 p-2 bg-[#0b0f17] overscroll-contain"
       />
-      {/* Mobile key-bar: the keys a phone soft-keyboard lacks but Claude Code's
-          TUI prompts (theme/permission menus) require. Tappable on every device;
-          it's the only way to answer a ↑/↓ + Enter prompt on a touchscreen.
-          onPointerDown + preventDefault keeps focus on the terminal (no blur,
-          keyboard stays up). */}
-      <div className="flex gap-1 px-2 py-1.5 border-t border-[var(--color-border)] bg-[var(--color-bg-secondary)] overflow-x-auto">
-        {KEYS.map((k) => (
-          <button
-            key={k.label}
-            onPointerDown={(e) => { e.preventDefault(); sendKey(k.seq); }}
-            className={`shrink-0 px-2.5 py-1.5 rounded-md text-[12px] font-medium select-none
-              bg-[var(--color-surface-2)] text-[var(--color-text-primary)] active:bg-[var(--color-surface-3)]
-              border border-[var(--color-border)] ${k.wide ? "px-4" : ""}`}
-          >
-            {k.label}
-          </button>
-        ))}
-      </div>
+      {/* Key accessory bar — styled to read as an extension of the soft keyboard:
+          it sits flush above it (keyboard-gray fill, raised key-caps with the
+          subtle bottom shadow iOS keys have). It supplies the keys a phone
+          keyboard lacks but Claude Code's TUI prompts need, and it's the only way
+          to answer a ↑/↓ + Enter menu on a touchscreen.
+
+          onPointerDown + preventDefault keeps focus on the terminal (no blur, the
+          keyboard stays up). Arrows hold-to-repeat. Collapsible via the chevron,
+          preference persisted. Hidden entirely until the socket is live. */}
+      {status === "connected" && (
+        <div
+          className="border-t border-black/40 bg-[#2c2c2e] select-none"
+          style={{ paddingBottom: "env(safe-area-inset-bottom)" }}
+        >
+          {keysOpen ? (
+            <div className="flex items-stretch gap-1.5 px-2 py-2">
+              <div className="flex flex-1 items-stretch gap-1.5 overflow-x-auto">
+                {KEYS.map((k) => (
+                  <button
+                    key={k.label}
+                    onPointerDown={(e) => { e.preventDefault(); startKey(k.seq, k.repeat); }}
+                    onPointerUp={stopKey}
+                    onPointerLeave={stopKey}
+                    onPointerCancel={stopKey}
+                    aria-label={k.label}
+                    className={`shrink-0 min-w-[2.6rem] h-9 px-2 grid place-items-center rounded-[7px]
+                      text-[15px] leading-none font-medium tracking-tight
+                      shadow-[0_1px_0_rgba(0,0,0,0.5)] active:translate-y-px active:shadow-none
+                      transition-[transform,background-color] duration-75
+                      ${k.wide ? "flex-1 min-w-[5rem]" : ""}
+                      ${k.accent
+                        ? "bg-[#0a84ff] text-white active:bg-[#0a6fd6]"
+                        : "bg-[#5b5b60] text-white active:bg-[#48484c]"}`}
+                  >
+                    {k.label}
+                  </button>
+                ))}
+              </div>
+              <button
+                onPointerDown={(e) => { e.preventDefault(); toggleKeys(); }}
+                aria-label="Hide key bar"
+                className="shrink-0 w-9 h-9 grid place-items-center rounded-[7px]
+                  bg-[#3a3a3c] text-white/70 shadow-[0_1px_0_rgba(0,0,0,0.5)]
+                  active:translate-y-px active:shadow-none"
+              >
+                <span className="text-[13px]">⌄</span>
+              </button>
+            </div>
+          ) : (
+            <button
+              onPointerDown={(e) => { e.preventDefault(); toggleKeys(); }}
+              aria-label="Show key bar"
+              className="w-full flex items-center justify-center gap-1.5 py-1.5
+                text-[11px] text-white/55 active:text-white/80"
+            >
+              <span className="text-[13px]">⌃</span> keys
+            </button>
+          )}
+        </div>
+      )}
     </div>
   );
 }
