@@ -101,12 +101,27 @@ export default function ShellTerminal({
           if (resumeSessionId && !resumedRef.current) {
             resumedRef.current = true;
             const safeSid = sessionId.replace(/[^A-Za-z0-9._-]/g, "-");
+            // Sanitize the resume id before it enters a shell command (it's a
+            // cc-/uuid id from session data — keep only id-legal chars).
+            const safeResume = resumeSessionId.replace(/[^A-Za-z0-9._-]/g, "");
             const cd = `cd "$WORKSPACE_ROOT/sessions/${safeSid}"/* 2>/dev/null || cd "$WORKSPACE_ROOT"`;
-            const resume = `claude --resume ${resumeSessionId}`;
-            // Send cd + resume as one line; the agent opens in the TUI.
+            // WAIT for the ported transcript to land on disk before resuming. The
+            // runtime installs it during warm; on a big clone that can outlast the
+            // /shell warm await (server keeps working after our HTTP wait gives up),
+            // so firing `claude --resume` blindly could hit "conversation not
+            // found". Poll by id across project slugs (the slug is the resolved
+            // cwd, unknown here) for up to ~90s — a real terminal-side wait, not a
+            // fixed timeout treated as ready. Falls through after the bound so a
+            // genuinely failed setup still drops the user into a usable shell.
+            const waitForTranscript =
+              `for i in $(seq 1 90); do ` +
+              `ls "$CLAUDE_CONFIG_DIR"/projects/*/"${safeResume}.jsonl" >/dev/null 2>&1 && break; ` +
+              `sleep 1; done`;
+            const resume = `claude --resume ${safeResume}`;
+            // Send cd + wait + resume as one line; the agent opens in the TUI.
             setTimeout(() => {
               if (ws?.readyState !== WebSocket.OPEN) return;
-              ws.send(encodeStdin(`${cd} && ${resume}\n`));
+              ws.send(encodeStdin(`${cd} && ${waitForTranscript} && ${resume}\n`));
               // The first-prompt seed is typed ONCE (it's a long nudge). Tell the
               // parent so it persists a clear — reopening re-runs `claude --resume`
               // above (idempotent) but never re-types this seed (which would stack
