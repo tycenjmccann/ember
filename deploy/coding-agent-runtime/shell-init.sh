@@ -49,6 +49,29 @@ else
 fi
 mkdir -p "$CLAUDE_CONFIG_DIR" 2>/dev/null || true
 
+# Pre-answer Claude Code's first-run prompts (theme picker / trust dialog) so a
+# Terminal session never blocks on a TUI menu that's unanswerable on a mobile
+# soft-keyboard. The server's _seed_claude_first_run() does the same on the
+# /invocations path, but a DEFAULT Bedrock session opened straight in Terminal
+# never hits /invocations first — so we seed here too (idempotent, merge-safe).
+if [ ! -f "$CLAUDE_CONFIG_DIR/.first-run-seeded" ]; then
+  EMBER_CLAUDE_THEME="${EMBER_CLAUDE_THEME:-dark}" \
+  CLAUDE_CONFIG_DIR="$CLAUDE_CONFIG_DIR" python3 - <<'PY' 2>/dev/null && \
+    touch "$CLAUDE_CONFIG_DIR/.first-run-seeded" 2>/dev/null || true
+import json, os
+d = os.environ["CLAUDE_CONFIG_DIR"]; p = os.path.join(d, ".claude.json")
+try:
+    doc = json.load(open(p))
+    if not isinstance(doc, dict): doc = {}
+except Exception:
+    doc = {}
+doc.setdefault("theme", os.environ.get("EMBER_CLAUDE_THEME", "dark"))
+doc["hasCompletedOnboarding"] = True
+doc["bypassPermissionsModeAccepted"] = True
+json.dump(doc, open(p, "w"), indent=2)
+PY
+fi
+
 # ── Codex → Bedrock Mantle (default) OR the user's ChatGPT plan ──
 export BEDROCK_MANTLE_REGION="${BEDROCK_MANTLE_REGION:-us-east-2}"
 export CODEX_HOME="${CODEX_HOME:-$WORKSPACE_ROOT/.codex}"
