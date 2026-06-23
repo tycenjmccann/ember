@@ -172,6 +172,55 @@ def _apply_default_mcp() -> None:
     logger.info("default_mcp_applied", extra={"gateway": MCP_GATEWAY_NAME})
 
 
+def _seed_claude_first_run(workdir: str | None = None) -> None:
+    """Pre-answer Claude Code's first-run interactive prompts so a fresh microVM
+    never blocks on them — critical for the Terminal tab, where the TUI's
+    theme picker / trust dialog would otherwise stall with no way to answer on
+    mobile (no arrow keys / Enter on a soft keyboard).
+
+    Writes the gate keys Claude checks on launch into $CLAUDE_CONFIG_DIR/.claude.json
+    (global UI state, NOT settings.json):
+      - hasCompletedOnboarding   → skips the welcome + theme picker
+      - theme                    → the theme the picker would have asked for
+      - bypassPermissionsModeAccepted → don't prompt about skip-permissions mode
+    and, when the workspace dir is known, the per-project trust gate so the
+    'do you trust the files in this folder?' prompt is pre-accepted.
+
+    Merge-preserving + idempotent: we only set our keys, keep everything else.
+    Best-effort — a write failure must never fail a turn."""
+    theme = os.environ.get("EMBER_CLAUDE_THEME", "dark")
+    try:
+        os.makedirs(CLAUDE_CONFIG_DIR, exist_ok=True)
+        path = os.path.join(CLAUDE_CONFIG_DIR, ".claude.json")
+        try:
+            with open(path) as f:
+                doc = json.load(f)
+        except (OSError, json.JSONDecodeError):
+            doc = {}
+        if not isinstance(doc, dict):
+            doc = {}
+        doc.setdefault("theme", theme)
+        doc["hasCompletedOnboarding"] = True
+        doc["bypassPermissionsModeAccepted"] = True
+        if workdir:
+            # Trust is keyed by the resolved cwd Claude launches in (same rule as
+            # the transcript project slug). Pre-accept it for the ported workspace.
+            proj = doc.get("projects")
+            if not isinstance(proj, dict):
+                proj = {}
+            real = os.path.realpath(workdir)
+            entry = proj.get(real) if isinstance(proj.get(real), dict) else {}
+            entry["hasTrustDialogAccepted"] = True
+            entry["hasCompletedProjectOnboarding"] = True
+            proj[real] = entry
+            doc["projects"] = proj
+        with open(path, "w") as f:
+            json.dump(doc, f, indent=2)
+        logger.info("claude_first_run_seeded", extra={"theme": theme, "scoped": bool(workdir)})
+    except OSError as exc:
+        logger.warning("claude_first_run_seed_failed", extra={"error": str(exc)[:200]})
+
+
 # ─── Per-user config bundle ───────────────────────────────────────────────────
 
 
@@ -1048,6 +1097,11 @@ async def invocations(request: Request):
     try:
         _apply_config_bundle(user_id, config_version)
         _apply_default_mcp()
+        # Pre-answer Claude's first-run prompts (theme picker / trust dialog) so a
+        # Terminal session doesn't stall on a TUI prompt that's unanswerable on
+        # mobile. Runs on every code path that readies a VM (prepare/warm/turn).
+        if cli == "claude":
+            _seed_claude_first_run()
     except Exception as exc:  # noqa: BLE001 — config is non-fatal
         config_ok = False
         config_err = str(exc)[:300]
@@ -1099,6 +1153,11 @@ async def invocations(request: Request):
             # Land on the ported branch (pushed mode: the laptop's branch on origin).
             elif branch:
                 _checkout_branch(workdir, branch)
+        # Now that the workspace dir is known, pre-accept its trust prompt too
+        # (the global seed above can't know the cwd yet). A Terminal `claude
+        # --resume` then lands straight in the repo with no trust dialog.
+        if cli == "claude":
+            _seed_claude_first_run(workdir)
         # Install a ported transcript and resume it natively. On success the turn
         # runs as `claude --resume <resume_session_id>` — true continuation.
         if cli == "claude" and resume_transcript and resume_session_id:

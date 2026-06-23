@@ -42,6 +42,10 @@ export default function ShellTerminal({
   const [err, setErr] = useState<string | null>(null);
   // Resume should fire exactly once per attach, even if onopen re-runs.
   const resumedRef = useRef(false);
+  // Live socket + terminal refs so the mobile key-bar (rendered below) can send
+  // control bytes and re-focus the TUI after a tap.
+  const wsRef = useRef<WebSocket | null>(null);
+  const termRef = useRef<Terminal | null>(null);
 
   useEffect(() => {
     let ws: WebSocket | null = null;
@@ -59,6 +63,7 @@ export default function ShellTerminal({
       theme: { background: "#0b0f17", foreground: "#e2e8f0" },
     });
     term = term0;
+    termRef.current = term0;
     fit = new FitAddon();
     term0.loadAddon(fit);
     if (hostRef.current) {
@@ -84,6 +89,7 @@ export default function ShellTerminal({
 
         ws = new WebSocket(data.url);
         ws.binaryType = "arraybuffer";
+        wsRef.current = ws;
 
         ws.onopen = () => {
           setStatus("connected");
@@ -172,8 +178,32 @@ export default function ShellTerminal({
       if (heartbeat) clearInterval(heartbeat);
       ws?.close();
       term?.dispose();
+      wsRef.current = null;
+      termRef.current = null;
     };
   }, [sessionId]);
+
+  // Send raw bytes to the PTY, then return focus to the terminal so the soft
+  // keyboard stays attached to it (tapping a button blurs xterm otherwise).
+  const sendKey = (seq: string) => {
+    const ws = wsRef.current;
+    if (ws?.readyState === WebSocket.OPEN) ws.send(encodeStdin(seq));
+    termRef.current?.focus();
+  };
+
+  // Keys a phone soft-keyboard can't produce but Claude Code's TUI prompts need
+  // (↑/↓ to move a selection, Enter to confirm, Esc to cancel, Tab, Ctrl-C).
+  // ESC sequences are the standard xterm input codes.
+  const KEYS: { label: string; seq: string; wide?: boolean }[] = [
+    { label: "Esc", seq: "\x1b" },
+    { label: "Tab", seq: "\t" },
+    { label: "↑", seq: "\x1b[A" },
+    { label: "↓", seq: "\x1b[B" },
+    { label: "←", seq: "\x1b[D" },
+    { label: "→", seq: "\x1b[C" },
+    { label: "⏎ Enter", seq: "\r", wide: true },
+    { label: "Ctrl-C", seq: "\x03" },
+  ];
 
   return (
     <div className="flex flex-col h-full">
@@ -196,11 +226,31 @@ export default function ShellTerminal({
         </span>
       </div>
       {/* Touch scrolling is wired on the inner .xterm-viewport (see effect)
-          so finger-scroll pans the terminal, not the page. */}
+          so finger-scroll pans the terminal, not the page. Tap anywhere to focus
+          the TUI and raise the soft keyboard on mobile. */}
       <div
         ref={hostRef}
+        onClick={() => termRef.current?.focus()}
         className="flex-1 min-h-0 p-2 bg-[#0b0f17] overscroll-contain"
       />
+      {/* Mobile key-bar: the keys a phone soft-keyboard lacks but Claude Code's
+          TUI prompts (theme/permission menus) require. Tappable on every device;
+          it's the only way to answer a ↑/↓ + Enter prompt on a touchscreen.
+          onPointerDown + preventDefault keeps focus on the terminal (no blur,
+          keyboard stays up). */}
+      <div className="flex gap-1 px-2 py-1.5 border-t border-[var(--color-border)] bg-[var(--color-bg-secondary)] overflow-x-auto">
+        {KEYS.map((k) => (
+          <button
+            key={k.label}
+            onPointerDown={(e) => { e.preventDefault(); sendKey(k.seq); }}
+            className={`shrink-0 px-2.5 py-1.5 rounded-md text-[12px] font-medium select-none
+              bg-[var(--color-surface-2)] text-[var(--color-text-primary)] active:bg-[var(--color-surface-3)]
+              border border-[var(--color-border)] ${k.wide ? "px-4" : ""}`}
+          >
+            {k.label}
+          </button>
+        ))}
+      </div>
     </div>
   );
 }
