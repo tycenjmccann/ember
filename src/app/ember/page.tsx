@@ -37,6 +37,10 @@ export default function EmberPage() {
   // so the stream-drop recovery path (for mobile backgrounding) is skipped.
   const turnAbort = useRef<AbortController | null>(null);
   const stoppedRef = useRef(false);
+  // The live turn's display prompt + accumulated reply text, so Stop can hand
+  // them to the /stop route for server-side persistence (the killed /message
+  // request never gets to write them).
+  const inflight = useRef<{ displayPrompt: string; acc: string }>({ displayPrompt: "", acc: "" });
   const [showNew, setShowNew] = useState(false);
   const [showConfig, setShowConfig] = useState(false);
   const [showAccount, setShowAccount] = useState(false);
@@ -197,6 +201,7 @@ export default function EmberPage() {
     const abort = new AbortController();
     turnAbort.current = abort;
     stoppedRef.current = false;
+    inflight.current = { displayPrompt: displayAs ?? prompt, acc: "" };
     try {
       const canStream = active.cli === "claude";
       const res = await fetch(
@@ -221,6 +226,7 @@ export default function EmberPage() {
           if (obj.type === "text") acc += obj.text || "";
           else if (obj.type === "done") acc = obj.response || acc;
           else if (obj.type === "error") acc += `\n⚠ ${obj.error}`;
+          inflight.current.acc = acc;
           setActive((s) => {
             if (!s) return s;
             const turns = s.turns.slice();
@@ -237,27 +243,10 @@ export default function EmberPage() {
       }
     } catch (err) {
       if (stoppedRef.current) {
-        // Deliberate Stop (Ctrl-C) — NOT a dropped stream. The server killed the
-        // turn; any partial work is on disk and the conversation resumes on the
-        // next message. Close out the in-flight bubble and prompt for redirection
-        // instead of running the mobile-drop recovery.
-        setActive((s) => {
-          if (!s) return s;
-          const turns = s.turns.slice();
-          const last = turns[turns.length - 1];
-          const note = "⏹ Stopped. What should Claude do instead?";
-          if (last?.role === "agent") {
-            turns[turns.length - 1] = {
-              role: "agent",
-              text: last.text ? `${last.text}\n\n${note}` : note,
-              at: last.at,
-            };
-          } else {
-            turns.push({ role: "agent", text: note, at: new Date().toISOString() });
-          }
-          return { ...s, turns };
-        });
-        fetchSessions();
+        // Deliberate Stop (Ctrl-C) — NOT a dropped stream. The /stop route killed
+        // the turn AND persisted the interrupted user msg + partial reply + the
+        // stop marker server-side; stopTurn() adopts that authoritative session.
+        // Nothing to do here (don't run the mobile-drop recovery).
       } else if (streamStarted) {
         // The stream dropped after starting — most often a phone backgrounding/
         // locking mid-turn. The server keeps running the turn and persists the
@@ -296,13 +285,25 @@ export default function EmberPage() {
     setStopping(true);
     stoppedRef.current = true;
     const sid = active.sessionId;
+    const { displayPrompt, acc } = inflight.current;
     try {
-      // Fire the server stop first (kills the CLI + starts the re-warm), then
-      // abort the local stream so the loop above falls into the stopped branch.
-      await fetch(`/api/ember/sessions/${sid}/stop`, { method: "POST" }).catch(() => {});
+      // Tell the server to stop: it kills the CLI, PERSISTS the interrupted turn
+      // (the killed /message request can't), and starts the re-warm. Adopt the
+      // returned authoritative session so the history survives a reload.
+      const res = await fetch(`/api/ember/sessions/${sid}/stop`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ displayPrompt, partial: acc }),
+      }).catch(() => null);
+      const data = res && res.ok ? await res.json().catch(() => null) : null;
+      if (data?.session) {
+        setActive((s) => (s && s.sessionId === sid ? data.session : s));
+      }
     } finally {
+      // Abort the local stream so runTurn's loop unwinds into the stopped branch.
       turnAbort.current?.abort();
       setStopping(false);
+      fetchSessions();
     }
   };
 
