@@ -15,11 +15,13 @@ import { Sha256 } from "@aws-crypto/sha256-js";
 import { defaultProvider } from "@aws-sdk/credential-provider-node";
 import { getSession, DEFAULT_USER_ID } from "@/lib/ember/sessions";
 import { currentConfigVersion } from "@/lib/ember/config-store";
-import { prepareCodingSession } from "@/lib/ember/runtime";
+import { prepareCodingSession, warmCodingSession } from "@/lib/ember/runtime";
 
 export const dynamic = "force-dynamic";
-// Bounded by the prepare race below; the presign itself is instant.
-export const maxDuration = 30;
+// Bounded by the prepare/warm race below; the presign itself is instant. A
+// ported session must finish its clone + transcript install before the PTY
+// runs `claude --resume`, and a cold clone can take 10-30s — so allow longer.
+export const maxDuration = 60;
 
 const REGION = process.env.AWS_REGION || "us-east-1";
 const RUNTIME_ARN = process.env.CODING_AGENT_RUNTIME_ARN || "";
@@ -41,17 +43,46 @@ export async function POST(
     return NextResponse.json({ error: "Session not found" }, { status: 404 });
   }
 
-  // Materialize the user's config bundle (skills/agents/MCP) onto the session's
-  // microVM BEFORE the browser opens the PTY — a terminal-only session never runs
-  // a chat turn, which is the only other thing that materializes config. Bounded:
-  // wait briefly so `claude` reads .mcp.json on first launch, but never block the
-  // URL on a cold path (materialization continues server-side; marker dedupes).
+  // Ready the session's microVM BEFORE the browser opens the PTY — a terminal
+  // session never runs a chat turn, which is otherwise the only thing that
+  // materializes config AND (for a ported session) clones the repo + installs the
+  // resume transcript. Two cases:
+  //
+  //   • Ported session (resumeTranscriptKey set): the PTY fires `claude --resume
+  //     <id>` the instant it connects. That id only exists once the transcript is
+  //     installed on disk — which warmCodingSession does (clone + checkout +
+  //     install). If we don't AWAIT it here, the resume races the background warm
+  //     and `claude` reports "conversation not found". So block on the full warm.
+  //   • Non-ported terminal session: just materialize config (cheap prepare).
   try {
     const userId = session.userId || DEFAULT_USER_ID;
     const configVersion = await currentConfigVersion(userId);
-    // Run prepare when there's a config bundle OR a subscription session (the
-    // latter must materialize the user's plan creds before the PTY opens).
-    if (configVersion || session.authMode === "subscription") {
+    if (session.resumeTranscriptKey) {
+      // Full setup must COMPLETE before the resume runs. Bound it so a pathological
+      // clone can't hang the request past maxDuration; if it times out the PTY's
+      // resume retries are idempotent and the install marker dedupes.
+      await Promise.race([
+        warmCodingSession({
+          sessionId: session.sessionId,
+          cli: session.cli,
+          repo: session.repo,
+          branch: session.branch,
+          resumeTranscriptKey: session.resumeTranscriptKey,
+          resumeSessionId: session.claudeSessionId,
+          gitMode: session.gitMode,
+          cloneUrl: session.cloneUrl,
+          resumeBundleKey: session.resumeBundleKey,
+          userId,
+          configVersion,
+          region: REGION,
+          authMode: session.authMode,
+        }).catch(() => {}),
+        new Promise((r) => setTimeout(r, 50_000)),
+      ]);
+    } else if (configVersion || session.authMode === "subscription") {
+      // No transcript to install — just materialize config / plan creds. Bounded:
+      // wait briefly so `claude` reads .mcp.json on first launch, but never block
+      // the URL on a cold path (materialization continues server-side; marker dedupes).
       await Promise.race([
         prepareCodingSession({
           sessionId: session.sessionId,
@@ -65,7 +96,7 @@ export async function POST(
       ]);
     }
   } catch {
-    /* best-effort; the first chat turn (if any) still materializes */
+    /* best-effort; the PTY's resume retries + the install marker recover */
   }
 
   // A shell id is the reconnect handle for this PTY; one per attach is fine.
