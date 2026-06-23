@@ -46,6 +46,7 @@ export default function ShellTerminal({
   // control bytes and re-focus the TUI after a tap.
   const wsRef = useRef<WebSocket | null>(null);
   const termRef = useRef<Terminal | null>(null);
+  const fitRef = useRef<FitAddon | null>(null);
   // Accessory bar collapse toggle (persisted so it stays how the user left it).
   const [keysOpen, setKeysOpen] = useState(true);
   // Held-key auto-repeat (hold an arrow to scroll a long TUI menu).
@@ -69,6 +70,7 @@ export default function ShellTerminal({
     term = term0;
     termRef.current = term0;
     fit = new FitAddon();
+    fitRef.current = fit;
     term0.loadAddon(fit);
     if (hostRef.current) {
       term0.open(hostRef.current);
@@ -184,9 +186,25 @@ export default function ShellTerminal({
       term?.dispose();
       wsRef.current = null;
       termRef.current = null;
+      fitRef.current = null;
       if (repeatRef.current) clearInterval(repeatRef.current);
     };
   }, [sessionId]);
+
+  // Refit + resend the PTY size whenever the accessory bar changes the terminal's
+  // available height (it mounts on connect, and grows/shrinks on toggle). Without
+  // this the PTY keeps its pre-bar row count and the bottom rows of Claude's TUI
+  // render underneath the bar. rAF lets the new layout settle before measuring.
+  useEffect(() => {
+    if (status !== "connected") return;
+    const id = requestAnimationFrame(() => {
+      const fit = fitRef.current, term = termRef.current, ws = wsRef.current;
+      if (!fit || !term) return;
+      try { fit.fit(); } catch { /* host not laid out yet */ }
+      if (ws?.readyState === WebSocket.OPEN) ws.send(encodeResize(term.cols, term.rows));
+    });
+    return () => cancelAnimationFrame(id);
+  }, [keysOpen, status]);
 
   // Restore the bar's open/closed preference.
   useEffect(() => {
