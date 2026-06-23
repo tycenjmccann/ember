@@ -90,6 +90,16 @@ export async function POST(
 
     const out = new ReadableStream<Uint8Array>({
       async start(controller) {
+        // Relaying to the browser is best-effort; draining `upstream` and
+        // persisting the turn is not. A mobile client that backgrounds/locks
+        // mid-turn kills its socket, but the runtime keeps working — so once the
+        // browser is gone we stop enqueuing yet keep reading upstream to the end
+        // and still persist the full reply (recovered on the next GET).
+        let clientGone = false;
+        const relay = (chunk: Uint8Array) => {
+          if (clientGone) return;
+          try { controller.enqueue(chunk); } catch { clientGone = true; }
+        };
         try {
           // sseData parses the upstream frames; we tee text/done to persist and
           // relay each frame to the browser verbatim.
@@ -102,21 +112,24 @@ export async function POST(
               if (obj.claude_session_id) session.claudeSessionId = String(obj.claude_session_id);
               fullText = String(obj.response || fullText);
             }
-            controller.enqueue(enc.encode(`data: ${json}\n\n`));
+            relay(enc.encode(`data: ${json}\n\n`));
           }
-          // Persist the completed turn.
+          // Persist the completed turn — even if the browser disconnected
+          // mid-stream (mobile background/lock).
           session.turns.push(userTurn, { role: "agent", text: fullText, at: new Date().toISOString() });
           if (session.title === "New session") session.title = prompt.slice(0, 80);
           session.pendingSeed = undefined; // ported seed has now run
           session.updatedAt = new Date().toISOString();
           await putSession(session).catch(() => {});
         } catch (err) {
-          controller.enqueue(enc.encode(`data: ${JSON.stringify({ type: "error", error: (err as Error).message })}\n\n`));
+          // Upstream itself failed. Keep any partial reply so it isn't lost.
+          relay(enc.encode(`data: ${JSON.stringify({ type: "error", error: (err as Error).message })}\n\n`));
           session.turns.push(userTurn);
+          if (fullText) session.turns.push({ role: "agent", text: fullText, at: new Date().toISOString() });
           session.updatedAt = new Date().toISOString();
           await putSession(session).catch(() => {});
         } finally {
-          controller.close();
+          if (!clientGone) { try { controller.close(); } catch { /* already closed */ } }
         }
       },
     });
