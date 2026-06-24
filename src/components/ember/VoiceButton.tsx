@@ -34,7 +34,16 @@ export default function VoiceButton({
   onActiveChange?: (active: boolean) => void;
   disabled?: boolean;
 }) {
-  const voice = useVoiceInput(onText);
+  // Buffer dictation while recording instead of streaming it into the composer.
+  // Live text would grow the textarea and shove the layout around; we commit the
+  // finished transcript to `onText` only when the take is stopped (not cancelled).
+  const onTextRef = useRef(onText);
+  onTextRef.current = onText;
+  const draftRef = useRef("");
+  const voice = useVoiceInput((t) => { draftRef.current = t; });
+  const commit = useCallback(() => {
+    if (draftRef.current) onTextRef.current(draftRef.current);
+  }, []);
   const [locked, setLocked] = useState(false);
   const [dragY, setDragY] = useState(0); // negative = up
   const [dragX, setDragX] = useState(0); // negative = left
@@ -68,9 +77,9 @@ export default function VoiceButton({
     if (lockedRef.current) { setDragY(0); setDragX(0); return; } // stay recording, locked
     // Not locked: a release ends the take.
     if (-dragX >= CANCEL_THRESHOLD) voice.cancel();
-    else voice.stop();
+    else { voice.stop(); commit(); }
     setDragY(0); setDragX(0);
-  }, [dragX, voice]);
+  }, [dragX, voice, commit]);
 
   const onPointerDown = useCallback((e: React.PointerEvent) => {
     if (disabled || !voice.supported) return;
@@ -80,6 +89,7 @@ export default function VoiceButton({
     lockedRef.current = false;
     setLocked(false);
     setDragY(0); setDragX(0);
+    draftRef.current = "";
     voice.start();
   }, [disabled, voice]);
 
@@ -100,7 +110,8 @@ export default function VoiceButton({
     lockedRef.current = false;
     setLocked(false);
     voice.stop();
-  }, [voice]);
+    commit();
+  }, [voice, commit]);
 
   const cancelLocked = useCallback(() => {
     lockedRef.current = false;
@@ -185,9 +196,6 @@ export default function VoiceButton({
           <div className="flex-1 flex items-center gap-2 text-[var(--ios-red)]">
             <span className="w-2 h-2 rounded-full animate-pulse" style={{ background: "var(--ios-red)" }} />
             <span className="text-[15px] tabular-nums font-medium">{mmss}</span>
-            {voice.interimText && (
-              <span className="text-[13px] text-[var(--color-text-muted)] truncate">{voice.interimText}</span>
-            )}
           </div>
 
           <button
