@@ -41,15 +41,29 @@ export default function VoiceButton({
   onTextRef.current = onText;
   const draftRef = useRef("");
   const voice = useVoiceInput((t) => { draftRef.current = t; });
-  const commit = useCallback(() => {
-    if (draftRef.current) onTextRef.current(draftRef.current);
-  }, []);
+  // Browsers deliver the final SpeechRecognition result *after* stop() and just
+  // before listening flips false, so committing synchronously in the stop
+  // handler would drop trailing/short utterances. Instead flag the intent to
+  // keep this take and commit from the listening→idle effect below, by which
+  // point the buffer holds the final text.
+  const commitOnEndRef = useRef(false);
   const [locked, setLocked] = useState(false);
   const [dragY, setDragY] = useState(0); // negative = up
   const [dragX, setDragX] = useState(0); // negative = left
   const startPt = useRef<{ x: number; y: number } | null>(null);
   const lockedRef = useRef(false);
   const [elapsed, setElapsed] = useState(0);
+
+  // Commit the buffered transcript once recording has fully ended (the final
+  // result has landed by the time listening flips false). cancel() clears the
+  // flag so discarded takes stay silent.
+  useEffect(() => {
+    if (voice.listening) return;
+    if (commitOnEndRef.current) {
+      commitOnEndRef.current = false;
+      if (draftRef.current) onTextRef.current(draftRef.current);
+    }
+  }, [voice.listening]);
 
   // Recording timer.
   useEffect(() => {
@@ -76,10 +90,10 @@ export default function VoiceButton({
     startPt.current = null;
     if (lockedRef.current) { setDragY(0); setDragX(0); return; } // stay recording, locked
     // Not locked: a release ends the take.
-    if (-dragX >= CANCEL_THRESHOLD) voice.cancel();
-    else { voice.stop(); commit(); }
+    if (-dragX >= CANCEL_THRESHOLD) { commitOnEndRef.current = false; voice.cancel(); }
+    else { commitOnEndRef.current = true; voice.stop(); }
     setDragY(0); setDragX(0);
-  }, [dragX, voice, commit]);
+  }, [dragX, voice]);
 
   const onPointerDown = useCallback((e: React.PointerEvent) => {
     if (disabled || !voice.supported) return;
@@ -90,6 +104,7 @@ export default function VoiceButton({
     setLocked(false);
     setDragY(0); setDragX(0);
     draftRef.current = "";
+    commitOnEndRef.current = false;
     voice.start();
   }, [disabled, voice]);
 
@@ -109,13 +124,14 @@ export default function VoiceButton({
   const stopLocked = useCallback(() => {
     lockedRef.current = false;
     setLocked(false);
+    commitOnEndRef.current = true;
     voice.stop();
-    commit();
-  }, [voice, commit]);
+  }, [voice]);
 
   const cancelLocked = useCallback(() => {
     lockedRef.current = false;
     setLocked(false);
+    commitOnEndRef.current = false;
     voice.cancel();
   }, [voice]);
 

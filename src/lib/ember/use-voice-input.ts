@@ -147,8 +147,11 @@ export function useVoiceInput(onText?: (text: string) => void): VoiceInput {
 
   const stop = useCallback(() => {
     const rec = recRef.current;
+    // Don't flip `listening` here: the engine still delivers the final result
+    // (and trailing words) between stop() and `onend`. Let `onend` clear it so
+    // consumers that commit on the listening→idle edge see the complete text.
     if (rec) { try { rec.stop(); } catch { /* noop */ } }
-    setListening(false);
+    else setListening(false);
   }, []);
 
   const cancel = useCallback(() => {
