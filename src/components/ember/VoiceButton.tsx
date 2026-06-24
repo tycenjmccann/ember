@@ -41,12 +41,12 @@ export default function VoiceButton({
   onTextRef.current = onText;
   const draftRef = useRef("");
   const voice = useVoiceInput((t) => { draftRef.current = t; });
-  // Browsers deliver the final SpeechRecognition result *after* stop() and just
-  // before listening flips false, so committing synchronously in the stop
-  // handler would drop trailing/short utterances. Instead flag the intent to
-  // keep this take and commit from the listening→idle effect below, by which
-  // point the buffer holds the final text.
-  const commitOnEndRef = useRef(false);
+  // A take is kept unless explicitly cancelled. We commit from the listening→idle
+  // effect rather than the stop handler because (a) the final SpeechRecognition
+  // result lands *after* stop() and before the edge, and (b) the engine can end
+  // on its own (silence/timeout) with no stop() call at all — both routes still
+  // hit the edge. start() arms this; only cancel paths disarm it.
+  const keepTakeRef = useRef(false);
   const [locked, setLocked] = useState(false);
   const [dragY, setDragY] = useState(0); // negative = up
   const [dragX, setDragX] = useState(0); // negative = left
@@ -54,13 +54,13 @@ export default function VoiceButton({
   const lockedRef = useRef(false);
   const [elapsed, setElapsed] = useState(0);
 
-  // Commit the buffered transcript once recording has fully ended (the final
-  // result has landed by the time listening flips false). cancel() clears the
-  // flag so discarded takes stay silent.
+  // Commit the buffered transcript once recording has fully ended — whether the
+  // user stopped or the engine auto-ended on silence. cancel() disarms the flag
+  // so discarded takes stay silent.
   useEffect(() => {
     if (voice.listening) return;
-    if (commitOnEndRef.current) {
-      commitOnEndRef.current = false;
+    if (keepTakeRef.current) {
+      keepTakeRef.current = false;
       if (draftRef.current) onTextRef.current(draftRef.current);
     }
   }, [voice.listening]);
@@ -90,8 +90,8 @@ export default function VoiceButton({
     startPt.current = null;
     if (lockedRef.current) { setDragY(0); setDragX(0); return; } // stay recording, locked
     // Not locked: a release ends the take.
-    if (-dragX >= CANCEL_THRESHOLD) { commitOnEndRef.current = false; voice.cancel(); }
-    else { commitOnEndRef.current = true; voice.stop(); }
+    if (-dragX >= CANCEL_THRESHOLD) { keepTakeRef.current = false; voice.cancel(); }
+    else voice.stop();
     setDragY(0); setDragX(0);
   }, [dragX, voice]);
 
@@ -104,7 +104,7 @@ export default function VoiceButton({
     setLocked(false);
     setDragY(0); setDragX(0);
     draftRef.current = "";
-    commitOnEndRef.current = false;
+    keepTakeRef.current = true;
     voice.start();
   }, [disabled, voice]);
 
@@ -124,14 +124,13 @@ export default function VoiceButton({
   const stopLocked = useCallback(() => {
     lockedRef.current = false;
     setLocked(false);
-    commitOnEndRef.current = true;
     voice.stop();
   }, [voice]);
 
   const cancelLocked = useCallback(() => {
     lockedRef.current = false;
     setLocked(false);
-    commitOnEndRef.current = false;
+    keepTakeRef.current = false;
     voice.cancel();
   }, [voice]);
 
