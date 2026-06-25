@@ -14,7 +14,7 @@
  */
 
 import { useCallback, useEffect, useRef, useState } from "react";
-import { Mic, Lock, ChevronUp, Square, Trash2 } from "lucide-react";
+import { Mic, Lock, ChevronUp, Square } from "lucide-react";
 import { useVoiceInput } from "@/lib/ember/use-voice-input";
 
 const LOCK_THRESHOLD = 72;   // px dragged up to latch hands-free
@@ -102,12 +102,6 @@ export default function VoiceButton({
     voice.stop();
   }, [voice]);
 
-  const cancelLocked = useCallback(() => {
-    lockedRef.current = false;
-    setLocked(false);
-    voice.cancel();
-  }, [voice]);
-
   if (!voice.supported) return null; // hide entirely where on-device STT is unavailable
 
   const recording = voice.listening;
@@ -169,25 +163,14 @@ export default function VoiceButton({
         </div>
       )}
 
-      {/* Locked: full recording bar with timer + cancel + stop. */}
+      {/* Locked: compact controls (timer + cancel + stop) that sit beside the
+          composer — kept flex-shrink-0 so the textarea keeps the width and the
+          dictation still streams into it. */}
       {locked && (
-        <div className="flex-1 flex items-center gap-2 px-1 animate-[fadeIn_120ms_ease-out]">
-          <button
-            type="button"
-            onClick={cancelLocked}
-            aria-label="Cancel recording"
-            className="press-sm w-[34px] h-[34px] rounded-full flex items-center justify-center flex-shrink-0"
-            style={{ color: "var(--ios-red)" }}
-          >
-            <Trash2 className="w-[18px] h-[18px]" strokeWidth={2.2} />
-          </button>
-
-          <div className="flex-1 flex items-center gap-2 text-[var(--ios-red)]">
+        <div className="flex items-center gap-1.5 pl-1 flex-shrink-0 animate-[fadeIn_120ms_ease-out]">
+          <div className="flex items-center gap-1.5 text-[var(--ios-red)] flex-shrink-0">
             <span className="w-2 h-2 rounded-full animate-pulse" style={{ background: "var(--ios-red)" }} />
             <span className="text-[15px] tabular-nums font-medium">{mmss}</span>
-            {voice.interimText && (
-              <span className="text-[13px] text-[var(--color-text-muted)] truncate">{voice.interimText}</span>
-            )}
           </div>
 
           <button
