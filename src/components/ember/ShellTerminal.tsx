@@ -175,7 +175,11 @@ export default function ShellTerminal({
                   // real Return and actually submits the turn.
                   ws.send(encodeStdin(resumeFirstPrompt));
                   setTimeout(() => {
-                    if (ws?.readyState === WebSocket.OPEN) ws.send(encodeStdin("\r"));
+                    // Only consume the seed once Return actually goes out. If the
+                    // socket closed during the gap the prompt was merely pasted,
+                    // never submitted — leave pendingSeed so reopening retries it.
+                    if (ws?.readyState !== WebSocket.OPEN) return;
+                    ws.send(encodeStdin("\r"));
                     onSeedConsumed?.();
                   }, 500);
                 }, 4000);
