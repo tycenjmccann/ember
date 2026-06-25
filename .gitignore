@@ -26,25 +26,9 @@ npm-debug.log*
 mcp/port-session/dist/
 mcp/port-session/node_modules/
 
-# marketing secrets
-marketing/.telegram.env
-marketing/.wf-*.js
-
-# logo scratch (rejected rounds)
-marketing/brand/logo/_svg/r2out/
-marketing/brand/logo/_svg/r2/
-marketing/brand/logo/_contact_*.png
-marketing/brand/logo/_meta.json
-
-# logo concept-exploration scratch (kept locally, not shipped)
-marketing/brand/logo/sheets/
-marketing/brand/logo/final_v2/_layers/
-marketing/brand/logo/gen_sheets*.py
-marketing/brand/logo/*.pbm
-
-# NOTE (private fork only): the public repo ignores all of marketing/.
-# Here we TRACK marketing/ (brand, site, deck, launch) but keep secrets +
-# scratch ignored via the rules above. Do not push this fork to the public remote.
+# marketing — brand, site, deck, launch assets live ONLY in the private fork.
+# The public OSS repo ignores the entire directory.
+marketing/
 
 # Python
 __pycache__/
