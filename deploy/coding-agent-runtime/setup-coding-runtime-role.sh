@@ -4,7 +4,9 @@
 # coding runtime assumes. Grants exactly what main.py + the OTel sidecar need:
 #   - ECR pull (the runtime image)
 #   - CloudWatch Logs + X-Ray + metrics (observability sidecar)
-#   - Bedrock InvokeModel (Claude/Codex over Bedrock when auth_mode=bedrock)
+#   - Bedrock InvokeModel (Claude over Bedrock when auth_mode=bedrock)
+#   - Bedrock Mantle inference (Codex GPT-5.5 via the OpenAI-compatible
+#     Responses endpoint — a SEPARATE `bedrock-mantle:*` action namespace)
 #   - S3 on the artifact bucket (config bundles, ported transcripts, auth creds)
 #   - EC2/EFS describe + mount perms (VPC networking + EFS workspace mount)
 #
@@ -101,6 +103,18 @@ PERMS=$(cat <<JSON
       "Effect": "Allow",
       "Action": ["bedrock:InvokeModel", "bedrock:InvokeModelWithResponseStream"],
       "Resource": ["arn:aws:bedrock:*::foundation-model/*", "arn:aws:bedrock:${AWS_REGION}:${ACCOUNT_ID}:*"]
+    },
+    {
+      "Sid": "BedrockMantleInference",
+      "Effect": "Allow",
+      "Action": ["bedrock-mantle:CreateInference", "bedrock-mantle:GetProject", "bedrock-mantle:ListProjects", "bedrock-mantle:ListTagsForResources"],
+      "Resource": ["arn:aws:bedrock-mantle:*:${ACCOUNT_ID}:project/*"]
+    },
+    {
+      "Sid": "BedrockMantleBearerToken",
+      "Effect": "Allow",
+      "Action": ["bedrock-mantle:CallWithBearerToken"],
+      "Resource": "*"
     },
     {
       "Sid": "S3Artifacts",
