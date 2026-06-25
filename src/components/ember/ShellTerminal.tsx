@@ -3,6 +3,7 @@
 import { useEffect, useRef, useState } from "react";
 import { Terminal } from "@xterm/xterm";
 import { FitAddon } from "@xterm/addon-fit";
+import { WebglAddon } from "@xterm/addon-webgl";
 import "@xterm/xterm/css/xterm.css";
 import {
   ShellChannel,
@@ -63,8 +64,14 @@ export default function ShellTerminal({
       cursorBlink: true,
       fontFamily: "ui-monospace, SFMono-Regular, Menlo, monospace",
       fontSize: 13,
+      lineHeight: 1.25,        // a little air so glyphs don't look cramped
+      letterSpacing: 0,
+      fontWeight: 400,
+      fontWeightBold: 600,
       scrollback: 5000,        // keep history so there's something to scroll
       scrollSensitivity: 3,    // smoother wheel/touch scroll
+      // allowProposedApi enables the WebGL addon's char-atlas hooks.
+      allowProposedApi: true,
       theme: { background: "#0b0f17", foreground: "#e2e8f0" },
     });
     term = term0;
@@ -74,6 +81,15 @@ export default function ShellTerminal({
     term0.loadAddon(fit);
     if (hostRef.current) {
       term0.open(hostRef.current);
+      // GPU renderer — DPR-aware glyph rasterization, so text stays crisp on
+      // retina/HiDPI instead of the blurry default canvas atlas. If the GL
+      // context is lost (backgrounded tab, driver reset), dispose and let xterm
+      // fall back to its DOM renderer rather than freezing on a dead canvas.
+      try {
+        const webgl = new WebglAddon();
+        webgl.onContextLoss(() => webgl.dispose());
+        term0.loadAddon(webgl);
+      } catch { /* no WebGL2 — xterm keeps its canvas/DOM renderer */ }
       fit.fit();
       // xterm's scrollable element is .xterm-viewport, NOT our host div. Let it
       // pan vertically on touch (finger-scroll the terminal) and contain the
@@ -150,10 +166,22 @@ export default function ShellTerminal({
               // in the transcript). Re-attach without a seed skips this block.
               if (resumeFirstPrompt) {
                 setTimeout(() => {
-                  if (ws?.readyState === WebSocket.OPEN) {
-                    ws.send(encodeStdin(`${resumeFirstPrompt}\n`));
+                  if (ws?.readyState !== WebSocket.OPEN) return;
+                  // Fill the composer, THEN press Enter as a separate keystroke.
+                  // Claude's TUI (Ink) treats a trailing newline inside the same
+                  // write as a literal newline — the text would sit unsubmitted in
+                  // the input box (and Claude persists that draft, so it reappears
+                  // on every reopen). A standalone \r after the paste settles is a
+                  // real Return and actually submits the turn.
+                  ws.send(encodeStdin(resumeFirstPrompt));
+                  setTimeout(() => {
+                    // Only consume the seed once Return actually goes out. If the
+                    // socket closed during the gap the prompt was merely pasted,
+                    // never submitted — leave pendingSeed so reopening retries it.
+                    if (ws?.readyState !== WebSocket.OPEN) return;
+                    ws.send(encodeStdin("\r"));
                     onSeedConsumed?.();
-                  }
+                  }, 500);
                 }, 4000);
               }
             }, 600);
