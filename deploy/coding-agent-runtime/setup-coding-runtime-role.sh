@@ -107,7 +107,7 @@ PERMS=$(cat <<JSON
     {
       "Sid": "BedrockMantleInference",
       "Effect": "Allow",
-      "Action": ["bedrock-mantle:CreateInference", "bedrock-mantle:GetProject", "bedrock-mantle:ListProjects", "bedrock-mantle:ListTagsForResources"],
+      "Action": ["bedrock-mantle:CreateInference", "bedrock-mantle:Get*", "bedrock-mantle:List*"],
       "Resource": ["arn:aws:bedrock-mantle:*:${ACCOUNT_ID}:project/*"]
     },
     {
