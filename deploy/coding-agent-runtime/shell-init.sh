@@ -129,7 +129,10 @@ fi
 # an already-running `claude` never reaches this line. So the browser no longer
 # types the resume command into a live TUI input box. `exec` replaces the shell
 # with claude, so exiting the agent ends the PTY cleanly like a normal session.
-_resume_hint="$WORKSPACE_ROOT/.resume-launch.sh"
+# Container-local (/tmp), NOT on EFS — EFS is shared across sessions, so a hint
+# there would resume the wrong conversation. One microVM per session means /tmp
+# is private to this session. Must match RESUME_HINT_PATH in main.py.
+_resume_hint="/tmp/.resume-launch.sh"
 if [ -t 1 ] && [ -t 0 ] && [ -f "$_resume_hint" ]; then
   # shellcheck disable=SC1090
   . "$_resume_hint"

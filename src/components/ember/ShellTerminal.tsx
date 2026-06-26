@@ -129,7 +129,13 @@ export default function ShellTerminal({
           // nudge for a freshly ported session. Wait for the resumed TUI to open,
           // fill the composer, then send Return as a separate keystroke (Ink reads
           // a trailing \n in the same write as a literal newline, not submit).
-          if (resumeFirstPrompt && !resumedRef.current) {
+          //
+          // GATE on resumeReady: the seed is meant for the resumed Claude TUI. If
+          // the warm timed out / failed, the server wrote no resume hint and the
+          // PTY is at a bare shell — firing the seed there would run it as a shell
+          // command and consume it. Only send when the server confirms resume; an
+          // un-ready open leaves pendingSeed intact so a later reopen retries.
+          if (resumeFirstPrompt && data.resumeReady && !resumedRef.current) {
             resumedRef.current = true;
             setTimeout(() => {
               if (ws?.readyState !== WebSocket.OPEN) return;

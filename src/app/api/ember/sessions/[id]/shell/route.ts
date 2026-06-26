@@ -54,14 +54,18 @@ export async function POST(
   //     install). If we don't AWAIT it here, the resume races the background warm
   //     and `claude` reports "conversation not found". So block on the full warm.
   //   • Non-ported terminal session: just materialize config (cheap prepare).
+  let resumeReady = false;
   try {
     const userId = session.userId || DEFAULT_USER_ID;
     const configVersion = await currentConfigVersion(userId);
     if (session.resumeTranscriptKey) {
       // Full setup must COMPLETE before the resume runs. Bound it so a pathological
       // clone can't hang the request past maxDuration; if it times out the PTY's
-      // resume retries are idempotent and the install marker dedupes.
-      await Promise.race([
+      // resume retries are idempotent and the install marker dedupes. We capture
+      // resumeReady from the warm so the response can tell the browser whether the
+      // Terminal will auto-resume (gates the first-prompt seed). A timeout wins the
+      // race → resumeReady stays false → the client holds the seed for a retry.
+      const warmed = await Promise.race([
         warmCodingSession({
           sessionId: session.sessionId,
           cli: session.cli,
@@ -76,9 +80,10 @@ export async function POST(
           configVersion,
           region: REGION,
           authMode: session.authMode,
-        }).catch(() => {}),
-        new Promise((r) => setTimeout(r, 50_000)),
+        }).catch(() => null),
+        new Promise<null>((r) => setTimeout(() => r(null), 50_000)),
       ]);
+      resumeReady = Boolean(warmed?.resumeReady);
     } else if (configVersion || session.authMode === "subscription") {
       // No transcript to install — just materialize config / plan creds. Bounded:
       // wait briefly so `claude` reads .mcp.json on first launch, but never block
@@ -139,7 +144,7 @@ export async function POST(
     }
     const url = `wss://${host}${path}?${qs.toString()}`;
 
-    return NextResponse.json({ url, shellId, expiresIn: EXPIRES });
+    return NextResponse.json({ url, shellId, expiresIn: EXPIRES, resumeReady });
   } catch (err) {
     console.error("[ember] shell presign error:", err);
     return NextResponse.json({ error: (err as Error).message }, { status: 500 });
