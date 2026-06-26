@@ -689,17 +689,22 @@ def _purge_session(session_id: str, conversation_id: str | None = None,
     # misses it. The conversation id is unique, so glob for files carrying it.
     if conversation_id:
         safe_cid = re.sub(r"[^A-Za-z0-9._-]", "-", conversation_id)
+        # Escape the id before embedding it in a glob: a raw id containing glob
+        # metacharacters (e.g. a ported session with claudeSessionId "*") would
+        # otherwise expand and delete EVERY session's transcript. The directory
+        # components stay literal; only the id substring is escaped.
+        glob_cid = glob.escape(conversation_id)
         if cli == "codex":
             # Codex rollout files persist under $CODEX_HOME/sessions/**; the id is
             # embedded in the filename (e.g. rollout-...-<uuid>.jsonl). Match it
-            # anywhere in the tree (recursive), and also try the raw id form.
+            # anywhere in the tree (recursive), and also try the sanitized id form.
             patterns = [
-                os.path.join(CODEX_HOME, "sessions", "**", f"*{safe_cid}*"),
-                os.path.join(CODEX_HOME, "sessions", "**", f"*{conversation_id}*"),
+                os.path.join(CODEX_HOME, "sessions", "**", f"*{glob_cid}*"),
+                os.path.join(CODEX_HOME, "sessions", "**", f"*{glob.escape(safe_cid)}*"),
             ]
         else:
             # Claude: $CLAUDE_CONFIG_DIR/projects/<workdir-slug>/<id>.jsonl.
-            patterns = [os.path.join(CLAUDE_CONFIG_DIR, "projects", "*", f"{safe_cid}.jsonl")]
+            patterns = [os.path.join(CLAUDE_CONFIG_DIR, "projects", "*", f"{glob.escape(safe_cid)}.jsonl")]
         try:
             seen: set[str] = set()
             for pat in patterns:

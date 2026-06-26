@@ -12,6 +12,9 @@ import { getSession, putSession, deleteSession } from "@/lib/ember/sessions";
 import { codingRuntimeConfigured, purgeCodingSession } from "@/lib/ember/runtime";
 
 export const dynamic = "force-dynamic";
+// DELETE awaits a bounded best-effort purge (disk cleanup on the microVM, up to
+// ~45s for a large checkout, then a quick stop) before forgetting the row.
+export const maxDuration = 60;
 
 /**
  * PATCH /api/ember/sessions/[id]  → small session mutations.
