@@ -158,11 +158,13 @@ export async function stopCodingSession(params: {
 
 /**
  * Purge a session's backend storage when the user deletes it: stop the live
- * runtime session (tears down its microVM) AND tell the runtime to reclaim the
+ * runtime session (kills any in-flight CLI + frees the microVM), THEN reclaim the
  * session's EFS dir (clone/transcript/markers) + S3 artifacts (ported transcript,
- * git bundle, checkpoints). Best-effort + idempotent — a session that never warmed
- * a VM, or a double-delete, is harmless. So the UI's "delete" matches reality
- * instead of leaking storage we keep paying for. Returns what was reclaimed.
+ * git bundle, checkpoints) on a fresh VM that re-mounts the persistent EFS. Stop-
+ * then-purge means a busy session can't block the cleanup and the cleanup VM is
+ * never torn down mid-rmtree. Best-effort + idempotent — a session that never
+ * warmed a VM, or a double-delete, is harmless. So the UI's "delete" matches
+ * reality instead of leaking storage we keep paying for. Returns what was reclaimed.
  */
 export async function purgeCodingSession(params: {
   sessionId: string;
@@ -177,15 +179,28 @@ export async function purgeCodingSession(params: {
   if (!CODING_RUNTIME_ARN) throw new Error("CODING_AGENT_RUNTIME_ARN is not set");
   const region = params.region || REGION;
 
-  // Reclaim disk FIRST while the VM/EFS mount is still alive — the runtime does the
-  // EFS + S3 cleanup synchronously inside this invoke, so when it RETURNS the
-  // cleanup is done. Then, and only then, stop the microVM. Crucially we must NOT
-  // stop the VM while the purge is still running: tearing down the microVM mid-
-  // rmtree kills the cleanup partway (a big EFS checkout can take >a few seconds),
-  // and the DELETE route then drops the only row that could target a retry → leak.
+  // Order: STOP first, then PURGE. This resolves the tension between "a busy
+  // session (HealthyBusy while a CLI runs) rejects/stalls the purge invoke" and
+  // "don't tear down the VM mid-cleanup":
+  //   1. StopRuntimeSession kills the in-flight CLI and frees the microVM. Quick +
+  //      idempotent; safe even if nothing is running.
+  //   2. The EFS workspace + the conversation transcript PERSIST across a microVM
+  //      recycle (that's the point of EFS vs ephemeral sessionStorage), so the
+  //      purge invoke then spins up a FRESH VM that mounts the same EFS and does
+  //      the rmtree + S3 deletes. Nothing stops this VM afterward, so the cleanup
+  //      can't be killed partway. S3 isn't tied to the VM at all.
   const withTimeout = <T>(p: Promise<T>, ms: number): Promise<T | null> =>
     Promise.race([p.catch(() => null), new Promise<null>((r) => setTimeout(() => r(null), ms))]);
 
+  // 1. Stop the (possibly busy) session so the purge isn't blocked by a running CLI.
+  try {
+    await withTimeout(stopCodingSession({ sessionId: params.sessionId, region }), 8000);
+  } catch {
+    /* already stopped / never started */
+  }
+
+  // 2. Purge EFS + S3 on a fresh VM (bounded — rmtree + paginated deletes, not a
+  //    900s turn). Large enough that even a big checkout finishes in one pass.
   let purged = false;
   let efs: boolean | undefined;
   let s3Objects: number | undefined;
@@ -203,8 +218,6 @@ export async function purgeCodingSession(params: {
     contentType: "application/json",
     accept: "application/json",
   });
-  // Generous bound: disk cleanup is bounded work (rmtree + paginated S3 deletes),
-  // not a 900s coding turn. Large enough that even a big checkout finishes.
   const res = await withTimeout(client(region).send(command), 45_000);
   if (res) {
     try {
@@ -214,20 +227,8 @@ export async function purgeCodingSession(params: {
       efs = parsed.efs;
       s3Objects = parsed.s3_objects;
     } catch {
-      /* non-JSON / no body — treat as completed-but-unparseable; safe to stop */
+      /* non-JSON / no body — best-effort; a later lifecycle sweep catches orphans */
     }
-    // Cleanup returned → the microVM is no longer mid-purge → safe to tear it down
-    // to free it (idempotent; a no-op if it already aged out).
-    try {
-      await withTimeout(stopCodingSession({ sessionId: params.sessionId, region }), 6000);
-    } catch {
-      /* already stopped / never started */
-    }
-  } else {
-    // Purge invoke didn't return in time — the microVM may STILL be cleaning up, so
-    // we deliberately do NOT stop it (that would kill the in-flight purge). It will
-    // finish on its own and the session ages out on the runtime's idle lifecycle.
-    console.warn("[ember] purge invoke timed out; skipping stop", params.sessionId);
   }
 
   return { purged, efs, s3Objects };
