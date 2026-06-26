@@ -1233,15 +1233,41 @@ async def invocations(request: Request):
             workdir = _selfcontained_workspace(session_id)
             logger.info("selfcontained_warm_reuse")
         else:
-            workdir = _ensure_workspace(repo, session_id, clone_url=clone_url)
-            # Bundle mode: clone the upstream (above), then layer the laptop's commits
-            # from the uploaded git bundle. Do this BEFORE branch checkout — the bundle
-            # detaches onto the laptop's tip, which is the state we want to resume on.
-            if git_mode == "bundle" and resume_bundle:
-                _apply_resume_bundle(resume_bundle, workdir, session_id, branch=branch)
-            # Land on the ported branch (pushed mode: the laptop's branch on origin).
-            elif branch:
-                _checkout_branch(workdir, branch)
+            # The repo clone / branch checkout is best-effort WHEN we have a ported
+            # transcript to resume: `claude --resume` only needs the .jsonl placed at
+            # the cwd's project slug, not a working clone. A clone can legitimately
+            # fail — an origin the cloud can't reach (a laptop-local path like
+            # /tmp/x.git), a lost upstream, an auth failure. Letting that abort the
+            # whole setup means the resume hint is never written and the Terminal
+            # opens to a bare shell (the conversation is stranded). So on failure,
+            # fall back to a bare per-session workspace and still resume the chat.
+            # Fall back for any Claude RESUME, not just the seed turn that ships the
+            # transcript. Port resume fields (resume_transcript) are sent only on the
+            # first turn; later chat turns send repo + claude_session_id. If the seed
+            # turn already fell back to the bare workspace (unreachable upstream), those
+            # later turns must reuse it — _ensure_workspace(None, session_id) returns
+            # the SAME per-session dir where the transcript was installed — instead of
+            # re-attempting the doomed clone and 500ing the now-live conversation.
+            can_fallback = cli == "claude" and bool(
+                (resume_transcript and resume_session_id) or claude_session_id
+            )
+            try:
+                workdir = _ensure_workspace(repo, session_id, clone_url=clone_url)
+                # Bundle mode: clone the upstream (above), then layer the laptop's commits
+                # from the uploaded git bundle. Do this BEFORE branch checkout — the bundle
+                # detaches onto the laptop's tip, which is the state we want to resume on.
+                if git_mode == "bundle" and resume_bundle:
+                    _apply_resume_bundle(resume_bundle, workdir, session_id, branch=branch)
+                # Land on the ported branch (pushed mode: the laptop's branch on origin).
+                elif branch:
+                    _checkout_branch(workdir, branch)
+            except Exception as exc:  # noqa: BLE001
+                if not can_fallback:
+                    raise
+                workdir = _ensure_workspace(None, session_id)
+                logger.warning("workspace_clone_failed_resume_fallback",
+                               extra={"clone_url": clone_url, "repo": repo,
+                                      "error": str(exc)[:300], "workdir": workdir})
         # Now that the workspace dir is known, pre-accept its trust prompt too
         # (the global seed above can't know the cwd yet). A Terminal `claude
         # --resume` then lands straight in the repo with no trust dialog.
