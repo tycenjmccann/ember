@@ -193,8 +193,15 @@ export async function purgeCodingSession(params: {
     Promise.race([p.catch(() => null), new Promise<null>((r) => setTimeout(() => r(null), ms))]);
 
   // 1. Stop the (possibly busy) session so the purge isn't blocked by a running CLI.
+  //    FULLY await it (it's a quick control-plane StopRuntimeSession, not the 900s
+  //    data-plane invoke) — do NOT race it on a timeout: a stop still in flight when
+  //    we start the purge could land late and terminate the fresh cleanup VM mid-
+  //    rmtree. Then give the teardown a beat to settle before reusing the session id
+  //    (same pattern as the stop route's re-warm delay), so the purge lands on a
+  //    genuinely fresh VM.
   try {
-    await withTimeout(stopCodingSession({ sessionId: params.sessionId, region }), 8000);
+    await stopCodingSession({ sessionId: params.sessionId, region });
+    await new Promise((r) => setTimeout(r, 1500));
   } catch {
     /* already stopped / never started */
   }
