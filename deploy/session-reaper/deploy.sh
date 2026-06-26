@@ -131,7 +131,7 @@ else
         --output text >/dev/null 2>&1; then
       break
     fi
-    echo "         role not ready, retry $attempt…"; sleep 6
+    echo "         role not ready, retry ${attempt}..."; sleep 6
   done
   aws lambda wait function-active --function-name "$FN_NAME" --region "$AWS_REGION"
 fi
