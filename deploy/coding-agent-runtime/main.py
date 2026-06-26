@@ -523,10 +523,16 @@ RESUME_HINT_PATH = "/tmp/.resume-launch.sh"  # noqa: S108 — container-local, s
 RESUME_HINT_NAME = ".resume-launch.sh"
 
 
-def _write_resume_launch_hint(workdir: str, session_id: str) -> bool:
+def _write_resume_launch_hint(workdir: str, resume_sid: str, runtime_session_id: str | None) -> bool:
     """Write the hint the interactive shell reads on launch to
-    `cd <workdir> && claude --resume <session_id>` itself — so the browser never
+    `cd <workdir> && claude --resume <resume_sid>` itself — so the browser never
     types the resume command into an already-running TUI on reattach.
+
+    Two distinct ids: `resume_sid` is the CLAUDE conversation id (the `--resume`
+    arg); `runtime_session_id` is the AgentCore runtimeSessionId that keys the
+    per-session EFS dir AND is what _restore_resume_launch_hint looks up later.
+    They differ, so the durable copy MUST be keyed by the runtime id or restore
+    would miss it on a recycled VM.
 
     Writes both the private /tmp copy (what shell-init reads) and a durable copy
     in the per-session EFS dir (survives a VM recycle; restored to /tmp by
@@ -534,7 +540,7 @@ def _write_resume_launch_hint(workdir: str, session_id: str) -> bool:
     run-once guard means a PTY reattach to a live `claude` never re-launches)."""
     body = (
         f"EMBER_RESUME_DIR={shlex.quote(os.path.realpath(workdir))}\n"
-        f"EMBER_RESUME_SID={shlex.quote(session_id)}\n"
+        f"EMBER_RESUME_SID={shlex.quote(resume_sid)}\n"
     )
     ok = False
     try:
@@ -543,15 +549,16 @@ def _write_resume_launch_hint(workdir: str, session_id: str) -> bool:
         ok = True
     except OSError as exc:
         logger.warning("resume_launch_hint_failed", extra={"error": str(exc)[:200]})
-    # Durable per-session copy so a recycled VM (even one only prepared, never
-    # warmed) can repopulate /tmp. Best-effort; the /tmp write is what matters now.
-    try:
-        sdir = _session_dir(session_id)
-        os.makedirs(sdir, exist_ok=True)
-        with open(os.path.join(sdir, RESUME_HINT_NAME), "w") as f:
-            f.write(body)
-    except OSError as exc:
-        logger.warning("resume_hint_persist_failed", extra={"error": str(exc)[:200]})
+    # Durable copy keyed by the RUNTIME session id (what restore looks up) so a
+    # recycled VM — even one only prepared, never warmed — can repopulate /tmp.
+    if runtime_session_id:
+        try:
+            sdir = _session_dir(runtime_session_id)
+            os.makedirs(sdir, exist_ok=True)
+            with open(os.path.join(sdir, RESUME_HINT_NAME), "w") as f:
+                f.write(body)
+        except OSError as exc:
+            logger.warning("resume_hint_persist_failed", extra={"error": str(exc)[:200]})
     if ok:
         logger.info("resume_launch_hint_written", extra={"workdir": workdir})
     return ok
@@ -935,7 +942,8 @@ def _build_claude_args(config_dir: str, claude_session_id: str | None, stream: b
 
 
 def _stream_claude(prompt: str, workdir: str, claude_session_id: str | None, repo: str | None = None,
-                   auth_mode: str = "bedrock", user_id: str | None = None):
+                   auth_mode: str = "bedrock", user_id: str | None = None,
+                   runtime_session_id: str | None = None):
     """Generator yielding SSE lines for a Claude turn as it runs.
 
     Parses claude stream-json line-by-line: assistant text deltas → 'text'
@@ -1009,7 +1017,7 @@ def _stream_claude(prompt: str, workdir: str, claude_session_id: str | None, rep
     # Update the Terminal resume hint now the id is known (new chats learn it
     # here), so opening the Terminal for this session auto-resumes the conversation.
     if new_session_id:
-        _write_resume_launch_hint(workdir, new_session_id)
+        _write_resume_launch_hint(workdir, new_session_id, runtime_session_id)
     yield sse({"type": "done", "response": "".join(full_text), "claude_session_id": new_session_id})
 
 
@@ -1251,7 +1259,7 @@ async def invocations(request: Request):
         # server-side instead of the browser typing it into a live TUI input box.
         resume_ready = False
         if cli == "claude" and claude_session_id:
-            resume_ready = _write_resume_launch_hint(workdir, claude_session_id)
+            resume_ready = _write_resume_launch_hint(workdir, claude_session_id, session_id)
     except ValueError as ve:  # bad repo field — caller error, not a 500
         return JSONResponse({"error": str(ve)}, status_code=400)
     except Exception as exc:  # noqa: BLE001
@@ -1286,7 +1294,7 @@ async def invocations(request: Request):
     # an async/sync generator response as text/event-stream through InvokeAgentRuntime.
     if stream and cli == "claude":
         return StreamingResponse(
-            _stream_claude(prompt, workdir, claude_session_id, repo, auth_mode, user_id),
+            _stream_claude(prompt, workdir, claude_session_id, repo, auth_mode, user_id, session_id),
             media_type="text/event-stream",
         )
 
@@ -1311,7 +1319,7 @@ async def invocations(request: Request):
     # entry, so the pre-run hint above was skipped). Write it here too, so opening
     # the Terminal for this non-ported session also auto-resumes the conversation.
     if cli == "claude" and result.get("claude_session_id"):
-        _write_resume_launch_hint(workdir, result["claude_session_id"])
+        _write_resume_launch_hint(workdir, result["claude_session_id"], session_id)
 
     result.update({"cli": cli, "workspace": workdir})
     logger.info("turn_done", extra={"cli": cli, "chars": len(result.get("response") or "")})
