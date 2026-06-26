@@ -716,9 +716,17 @@ def _purge_session(session_id: str, conversation_id: str | None = None,
             logger.warning("purge_transcript_failed",
                            extra={"session": session_id, "cli": cli, "error": str(exc)[:200]})
     # S3: delete every object under the session's resume + checkpoint prefixes.
+    # Note the keying differs: the ported transcript + bundle are under the RUNTIME
+    # session id (ember/resume/<sessionId>/), but _checkpoint_transcript writes
+    # checkpoints under the CONVERSATION id (ember/checkpoint/<conversationId>/) —
+    # which normally differs from cc-<sessionId>. Purge both forms so a checkpointed
+    # session doesn't leak its pulled-home transcript.
     if ARTIFACT_BUCKET:
         s3 = boto3.client("s3", region_name=os.environ.get("AWS_REGION", "us-east-1"))
-        for prefix in (f"ember/resume/{session_id}/", f"ember/checkpoint/{session_id}/"):
+        prefixes = [f"ember/resume/{session_id}/", f"ember/checkpoint/{session_id}/"]
+        if conversation_id:
+            prefixes.append(f"ember/checkpoint/{conversation_id}/")
+        for prefix in prefixes:
             try:
                 paginator = s3.get_paginator("list_objects_v2")
                 for page in paginator.paginate(Bucket=ARTIFACT_BUCKET, Prefix=prefix):
