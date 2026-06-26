@@ -59,13 +59,22 @@ export async function DELETE(
 ) {
   try {
     // Reclaim backend storage BEFORE forgetting the row — we need the session's
-    // cli to target the purge, and the row is the only record of it. Best-effort:
-    // a purge failure must not block the user's delete (the row still goes away;
-    // a later lifecycle sweep catches orphaned storage).
+    // cli + claudeSessionId to target the purge, and the row is the only record of
+    // it. Best-effort + BOUNDED: the purge invokes the runtime (shared client has a
+    // 900s timeout), and a cold/busy AgentCore session can stall — so we race it
+    // against a short timeout. A slow or failed purge must never block the user's
+    // delete; the row still goes away and a later lifecycle sweep catches orphans.
     if (codingRuntimeConfigured()) {
       const session = await getSession(params.id);
       if (session) {
-        await purgeCodingSession({ sessionId: session.sessionId, cli: session.cli }).catch(() => {});
+        await Promise.race([
+          purgeCodingSession({
+            sessionId: session.sessionId,
+            cli: session.cli,
+            claudeSessionId: session.claudeSessionId,
+          }).catch(() => {}),
+          new Promise<void>((r) => setTimeout(r, 8000)),
+        ]);
       }
     }
     await deleteSession(params.id);

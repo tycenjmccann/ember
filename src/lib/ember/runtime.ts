@@ -167,6 +167,11 @@ export async function stopCodingSession(params: {
 export async function purgeCodingSession(params: {
   sessionId: string;
   cli?: EmberCli;
+  // The conversation id. A Claude transcript lives at
+  // $CLAUDE_CONFIG_DIR/projects/<workdir-slug>/<claudeSessionId>.jsonl — OUTSIDE
+  // sessions/<runtimeSessionId> — so the runtime needs it to reap the per-
+  // conversation log. Pass it now: once the row is deleted, it's unrecoverable.
+  claudeSessionId?: string;
   region?: string;
 }): Promise<{ purged: boolean; efs?: boolean; s3Objects?: number }> {
   if (!CODING_RUNTIME_ARN) throw new Error("CODING_AGENT_RUNTIME_ARN is not set");
@@ -182,7 +187,12 @@ export async function purgeCodingSession(params: {
       agentRuntimeArn: CODING_RUNTIME_ARN,
       runtimeSessionId: params.sessionId,
       payload: new TextEncoder().encode(
-        JSON.stringify({ purge: true, session_id: params.sessionId, cli: params.cli || "claude" })
+        JSON.stringify({
+          purge: true,
+          session_id: params.sessionId,
+          cli: params.cli || "claude",
+          ...(params.claudeSessionId ? { claude_session_id: params.claudeSessionId } : {}),
+        })
       ),
       contentType: "application/json",
       accept: "application/json",

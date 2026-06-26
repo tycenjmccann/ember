@@ -24,6 +24,7 @@ The OTel collector sidecar (otel-collector-config.yaml) forwards each CLI's
 telemetry to CloudWatch (aws/spans) so every tool call is a trace.
 """
 
+import glob
 import io
 import json
 import os
@@ -652,12 +653,16 @@ def _checkpoint_transcript(session_id: str, workdir: str) -> dict:
     return {"key": key, "bytes": len(data), "branch": branch}
 
 
-def _purge_session(session_id: str) -> dict:
+def _purge_session(session_id: str, claude_session_id: str | None = None) -> dict:
     """Reclaim everything a session left on disk, so deleting it in the UI also
-    frees the backend storage it was paying for. Two stores:
+    frees the backend storage it was paying for. Three stores:
 
-      • EFS  — the session's isolated dir (clone, transcript, resume hint, markers)
-               at sessions/<id>/. The big one: a full clone can be 100s of MB.
+      • EFS  — the session's isolated dir (clone, resume hint, markers) at
+               sessions/<id>/. The big one: a full clone can be 100s of MB.
+      • EFS  — the Claude conversation transcript, which lives OUTSIDE that dir at
+               $CLAUDE_CONFIG_DIR/projects/<workdir-slug>/<claudeSessionId>.jsonl.
+               We don't know the slug here, but the claude id is a unique filename,
+               so we glob projects/*/<claudeSessionId>.jsonl to find it.
       • S3   — the ported transcript + git bundle (ember/resume/<id>/) and any
                checkpoint uploads (ember/checkpoint/<id>/).
 
@@ -665,7 +670,7 @@ def _purge_session(session_id: str) -> dict:
     a double-delete or a purge of a session that never warmed a VM is harmless. The
     live microVM is NOT torn down here — the caller stops the runtime session
     separately (it also ages out on its own idle lifecycle)."""
-    removed = {"efs": False, "s3_objects": 0}
+    removed = {"efs": False, "s3_objects": 0, "transcripts": 0}
     # EFS: rm -rf the per-session dir. _session_dir sanitizes the id, and we re-check
     # the result stays under sessions/ so a crafted id can't escape the namespace.
     sdir = _session_dir(session_id)
@@ -677,6 +682,22 @@ def _purge_session(session_id: str) -> dict:
                 removed["efs"] = True
         except OSError as exc:
             logger.warning("purge_efs_failed", extra={"session": session_id, "error": str(exc)[:200]})
+    # EFS transcript: the conversation .jsonl is keyed by the cwd slug, not the
+    # session id, so rmtree above misses it. The claude id is a unique filename —
+    # glob projects/*/<id>.jsonl (+ its resume marker) and remove the matches.
+    if claude_session_id:
+        safe_cid = re.sub(r"[^A-Za-z0-9._-]", "-", claude_session_id)
+        proj_root = os.path.join(CLAUDE_CONFIG_DIR, "projects")
+        try:
+            for path in glob.glob(os.path.join(proj_root, "*", f"{safe_cid}.jsonl")):
+                try:
+                    os.remove(path)
+                    removed["transcripts"] += 1
+                except OSError:
+                    pass
+        except OSError as exc:
+            logger.warning("purge_transcript_failed",
+                           extra={"session": session_id, "error": str(exc)[:200]})
     # S3: delete every object under the session's resume + checkpoint prefixes.
     if ARTIFACT_BUCKET:
         s3 = boto3.client("s3", region_name=os.environ.get("AWS_REGION", "us-east-1"))
@@ -1182,7 +1203,7 @@ async def invocations(request: Request):
         sid = payload.get("session_id")
         if not sid:
             return JSONResponse({"error": "purge needs a session id"}, status_code=400)
-        return JSONResponse({"purged": True, **_purge_session(sid)})
+        return JSONResponse({"purged": True, **_purge_session(sid, payload.get("claude_session_id"))})
 
     prompt = (payload.get("prompt") or "").strip()
     if not prompt and not warm and not checkpoint and not prepare:
