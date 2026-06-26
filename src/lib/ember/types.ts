@@ -67,6 +67,12 @@ export interface EmberSession {
   // time; defaults to chat. A ported terminal session auto-runs `claude --resume`
   // in the PTY instead of firing the chat seed.
   defaultView?: "chat" | "terminal";
+  // Soft-delete tombstone (ISO timestamp). DELETE sets this and returns at once —
+  // the row is hidden from the list immediately, but kept as the retry handle for
+  // backend cleanup (stop VM + purge EFS/S3). The row is hard-deleted only once a
+  // purge confirms; until then the sweep retries it. This is what makes delete
+  // reliable WITHOUT racing multi-step cleanup in the request path.
+  deletedAt?: string;
 }
 
 /** Trimmed shape for the sidebar list (no full turn history). */

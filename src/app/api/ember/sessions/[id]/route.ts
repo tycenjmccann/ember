@@ -1,20 +1,20 @@
 /**
  * GET    /api/ember/sessions/[id]   → full session (turns)
- * DELETE /api/ember/sessions/[id]   → forget the session row + reclaim its storage
+ * DELETE /api/ember/sessions/[id]   → soft-delete (tombstone + TTL)
  *
- * DELETE also reclaims the session's backend storage (best-effort): it stops the
- * live runtime session and purges its EFS dir + S3 artifacts, so deleting in the
- * UI matches the backend reality instead of leaking storage we keep paying for.
+ * DELETE does NOT do backend cleanup inline. It soft-deletes (stamps deletedAt +
+ * a short TTL) and returns at once: the row leaves the user's list immediately but
+ * survives as a retry handle. DynamoDB's TTL later expires the row and the table
+ * stream fires the reaper Lambda once — which stops the microVM and purges EFS/S3.
+ * This keeps multi-step distributed cleanup OUT of the request path (no race to
+ * lose: a failed reap just re-arms the TTL), and an S3 lifecycle rule backstops
+ * any orphan regardless.
  */
 
 import { NextRequest, NextResponse } from "next/server";
-import { getSession, putSession, deleteSession } from "@/lib/ember/sessions";
-import { codingRuntimeConfigured, purgeCodingSession } from "@/lib/ember/runtime";
+import { getSession, putSession, softDeleteSession } from "@/lib/ember/sessions";
 
 export const dynamic = "force-dynamic";
-// DELETE awaits a bounded best-effort purge (disk cleanup on the microVM, up to
-// ~45s for a large checkout, then a quick stop) before forgetting the row.
-export const maxDuration = 60;
 
 /**
  * PATCH /api/ember/sessions/[id]  → small session mutations.
@@ -61,23 +61,11 @@ export async function DELETE(
   { params }: { params: { id: string } }
 ) {
   try {
-    // Reclaim backend storage BEFORE forgetting the row — we need the session's
-    // cli + claudeSessionId to target the purge, and the row is the only record of
-    // it. Best-effort: purgeCodingSession bounds each step (disk purge + stop)
-    // internally, so it returns promptly even against a busy/cold session and a
-    // failure can't block the user's delete. The row goes away regardless; a later
-    // lifecycle sweep catches any orphan.
-    if (codingRuntimeConfigured()) {
-      const session = await getSession(params.id);
-      if (session) {
-        await purgeCodingSession({
-          sessionId: session.sessionId,
-          cli: session.cli,
-          claudeSessionId: session.claudeSessionId,
-        }).catch(() => {});
-      }
-    }
-    await deleteSession(params.id);
+    // Soft-delete only: stamp the tombstone + TTL and return immediately. The row
+    // disappears from the list now; the reaper Lambda (fired by the TTL-expiry
+    // stream event) does the stop + EFS/S3 purge out of band. No distributed
+    // cleanup in the request path = no race to lose.
+    await softDeleteSession(params.id);
     return NextResponse.json({ deleted: true });
   } catch (err) {
     console.error("[ember] delete error:", err);
