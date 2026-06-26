@@ -507,6 +507,29 @@ def _claude_project_slug(workdir: str) -> str:
     return re.sub(r"[^a-zA-Z0-9]", "-", os.path.realpath(workdir))
 
 
+def _write_resume_launch_hint(workdir: str, session_id: str) -> None:
+    """Write a one-shot hint the interactive shell reads on first launch to
+    `cd <workdir> && claude --resume <session_id>` itself — so the browser never
+    types the resume command into an already-running TUI on reattach.
+
+    Lives in the writable workspace so shell-init.sh (a fresh PTY process that
+    doesn't inherit our env) can source it. shell-init consumes it once per shell
+    via its run-once guard; we leave the file in place so every NEW shell on this
+    warm VM resumes the same conversation."""
+    path = os.path.join(WORKSPACE_ROOT, ".resume-launch.sh")
+    body = (
+        f"EMBER_RESUME_DIR={shlex.quote(os.path.realpath(workdir))}\n"
+        f"EMBER_RESUME_SID={shlex.quote(session_id)}\n"
+    )
+    try:
+        os.makedirs(WORKSPACE_ROOT, exist_ok=True)
+        with open(path, "w") as f:
+            f.write(body)
+        logger.info("resume_launch_hint_written", extra={"workdir": workdir})
+    except OSError as exc:
+        logger.warning("resume_launch_hint_failed", extra={"error": str(exc)[:200]})
+
+
 def _install_resume_transcript(s3_key: str, session_id: str, workdir: str) -> bool:
     """Download a ported Claude transcript from S3 and place it where
     `claude --resume <session_id>` will find it (the workdir's project slug).
@@ -1163,6 +1186,13 @@ async def invocations(request: Request):
         if cli == "claude" and resume_transcript and resume_session_id:
             if _install_resume_transcript(resume_transcript, resume_session_id, workdir):
                 claude_session_id = claude_session_id or resume_session_id
+        # Hand the interactive Terminal a one-shot launch hint: which dir to cd
+        # into and which conversation to `claude --resume`. shell-init.sh reads
+        # this on a FRESH shell only (its run-once guard means a PTY reattach to
+        # an already-running claude never re-fires), so the resume launches
+        # server-side instead of the browser typing it into a live TUI input box.
+        if cli == "claude" and claude_session_id:
+            _write_resume_launch_hint(workdir, claude_session_id)
     except ValueError as ve:  # bad repo field — caller error, not a 500
         return JSONResponse({"error": str(ve)}, status_code=400)
     except Exception as exc:  # noqa: BLE001
