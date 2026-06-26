@@ -1,14 +1,18 @@
 /**
  * GET    /api/ember/sessions/[id]   → full session (turns)
- * DELETE /api/ember/sessions/[id]   → forget the session row
+ * DELETE /api/ember/sessions/[id]   → soft-delete (tombstone + TTL)
  *
- * Note: DELETE only removes the local session record. The runtime's
- * /mnt/workspace for that runtimeSessionId ages out on the runtime's own idle
- * lifecycle; we don't (yet) actively reap it.
+ * DELETE does NOT do backend cleanup inline. It soft-deletes (stamps deletedAt +
+ * a short TTL) and returns at once: the row leaves the user's list immediately but
+ * survives as a retry handle. DynamoDB's TTL later expires the row and the table
+ * stream fires the reaper Lambda once — which stops the microVM and purges EFS/S3.
+ * This keeps multi-step distributed cleanup OUT of the request path (no race to
+ * lose: a failed reap just re-arms the TTL), and an S3 lifecycle rule backstops
+ * any orphan regardless.
  */
 
 import { NextRequest, NextResponse } from "next/server";
-import { getSession, putSession, deleteSession } from "@/lib/ember/sessions";
+import { getSession, putSession, softDeleteSession } from "@/lib/ember/sessions";
 
 export const dynamic = "force-dynamic";
 
@@ -57,7 +61,11 @@ export async function DELETE(
   { params }: { params: { id: string } }
 ) {
   try {
-    await deleteSession(params.id);
+    // Soft-delete only: stamp the tombstone + TTL and return immediately. The row
+    // disappears from the list now; the reaper Lambda (fired by the TTL-expiry
+    // stream event) does the stop + EFS/S3 purge out of band. No distributed
+    // cleanup in the request path = no race to lose.
+    await softDeleteSession(params.id);
     return NextResponse.json({ deleted: true });
   } catch (err) {
     console.error("[ember] delete error:", err);

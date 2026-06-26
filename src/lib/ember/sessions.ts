@@ -57,6 +57,30 @@ export async function deleteSession(sessionId: string): Promise<void> {
   await ddb.send(new DeleteCommand({ TableName: TABLE, Key: { sessionId } }));
 }
 
+// Grace before DynamoDB TTL expires a tombstoned row (and thereby triggers the
+// reaper via the table stream). The row is hidden from the user the instant
+// deletedAt is set; this only governs how soon the backend cleanup fires. Short
+// so reclamation is prompt, but non-zero to absorb clock skew. (Actual TTL delete
+// latency is best-effort — usually minutes — which is fine for storage cleanup.)
+const REAP_GRACE_S = 60;
+
+/**
+ * Soft-delete: stamp the row as deleted and give it a TTL, then return. The row
+ * vanishes from the user's list immediately (listSessions filters deletedAt), but
+ * survives as the retry handle for backend cleanup. When DynamoDB expires it, the
+ * table stream fires the reaper Lambda once — which stops the microVM + purges
+ * EFS/S3. No multi-step cleanup runs in the request path, so there's no race to
+ * lose: a failed cleanup just re-arms the TTL and fires again.
+ */
+export async function softDeleteSession(sessionId: string): Promise<void> {
+  const session = await getSession(sessionId);
+  if (!session) return;
+  session.deletedAt = new Date().toISOString();
+  (session as EmberSession & { ttl?: number }).ttl =
+    Math.floor(Date.now() / 1000) + REAP_GRACE_S;
+  await putSession(session);
+}
+
 export async function listSessions(
   userId: string = DEFAULT_USER_ID
 ): Promise<EmberSessionSummary[]> {
@@ -74,6 +98,9 @@ export async function listSessions(
     // Exclude non-session rows that share this table (e.g. config:{userId}
     // metadata written by the config-bundle store) — they have no turns/cli.
     .filter((s) => !String(s.sessionId).startsWith("config:") && s.cli)
+    // Hide soft-deleted rows: to the user they're gone the moment DELETE stamps
+    // deletedAt; the row lingers only until the reaper finishes backend cleanup.
+    .filter((s) => !s.deletedAt)
     .filter((s) => (s.userId || DEFAULT_USER_ID) === userId)
     .sort((a, b) => new Date(b.updatedAt).getTime() - new Date(a.updatedAt).getTime())
     .map((s) => ({

@@ -24,6 +24,7 @@ The OTel collector sidecar (otel-collector-config.yaml) forwards each CLI's
 telemetry to CloudWatch (aws/spans) so every tool call is a trace.
 """
 
+import glob
 import io
 import json
 import os
@@ -652,6 +653,98 @@ def _checkpoint_transcript(session_id: str, workdir: str) -> dict:
     return {"key": key, "bytes": len(data), "branch": branch}
 
 
+def _purge_session(session_id: str, conversation_id: str | None = None,
+                   cli: str = "claude") -> dict:
+    """Reclaim everything a session left on disk, so deleting it in the UI also
+    frees the backend storage it was paying for. Three stores:
+
+      • EFS  — the session's isolated dir (clone, resume hint, markers) at
+               sessions/<id>/. The big one: a full clone can be 100s of MB.
+      • EFS  — the conversation transcript, which lives OUTSIDE that dir:
+                 claude → $CLAUDE_CONFIG_DIR/projects/<workdir-slug>/<id>.jsonl
+                 codex  → $CODEX_HOME/sessions/**/<...id...>  (rollout files)
+               We don't know the claude slug here, but the id is a unique filename,
+               so we glob for it; for codex we match files whose name carries the id.
+      • S3   — the ported transcript + git bundle (ember/resume/<id>/) and any
+               checkpoint uploads (ember/checkpoint/<id>/).
+
+    Best-effort and idempotent: a missing dir / already-deleted key is success, so
+    a double-delete or a purge of a session that never warmed a VM is harmless. The
+    live microVM is NOT torn down here — the caller stops the runtime session
+    separately (it also ages out on its own idle lifecycle)."""
+    removed = {"efs": False, "s3_objects": 0, "transcripts": 0}
+    # EFS: rm -rf the per-session dir. _session_dir sanitizes the id, and we re-check
+    # the result stays under sessions/ so a crafted id can't escape the namespace.
+    sdir = _session_dir(session_id)
+    sessions_root = os.path.join(WORKSPACE_ROOT, "sessions")
+    if os.path.realpath(sdir).startswith(os.path.realpath(sessions_root) + os.sep):
+        try:
+            if os.path.isdir(sdir):
+                shutil.rmtree(sdir, ignore_errors=True)
+                removed["efs"] = True
+        except OSError as exc:
+            logger.warning("purge_efs_failed", extra={"session": session_id, "error": str(exc)[:200]})
+    # EFS transcript: the conversation log lives OUTSIDE sessions/<id> (keyed by
+    # the cwd slug for claude, by the rollout path for codex), so rmtree above
+    # misses it. The conversation id is unique, so glob for files carrying it.
+    if conversation_id:
+        safe_cid = re.sub(r"[^A-Za-z0-9._-]", "-", conversation_id)
+        # Escape the id before embedding it in a glob: a raw id containing glob
+        # metacharacters (e.g. a ported session with claudeSessionId "*") would
+        # otherwise expand and delete EVERY session's transcript. The directory
+        # components stay literal; only the id substring is escaped.
+        glob_cid = glob.escape(conversation_id)
+        if cli == "codex":
+            # Codex rollout files persist under $CODEX_HOME/sessions/**; the id is
+            # embedded in the filename (e.g. rollout-...-<uuid>.jsonl). Match it
+            # anywhere in the tree (recursive), and also try the sanitized id form.
+            patterns = [
+                os.path.join(CODEX_HOME, "sessions", "**", f"*{glob_cid}*"),
+                os.path.join(CODEX_HOME, "sessions", "**", f"*{glob.escape(safe_cid)}*"),
+            ]
+        else:
+            # Claude: $CLAUDE_CONFIG_DIR/projects/<workdir-slug>/<id>.jsonl.
+            patterns = [os.path.join(CLAUDE_CONFIG_DIR, "projects", "*", f"{glob.escape(safe_cid)}.jsonl")]
+        try:
+            seen: set[str] = set()
+            for pat in patterns:
+                for path in glob.glob(pat, recursive=True):
+                    if path in seen or not os.path.isfile(path):
+                        continue
+                    seen.add(path)
+                    try:
+                        os.remove(path)
+                        removed["transcripts"] += 1
+                    except OSError:
+                        pass
+        except OSError as exc:
+            logger.warning("purge_transcript_failed",
+                           extra={"session": session_id, "cli": cli, "error": str(exc)[:200]})
+    # S3: delete every object under the session's resume + checkpoint prefixes.
+    # Note the keying differs: the ported transcript + bundle are under the RUNTIME
+    # session id (ember/resume/<sessionId>/), but _checkpoint_transcript writes
+    # checkpoints under the CONVERSATION id (ember/checkpoint/<conversationId>/) —
+    # which normally differs from cc-<sessionId>. Purge both forms so a checkpointed
+    # session doesn't leak its pulled-home transcript.
+    if ARTIFACT_BUCKET:
+        s3 = boto3.client("s3", region_name=os.environ.get("AWS_REGION", "us-east-1"))
+        prefixes = [f"ember/resume/{session_id}/", f"ember/checkpoint/{session_id}/"]
+        if conversation_id:
+            prefixes.append(f"ember/checkpoint/{conversation_id}/")
+        for prefix in prefixes:
+            try:
+                paginator = s3.get_paginator("list_objects_v2")
+                for page in paginator.paginate(Bucket=ARTIFACT_BUCKET, Prefix=prefix):
+                    keys = [{"Key": o["Key"]} for o in page.get("Contents", [])]
+                    if keys:
+                        s3.delete_objects(Bucket=ARTIFACT_BUCKET, Delete={"Objects": keys, "Quiet": True})
+                        removed["s3_objects"] += len(keys)
+            except Exception as exc:  # noqa: BLE001 — S3 cleanup is best-effort
+                logger.warning("purge_s3_failed", extra={"prefix": prefix, "error": str(exc)[:200]})
+    logger.info("session_purged", extra={"session": session_id, **removed})
+    return removed
+
+
 def _ensure_workspace(repo: str | None, session_id: str | None = None,
                       clone_url: str | None = None) -> str:
     """Return the working dir for this session. If repo given and not yet cloned,
@@ -1132,6 +1225,16 @@ async def invocations(request: Request):
     # /shell route fires this before handing the browser a presigned PTY URL, so a
     # terminal-only session (which never hits a chat turn) still gets skills + MCP.
     prepare = bool(payload.get("prepare"))
+    # Purge: reclaim the session's EFS dir + S3 artifacts when the user deletes it
+    # in the UI, so what they see (gone) matches the backend reality. No clone, no
+    # CLI, no config — handled up front before any workspace setup runs.
+    purge = bool(payload.get("purge"))
+    if purge:
+        sid = payload.get("session_id")
+        if not sid:
+            return JSONResponse({"error": "purge needs a session id"}, status_code=400)
+        return JSONResponse({"purged": True, **_purge_session(
+            sid, payload.get("claude_session_id"), (payload.get("cli") or "claude").lower())})
 
     prompt = (payload.get("prompt") or "").strip()
     if not prompt and not warm and not checkpoint and not prepare:
