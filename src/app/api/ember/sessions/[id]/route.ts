@@ -1,14 +1,15 @@
 /**
  * GET    /api/ember/sessions/[id]   → full session (turns)
- * DELETE /api/ember/sessions/[id]   → forget the session row
+ * DELETE /api/ember/sessions/[id]   → forget the session row + reclaim its storage
  *
- * Note: DELETE only removes the local session record. The runtime's
- * /mnt/workspace for that runtimeSessionId ages out on the runtime's own idle
- * lifecycle; we don't (yet) actively reap it.
+ * DELETE also reclaims the session's backend storage (best-effort): it stops the
+ * live runtime session and purges its EFS dir + S3 artifacts, so deleting in the
+ * UI matches the backend reality instead of leaking storage we keep paying for.
  */
 
 import { NextRequest, NextResponse } from "next/server";
 import { getSession, putSession, deleteSession } from "@/lib/ember/sessions";
+import { codingRuntimeConfigured, purgeCodingSession } from "@/lib/ember/runtime";
 
 export const dynamic = "force-dynamic";
 
@@ -57,6 +58,16 @@ export async function DELETE(
   { params }: { params: { id: string } }
 ) {
   try {
+    // Reclaim backend storage BEFORE forgetting the row — we need the session's
+    // cli to target the purge, and the row is the only record of it. Best-effort:
+    // a purge failure must not block the user's delete (the row still goes away;
+    // a later lifecycle sweep catches orphaned storage).
+    if (codingRuntimeConfigured()) {
+      const session = await getSession(params.id);
+      if (session) {
+        await purgeCodingSession({ sessionId: session.sessionId, cli: session.cli }).catch(() => {});
+      }
+    }
     await deleteSession(params.id);
     return NextResponse.json({ deleted: true });
   } catch (err) {

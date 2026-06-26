@@ -652,6 +652,48 @@ def _checkpoint_transcript(session_id: str, workdir: str) -> dict:
     return {"key": key, "bytes": len(data), "branch": branch}
 
 
+def _purge_session(session_id: str) -> dict:
+    """Reclaim everything a session left on disk, so deleting it in the UI also
+    frees the backend storage it was paying for. Two stores:
+
+      • EFS  — the session's isolated dir (clone, transcript, resume hint, markers)
+               at sessions/<id>/. The big one: a full clone can be 100s of MB.
+      • S3   — the ported transcript + git bundle (ember/resume/<id>/) and any
+               checkpoint uploads (ember/checkpoint/<id>/).
+
+    Best-effort and idempotent: a missing dir / already-deleted key is success, so
+    a double-delete or a purge of a session that never warmed a VM is harmless. The
+    live microVM is NOT torn down here — the caller stops the runtime session
+    separately (it also ages out on its own idle lifecycle)."""
+    removed = {"efs": False, "s3_objects": 0}
+    # EFS: rm -rf the per-session dir. _session_dir sanitizes the id, and we re-check
+    # the result stays under sessions/ so a crafted id can't escape the namespace.
+    sdir = _session_dir(session_id)
+    sessions_root = os.path.join(WORKSPACE_ROOT, "sessions")
+    if os.path.realpath(sdir).startswith(os.path.realpath(sessions_root) + os.sep):
+        try:
+            if os.path.isdir(sdir):
+                shutil.rmtree(sdir, ignore_errors=True)
+                removed["efs"] = True
+        except OSError as exc:
+            logger.warning("purge_efs_failed", extra={"session": session_id, "error": str(exc)[:200]})
+    # S3: delete every object under the session's resume + checkpoint prefixes.
+    if ARTIFACT_BUCKET:
+        s3 = boto3.client("s3", region_name=os.environ.get("AWS_REGION", "us-east-1"))
+        for prefix in (f"ember/resume/{session_id}/", f"ember/checkpoint/{session_id}/"):
+            try:
+                paginator = s3.get_paginator("list_objects_v2")
+                for page in paginator.paginate(Bucket=ARTIFACT_BUCKET, Prefix=prefix):
+                    keys = [{"Key": o["Key"]} for o in page.get("Contents", [])]
+                    if keys:
+                        s3.delete_objects(Bucket=ARTIFACT_BUCKET, Delete={"Objects": keys, "Quiet": True})
+                        removed["s3_objects"] += len(keys)
+            except Exception as exc:  # noqa: BLE001 — S3 cleanup is best-effort
+                logger.warning("purge_s3_failed", extra={"prefix": prefix, "error": str(exc)[:200]})
+    logger.info("session_purged", extra={"session": session_id, **removed})
+    return removed
+
+
 def _ensure_workspace(repo: str | None, session_id: str | None = None,
                       clone_url: str | None = None) -> str:
     """Return the working dir for this session. If repo given and not yet cloned,
@@ -1132,6 +1174,15 @@ async def invocations(request: Request):
     # /shell route fires this before handing the browser a presigned PTY URL, so a
     # terminal-only session (which never hits a chat turn) still gets skills + MCP.
     prepare = bool(payload.get("prepare"))
+    # Purge: reclaim the session's EFS dir + S3 artifacts when the user deletes it
+    # in the UI, so what they see (gone) matches the backend reality. No clone, no
+    # CLI, no config — handled up front before any workspace setup runs.
+    purge = bool(payload.get("purge"))
+    if purge:
+        sid = payload.get("session_id")
+        if not sid:
+            return JSONResponse({"error": "purge needs a session id"}, status_code=400)
+        return JSONResponse({"purged": True, **_purge_session(sid)})
 
     prompt = (payload.get("prompt") or "").strip()
     if not prompt and not warm and not checkpoint and not prepare:

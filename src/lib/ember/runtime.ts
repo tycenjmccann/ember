@@ -157,6 +157,58 @@ export async function stopCodingSession(params: {
 }
 
 /**
+ * Purge a session's backend storage when the user deletes it: stop the live
+ * runtime session (tears down its microVM) AND tell the runtime to reclaim the
+ * session's EFS dir (clone/transcript/markers) + S3 artifacts (ported transcript,
+ * git bundle, checkpoints). Best-effort + idempotent — a session that never warmed
+ * a VM, or a double-delete, is harmless. So the UI's "delete" matches reality
+ * instead of leaking storage we keep paying for. Returns what was reclaimed.
+ */
+export async function purgeCodingSession(params: {
+  sessionId: string;
+  cli?: EmberCli;
+  region?: string;
+}): Promise<{ purged: boolean; efs?: boolean; s3Objects?: number }> {
+  if (!CODING_RUNTIME_ARN) throw new Error("CODING_AGENT_RUNTIME_ARN is not set");
+  const region = params.region || REGION;
+
+  // Reclaim disk FIRST while the VM/EFS mount is still alive — stopping the
+  // session can recycle the microVM, and the purge handler needs the EFS mount.
+  let purged = false;
+  let efs: boolean | undefined;
+  let s3Objects: number | undefined;
+  try {
+    const command = new InvokeAgentRuntimeCommand({
+      agentRuntimeArn: CODING_RUNTIME_ARN,
+      runtimeSessionId: params.sessionId,
+      payload: new TextEncoder().encode(
+        JSON.stringify({ purge: true, session_id: params.sessionId, cli: params.cli || "claude" })
+      ),
+      contentType: "application/json",
+      accept: "application/json",
+    });
+    const res = await client(region).send(command);
+    const body = res.response ? await res.response.transformToString() : "";
+    const parsed = JSON.parse(body);
+    purged = Boolean(parsed.purged);
+    efs = parsed.efs;
+    s3Objects = parsed.s3_objects;
+  } catch {
+    /* best-effort: the storage ages out / a lifecycle sweep catches it later */
+  }
+
+  // Then stop the runtime session to free the microVM (idempotent; a no-op if it
+  // already aged out). Never let a failed stop mask a successful purge.
+  try {
+    await stopCodingSession({ sessionId: params.sessionId, region });
+  } catch {
+    /* already stopped / never started */
+  }
+
+  return { purged, efs, s3Objects };
+}
+
+/**
  * Streaming variant: returns the runtime's raw text/event-stream body so the
  * caller can relay SSE to the browser. The runtime emits `data: {type:text|done|error}`
  * frames as the Claude turn runs. Claude only — codex stays buffered.
