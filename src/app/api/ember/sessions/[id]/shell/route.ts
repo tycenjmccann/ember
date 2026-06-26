@@ -84,8 +84,13 @@ export async function POST(
         new Promise<null>((r) => setTimeout(() => r(null), 50_000)),
       ]);
       resumeReady = Boolean(warmed?.resumeReady);
-    } else if (configVersion || session.authMode === "subscription") {
-      // No transcript to install — just materialize config / plan creds. Bounded:
+    } else if (configVersion || session.authMode === "subscription" || session.claudeSessionId) {
+      // No transcript to install — just materialize config / plan creds, AND let the
+      // runtime restore a durable resume hint. A plain Bedrock session that already
+      // has a claudeSessionId (a chat turn ran, no port) must hit prepare too: on a
+      // recycled/cold VM only prepare's _restore_resume_launch_hint rebuilds
+      // /tmp/.resume-launch.sh, so the PTY lands in the live TUI instead of a bare
+      // shell. Bounded:
       // wait briefly so `claude` reads .mcp.json on first launch, but never block
       // the URL on a cold path (materialization continues server-side; marker dedupes).
       const prepared = await Promise.race([
