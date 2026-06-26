@@ -121,3 +121,23 @@ if [ -t 1 ]; then
   echo "Coding agents ready: 'claude' (${_CLAUDE_AUTH:-Bedrock}) · 'codex' (${_CODEX_AUTH:-GPT-5.5 via Mantle}) · 'gh' (authed). No login needed."
   echo "Workspace: $WORKSPACE_ROOT   (run 'codextoken' if codex auth expires)"
 fi
+
+# ── Ported session: auto-resume the conversation in the Terminal ──
+# The server writes .resume-launch.sh (EMBER_RESUME_DIR + EMBER_RESUME_SID) when
+# a session has a Claude conversation to continue. Launch it HERE — once per
+# fresh interactive shell; the run-once guard at the top means a PTY reattach to
+# an already-running `claude` never reaches this line. So the browser no longer
+# types the resume command into a live TUI input box. `exec` replaces the shell
+# with claude, so exiting the agent ends the PTY cleanly like a normal session.
+# Container-local (/tmp), NOT on EFS — EFS is shared across sessions, so a hint
+# there would resume the wrong conversation. One microVM per session means /tmp
+# is private to this session. Must match RESUME_HINT_PATH in main.py.
+_resume_hint="/tmp/.resume-launch.sh"
+if [ -t 1 ] && [ -t 0 ] && [ -f "$_resume_hint" ]; then
+  # shellcheck disable=SC1090
+  . "$_resume_hint"
+  if [ -n "${EMBER_RESUME_SID:-}" ]; then
+    cd "${EMBER_RESUME_DIR:-$WORKSPACE_ROOT}" 2>/dev/null || cd "$WORKSPACE_ROOT"
+    exec claude --resume "$EMBER_RESUME_SID"
+  fi
+fi

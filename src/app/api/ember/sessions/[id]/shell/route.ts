@@ -54,14 +54,18 @@ export async function POST(
   //     install). If we don't AWAIT it here, the resume races the background warm
   //     and `claude` reports "conversation not found". So block on the full warm.
   //   • Non-ported terminal session: just materialize config (cheap prepare).
+  let resumeReady = false;
   try {
     const userId = session.userId || DEFAULT_USER_ID;
     const configVersion = await currentConfigVersion(userId);
     if (session.resumeTranscriptKey) {
       // Full setup must COMPLETE before the resume runs. Bound it so a pathological
       // clone can't hang the request past maxDuration; if it times out the PTY's
-      // resume retries are idempotent and the install marker dedupes.
-      await Promise.race([
+      // resume retries are idempotent and the install marker dedupes. We capture
+      // resumeReady from the warm so the response can tell the browser whether the
+      // Terminal will auto-resume (gates the first-prompt seed). A timeout wins the
+      // race → resumeReady stays false → the client holds the seed for a retry.
+      const warmed = await Promise.race([
         warmCodingSession({
           sessionId: session.sessionId,
           cli: session.cli,
@@ -76,14 +80,20 @@ export async function POST(
           configVersion,
           region: REGION,
           authMode: session.authMode,
-        }).catch(() => {}),
-        new Promise((r) => setTimeout(r, 50_000)),
+        }).catch(() => null),
+        new Promise<null>((r) => setTimeout(() => r(null), 50_000)),
       ]);
-    } else if (configVersion || session.authMode === "subscription") {
-      // No transcript to install — just materialize config / plan creds. Bounded:
+      resumeReady = Boolean(warmed?.resumeReady);
+    } else if (configVersion || session.authMode === "subscription" || session.claudeSessionId) {
+      // No transcript to install — just materialize config / plan creds, AND let the
+      // runtime restore a durable resume hint. A plain Bedrock session that already
+      // has a claudeSessionId (a chat turn ran, no port) must hit prepare too: on a
+      // recycled/cold VM only prepare's _restore_resume_launch_hint rebuilds
+      // /tmp/.resume-launch.sh, so the PTY lands in the live TUI instead of a bare
+      // shell. Bounded:
       // wait briefly so `claude` reads .mcp.json on first launch, but never block
       // the URL on a cold path (materialization continues server-side; marker dedupes).
-      await Promise.race([
+      const prepared = await Promise.race([
         prepareCodingSession({
           sessionId: session.sessionId,
           cli: session.cli,
@@ -91,9 +101,10 @@ export async function POST(
           configVersion,
           region: REGION,
           authMode: session.authMode,
-        }).catch(() => {}),
-        new Promise((r) => setTimeout(r, 4000)),
+        }).catch(() => null),
+        new Promise<null>((r) => setTimeout(() => r(null), 4000)),
       ]);
+      resumeReady = Boolean(prepared?.resumeReady);
     }
   } catch {
     /* best-effort; the PTY's resume retries + the install marker recover */
@@ -139,7 +150,7 @@ export async function POST(
     }
     const url = `wss://${host}${path}?${qs.toString()}`;
 
-    return NextResponse.json({ url, shellId, expiresIn: EXPIRES });
+    return NextResponse.json({ url, shellId, expiresIn: EXPIRES, resumeReady });
   } catch (err) {
     console.error("[ember] shell presign error:", err);
     return NextResponse.json({ error: (err as Error).message }, { status: 500 });

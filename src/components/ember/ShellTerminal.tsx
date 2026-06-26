@@ -23,19 +23,17 @@ type Status = "connecting" | "connected" | "closed" | "error";
  */
 export default function ShellTerminal({
   sessionId,
-  resumeSessionId,
   resumeFirstPrompt,
   onSeedConsumed,
 }: {
   sessionId: string;
-  // When set, the shell auto-runs `claude --resume <resumeSessionId>` on connect
-  // (ported session opened in the Terminal tab). resumeFirstPrompt, if given, is
-  // typed as the first message to the resumed agent.
-  resumeSessionId?: string;
+  // The first message to type into a freshly-ported session's resumed agent.
+  // The server (shell-init.sh) launches `claude --resume` itself, so this is the
+  // only thing the browser types — once, into the already-live TUI.
   resumeFirstPrompt?: string;
   // Called once after the first-prompt seed has been typed, so the parent can
-  // persist a clear (clearPendingSeed). Reopening then re-attaches via
-  // `claude --resume` WITHOUT re-typing the seed.
+  // persist a clear (clearPendingSeed). Reopening re-attaches to the server-
+  // resumed conversation WITHOUT re-typing the seed.
   onSeedConsumed?: () => void;
 }) {
   const hostRef = useRef<HTMLDivElement>(null);
@@ -122,69 +120,35 @@ export default function ShellTerminal({
             if (ws?.readyState === WebSocket.OPEN) ws.send(encodeHeartbeat());
           }, 30_000);
 
-          // Ported session opened in Terminal: cd into the cloned workspace and
-          // natively resume the laptop conversation, then type the first prompt.
-          // WORKSPACE_DIR is exported per-session by shell-init; fall back to the
-          // session's workspace path. The agent picks up with full history.
-          if (resumeSessionId && !resumedRef.current) {
+          // Ported session: the SERVER launches `claude --resume` from shell-init
+          // (once per fresh shell), so the conversation is already live in the TUI
+          // when we attach — the browser no longer types the resume command (which
+          // used to land as leftover text in the running TUI on every reopen).
+          //
+          // We only type the first-prompt SEED, and only once: it's the initial
+          // nudge for a freshly ported session. Wait for the resumed TUI to open,
+          // fill the composer, then send Return as a separate keystroke (Ink reads
+          // a trailing \n in the same write as a literal newline, not submit).
+          //
+          // GATE on resumeReady: the seed is meant for the resumed Claude TUI. If
+          // the warm timed out / failed, the server wrote no resume hint and the
+          // PTY is at a bare shell — firing the seed there would run it as a shell
+          // command and consume it. Only send when the server confirms resume; an
+          // un-ready open leaves pendingSeed intact so a later reopen retries.
+          if (resumeFirstPrompt && data.resumeReady && !resumedRef.current) {
             resumedRef.current = true;
-            const safeSid = sessionId.replace(/[^A-Za-z0-9._-]/g, "-");
-            // Sanitize the resume id before it enters a shell command (it's a
-            // cc-/uuid id from session data — keep only id-legal chars).
-            const safeResume = resumeSessionId.replace(/[^A-Za-z0-9._-]/g, "");
-            // RESUME FROM THE RIGHT CWD. The runtime installs the transcript under
-            // the Claude project slug of the *workdir* it cloned into
-            // (sessions/<sid>/<repo>, sessions/<sid>/workspace for self-contained,
-            // or sessions/<sid> itself for a bare port). `claude --resume` only
-            // finds it when launched from that same cwd. On a slow warm the
-            // checkout may not exist yet when the PTY connects, so we POLL: each
-            // second, test every candidate workdir's slug for the transcript and
-            // cd into the one that has it. This both waits for a delayed warm AND
-            // guarantees the cwd matches where the transcript landed — fixing the
-            // race where we'd fall back to $WORKSPACE_ROOT and resume from the
-            // wrong slug. Falls through to a usable shell after ~90s.
-            const sidDir = `"$WORKSPACE_ROOT/sessions/${safeSid}"`;
-            const findAndCd =
-              `target=""; ` +
-              `for i in $(seq 1 90); do ` +
-                `for cand in ${sidDir}/*/ ${sidDir}; do ` +
-                  `[ -d "$cand" ] || continue; ` +
-                  `slug=$(realpath "$cand" 2>/dev/null | sed "s/[^a-zA-Z0-9]/-/g"); ` +
-                  `if [ -e "$CLAUDE_CONFIG_DIR/projects/$slug/${safeResume}.jsonl" ]; then target="$cand"; break 2; fi; ` +
-                `done; ` +
-                `sleep 1; ` +
-              `done; ` +
-              `cd "${'${target:-$WORKSPACE_ROOT}'}" 2>/dev/null || cd "$WORKSPACE_ROOT"`;
-            const resume = `claude --resume ${safeResume}`;
-            // Send find+cd + resume as one line; the agent opens in the TUI.
             setTimeout(() => {
               if (ws?.readyState !== WebSocket.OPEN) return;
-              ws.send(encodeStdin(`${findAndCd} && ${resume}\n`));
-              // The first-prompt seed is typed ONCE (it's a long nudge). Tell the
-              // parent so it persists a clear — reopening re-runs `claude --resume`
-              // above (idempotent) but never re-types this seed (which would stack
-              // in the transcript). Re-attach without a seed skips this block.
-              if (resumeFirstPrompt) {
-                setTimeout(() => {
-                  if (ws?.readyState !== WebSocket.OPEN) return;
-                  // Fill the composer, THEN press Enter as a separate keystroke.
-                  // Claude's TUI (Ink) treats a trailing newline inside the same
-                  // write as a literal newline — the text would sit unsubmitted in
-                  // the input box (and Claude persists that draft, so it reappears
-                  // on every reopen). A standalone \r after the paste settles is a
-                  // real Return and actually submits the turn.
-                  ws.send(encodeStdin(resumeFirstPrompt));
-                  setTimeout(() => {
-                    // Only consume the seed once Return actually goes out. If the
-                    // socket closed during the gap the prompt was merely pasted,
-                    // never submitted — leave pendingSeed so reopening retries it.
-                    if (ws?.readyState !== WebSocket.OPEN) return;
-                    ws.send(encodeStdin("\r"));
-                    onSeedConsumed?.();
-                  }, 500);
-                }, 4000);
-              }
-            }, 600);
+              ws.send(encodeStdin(resumeFirstPrompt));
+              setTimeout(() => {
+                // Only consume the seed once Return actually goes out. If the
+                // socket closed during the gap the prompt was merely pasted, never
+                // submitted — leave pendingSeed so reopening retries it.
+                if (ws?.readyState !== WebSocket.OPEN) return;
+                ws.send(encodeStdin("\r"));
+                onSeedConsumed?.();
+              }, 500);
+            }, 4000);
           }
         };
 
