@@ -156,10 +156,17 @@ export default function ShellTerminal({
               `done; ` +
               `cd "${'${target:-$WORKSPACE_ROOT}'}" 2>/dev/null || cd "$WORKSPACE_ROOT"`;
             const resume = `claude --resume ${safeResume}`;
-            // Send find+cd + resume as one line; the agent opens in the TUI.
+            // Send find+cd + resume, THEN press Enter separately. The shell runs
+            // with bracketed-paste mode on, so a trailing \n in the same write is
+            // buffered as literal text and the command sits unexecuted at the
+            // prompt (the leftover line on every reopen). A standalone \r after
+            // the paste settles is a real Return that actually runs it.
             setTimeout(() => {
               if (ws?.readyState !== WebSocket.OPEN) return;
-              ws.send(encodeStdin(`${findAndCd} && ${resume}\n`));
+              ws.send(encodeStdin(`${findAndCd} && ${resume}`));
+              setTimeout(() => {
+                if (ws?.readyState === WebSocket.OPEN) ws.send(encodeStdin("\r"));
+              }, 150);
               // The first-prompt seed is typed ONCE (it's a long nudge). Tell the
               // parent so it persists a clear — reopening re-runs `claude --resume`
               // above (idempotent) but never re-types this seed (which would stack
