@@ -1241,7 +1241,16 @@ async def invocations(request: Request):
             # whole setup means the resume hint is never written and the Terminal
             # opens to a bare shell (the conversation is stranded). So on failure,
             # fall back to a bare per-session workspace and still resume the chat.
-            can_fallback = bool(resume_transcript and resume_session_id and cli == "claude")
+            # Fall back for any Claude RESUME, not just the seed turn that ships the
+            # transcript. Port resume fields (resume_transcript) are sent only on the
+            # first turn; later chat turns send repo + claude_session_id. If the seed
+            # turn already fell back to the bare workspace (unreachable upstream), those
+            # later turns must reuse it — _ensure_workspace(None, session_id) returns
+            # the SAME per-session dir where the transcript was installed — instead of
+            # re-attempting the doomed clone and 500ing the now-live conversation.
+            can_fallback = cli == "claude" and bool(
+                (resume_transcript and resume_session_id) or claude_session_id
+            )
             try:
                 workdir = _ensure_workspace(repo, session_id, clone_url=clone_url)
                 # Bundle mode: clone the upstream (above), then layer the laptop's commits
