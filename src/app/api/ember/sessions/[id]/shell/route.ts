@@ -88,7 +88,7 @@ export async function POST(
       // No transcript to install — just materialize config / plan creds. Bounded:
       // wait briefly so `claude` reads .mcp.json on first launch, but never block
       // the URL on a cold path (materialization continues server-side; marker dedupes).
-      await Promise.race([
+      const prepared = await Promise.race([
         prepareCodingSession({
           sessionId: session.sessionId,
           cli: session.cli,
@@ -96,9 +96,10 @@ export async function POST(
           configVersion,
           region: REGION,
           authMode: session.authMode,
-        }).catch(() => {}),
-        new Promise((r) => setTimeout(r, 4000)),
+        }).catch(() => null),
+        new Promise<null>((r) => setTimeout(() => r(null), 4000)),
       ]);
+      resumeReady = Boolean(prepared?.resumeReady);
     }
   } catch {
     /* best-effort; the PTY's resume retries + the install marker recover */

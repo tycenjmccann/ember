@@ -262,7 +262,7 @@ export async function prepareCodingSession(params: {
   configVersion?: string;
   region?: string;
   authMode?: EmberAuthMode;
-}): Promise<void> {
+}): Promise<{ resumeReady: boolean }> {
   if (!CODING_RUNTIME_ARN) throw new Error("CODING_AGENT_RUNTIME_ARN is not set");
   const region = params.region || REGION;
   const payload: Record<string, unknown> = {
@@ -281,7 +281,17 @@ export async function prepareCodingSession(params: {
     contentType: "application/json",
     accept: "application/json",
   });
-  await client(region).send(command);
+  const res = await client(region).send(command);
+  // resume_ready: a restored/prior /tmp hint means the Terminal will auto-resume
+  // this non-ported conversation (gates the client's first-prompt seed).
+  let resumeReady = false;
+  try {
+    const body = res.response ? await res.response.transformToString() : "";
+    resumeReady = Boolean(JSON.parse(body).resume_ready);
+  } catch {
+    /* non-JSON / no body — treat as not ready */
+  }
+  return { resumeReady };
 }
 
 /**

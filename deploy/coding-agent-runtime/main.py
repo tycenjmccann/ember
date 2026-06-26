@@ -507,35 +507,73 @@ def _claude_project_slug(workdir: str) -> str:
     return re.sub(r"[^a-zA-Z0-9]", "-", os.path.realpath(workdir))
 
 
-# The resume hint is CONTAINER-LOCAL (/tmp), not on EFS. EFS is shared across
-# every session's microVM, so a hint at $WORKSPACE_ROOT would leak: a different
-# session's Terminal would source it and `claude --resume` the wrong (or another
-# user's) conversation. AgentCore runs ONE microVM per runtimeSessionId, so a
-# /tmp file is inherently scoped to this session — the server process and the PTY
-# shell share it, and nothing else can see it. The server rewrites it on every
-# warm / turn (which always precede a PTY attach), so a cold-restarted VM is fine.
-RESUME_HINT_PATH = "/tmp/.resume-launch.sh"  # noqa: S108 — see comment above
+# The resume hint shell-init reads is CONTAINER-LOCAL (/tmp) — never at
+# $WORKSPACE_ROOT. EFS is shared across every session's microVM, so a hint at the
+# shared root would leak: a different session's Terminal would source it and
+# `claude --resume` the wrong (or another user's) conversation. /tmp is private to
+# this microVM (one per runtimeSessionId).
+#
+# But /tmp dies when the microVM is recycled, and a cold VM may be reached only by
+# the config-only prepare path (non-ported session) that doesn't recompute the
+# hint. So we ALSO persist a durable copy in the per-session EFS dir — which is
+# session-scoped (sessions/<id>/...), not the shared root, so it can't leak — and
+# restore /tmp from it at the start of every invocation. Durable source of truth,
+# private runtime copy.
+RESUME_HINT_PATH = "/tmp/.resume-launch.sh"  # noqa: S108 — container-local, see above
+RESUME_HINT_NAME = ".resume-launch.sh"
 
 
 def _write_resume_launch_hint(workdir: str, session_id: str) -> bool:
-    """Write a hint the interactive shell reads on launch to
+    """Write the hint the interactive shell reads on launch to
     `cd <workdir> && claude --resume <session_id>` itself — so the browser never
     types the resume command into an already-running TUI on reattach.
 
-    shell-init.sh sources it once per fresh shell (its run-once guard means a PTY
-    reattach to a live `claude` never re-launches). Returns True on success."""
+    Writes both the private /tmp copy (what shell-init reads) and a durable copy
+    in the per-session EFS dir (survives a VM recycle; restored to /tmp by
+    _restore_resume_launch_hint). shell-init sources it once per fresh shell (its
+    run-once guard means a PTY reattach to a live `claude` never re-launches)."""
     body = (
         f"EMBER_RESUME_DIR={shlex.quote(os.path.realpath(workdir))}\n"
         f"EMBER_RESUME_SID={shlex.quote(session_id)}\n"
     )
+    ok = False
     try:
         with open(RESUME_HINT_PATH, "w") as f:
             f.write(body)
-        logger.info("resume_launch_hint_written", extra={"workdir": workdir})
-        return True
+        ok = True
     except OSError as exc:
         logger.warning("resume_launch_hint_failed", extra={"error": str(exc)[:200]})
-        return False
+    # Durable per-session copy so a recycled VM (even one only prepared, never
+    # warmed) can repopulate /tmp. Best-effort; the /tmp write is what matters now.
+    try:
+        sdir = _session_dir(session_id)
+        os.makedirs(sdir, exist_ok=True)
+        with open(os.path.join(sdir, RESUME_HINT_NAME), "w") as f:
+            f.write(body)
+    except OSError as exc:
+        logger.warning("resume_hint_persist_failed", extra={"error": str(exc)[:200]})
+    if ok:
+        logger.info("resume_launch_hint_written", extra={"workdir": workdir})
+    return ok
+
+
+def _restore_resume_launch_hint(session_id: str | None) -> None:
+    """Repopulate the private /tmp hint from the durable per-session EFS copy if
+    /tmp is missing (a recycled microVM). Lets a non-ported session resume in the
+    Terminal even when it's reached only by the config-only prepare path. No-op if
+    /tmp already has it or there's no durable copy."""
+    if not session_id or os.path.exists(RESUME_HINT_PATH):
+        return
+    src = os.path.join(_session_dir(session_id), RESUME_HINT_NAME)
+    try:
+        if os.path.isfile(src):
+            with open(src) as f:
+                body = f.read()
+            with open(RESUME_HINT_PATH, "w") as f:
+                f.write(body)
+            logger.info("resume_launch_hint_restored", extra={"session": session_id})
+    except OSError as exc:
+        logger.warning("resume_hint_restore_failed", extra={"error": str(exc)[:200]})
 
 
 def _install_resume_transcript(s3_key: str, session_id: str, workdir: str) -> bool:
@@ -1099,6 +1137,10 @@ async def invocations(request: Request):
     auth_mode = (payload.get("auth_mode") or "bedrock").lower()
     config_version = payload.get("config_version")
     session_id = payload.get("session_id")  # isolates this session's checkout
+    # Repopulate the private /tmp resume hint from the durable per-session copy if
+    # this microVM was recycled — so even a config-only prepare (non-ported
+    # session) leaves the Terminal able to auto-resume the conversation.
+    _restore_resume_launch_hint(session_id)
     stream = bool(payload.get("stream"))  # SSE incremental output (claude only)
     # "Port to cloud": a real laptop transcript shipped via S3 for a native,
     # lossless `claude --resume`. resume_session_id is the id INSIDE that file.
@@ -1158,8 +1200,12 @@ async def invocations(request: Request):
     # success/failure but always 200 so the /shell best-effort caller never errors
     # (a stale-mount VM will be replaced; the next turn retries).
     if prepare:
-        logger.info("prepare_done", extra={"user": user_id, "version": config_version, "auth": auth_mode, "ok": config_ok})
-        return JSONResponse({"prepared": config_ok, "config_error": config_err or None})
+        # resume_ready: a (restored or prior) /tmp hint means the Terminal will
+        # auto-resume this non-ported conversation.
+        resume_ready = os.path.exists(RESUME_HINT_PATH)
+        logger.info("prepare_done", extra={"user": user_id, "version": config_version,
+                                           "auth": auth_mode, "ok": config_ok, "resume_ready": resume_ready})
+        return JSONResponse({"prepared": config_ok, "config_error": config_err or None, "resume_ready": resume_ready})
 
     # Workspace setup IS fatal — no workdir, no turn.
     try:
