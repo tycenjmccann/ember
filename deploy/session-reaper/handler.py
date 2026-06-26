@@ -81,15 +81,15 @@ def _purge_session(session_id: str, cli: str, claude_session_id: str | None) -> 
     return parsed
 
 
-def _reap(image: dict) -> None:
-    """Reap one expired row (the stream's OldImage). No-op unless it's a soft-
-    deleted session row."""
+def _reap(image: dict) -> bool:
+    """Reap one expired row (the stream's OldImage). Returns True only when it
+    actually reaped a soft-deleted session row; False for skipped rows."""
     session_id = _ddb_str(image.get("sessionId"))
     if not session_id or session_id.startswith(("config:", "auth:")):
-        return
+        return False
     if not _ddb_str(image.get("deletedAt")):
         # Hard delete with no tombstone → already reaped or never a session. Skip.
-        return
+        return False
     cli = _ddb_str(image.get("cli")) or "claude"
     claude_session_id = _ddb_str(image.get("claudeSessionId"))
 
@@ -97,6 +97,7 @@ def _reap(image: dict) -> None:
     _stop_session(session_id)
     result = _purge_session(session_id, cli, claude_session_id)
     print(f"[reaper] reaped {session_id}: {json.dumps(result)}")
+    return True
 
 
 def handler(event, _context):
@@ -112,6 +113,6 @@ def handler(event, _context):
         old = record.get("dynamodb", {}).get("OldImage")
         if not old:
             continue
-        _reap(old)
-        reaped += 1
+        if _reap(old):
+            reaped += 1
     return {"reaped": reaped}
