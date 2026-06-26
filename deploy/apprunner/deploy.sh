@@ -87,6 +87,7 @@ aws iam put-role-policy --role-name "$INSTANCE_ROLE" --policy-name "EmberAppRunn
         \"Action\": [
           \"bedrock-agentcore:InvokeAgentRuntime\",
           \"bedrock-agentcore:InvokeAgentRuntimeCommandShell\",
+          \"bedrock-agentcore:StopRuntimeSession\",
           \"bedrock-agentcore:GetAgentRuntime\",
           \"bedrock-agentcore:ListAgentRuntimes\"
         ],

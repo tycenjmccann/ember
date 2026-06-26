@@ -12,6 +12,7 @@
 import {
   BedrockAgentCoreClient,
   InvokeAgentRuntimeCommand,
+  StopRuntimeSessionCommand,
 } from "@aws-sdk/client-bedrock-agentcore";
 import type { EmberCli, EmberAuthMode } from "./types";
 
@@ -128,6 +129,31 @@ export async function invokeCodingTurn(params: CodingTurnParams): Promise<Coding
     cli: (parsed.cli as EmberCli) || params.cli,
     workspace: (parsed.workspace as string) || undefined,
   };
+}
+
+/**
+ * Stop a running chat turn — the chat equivalent of Ctrl-C. Chat turns run
+ * headless (`claude --print` subprocess) inside the session microVM, so there's
+ * no PTY signal channel; we stop the whole runtime SESSION, which tears down the
+ * microVM and kills the in-flight CLI. EFS (the workspace, incl. any files the
+ * agent already wrote) and the transcript persist, so the conversation resumes
+ * cleanly on the next turn — interrupted work is on disk, git-visible, exactly
+ * like an interrupted local session. Idempotent + best-effort: a stop that races
+ * the turn's natural finish is harmless.
+ */
+export async function stopCodingSession(params: {
+  sessionId: string;
+  region?: string;
+}): Promise<void> {
+  if (!CODING_RUNTIME_ARN) throw new Error("CODING_AGENT_RUNTIME_ARN is not set");
+  const region = params.region || REGION;
+  await client(region).send(
+    new StopRuntimeSessionCommand({
+      runtimeSessionId: params.sessionId,
+      agentRuntimeArn: CODING_RUNTIME_ARN,
+      qualifier: "DEFAULT",
+    })
+  );
 }
 
 /**
