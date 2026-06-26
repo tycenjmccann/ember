@@ -283,7 +283,6 @@ export default function EmberPage() {
   const stopTurn = async () => {
     if (!active || !sending || stopping) return;
     setStopping(true);
-    stoppedRef.current = true;
     const sid = active.sessionId;
     const { displayPrompt, acc } = inflight.current;
     try {
@@ -295,15 +294,25 @@ export default function EmberPage() {
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ displayPrompt, partial: acc }),
       }).catch(() => null);
+      // The endpoint returns 200 even on { stopped: false, error } (e.g. the
+      // runtime denied/failed StopRuntimeSession). ONLY abort the local stream
+      // when the stop actually succeeded — otherwise the turn is still running
+      // server-side, so leave it attached for the normal recovery/error path and
+      // surface the failure instead of silently suppressing it.
       const data = res && res.ok ? await res.json().catch(() => null) : null;
-      if (data?.session) {
-        setActive((s) => (s && s.sessionId === sid ? data.session : s));
+      if (data?.stopped) {
+        stoppedRef.current = true;
+        if (data.session) {
+          setActive((s) => (s && s.sessionId === sid ? data.session : s));
+        }
+        // Abort the local stream so runTurn's loop unwinds into the stopped branch.
+        turnAbort.current?.abort();
+        fetchSessions();
+      } else {
+        flash(data?.error ? `Couldn't stop: ${data.error}` : "Couldn't stop the turn — still running.");
       }
     } finally {
-      // Abort the local stream so runTurn's loop unwinds into the stopped branch.
-      turnAbort.current?.abort();
       setStopping(false);
-      fetchSessions();
     }
   };
 

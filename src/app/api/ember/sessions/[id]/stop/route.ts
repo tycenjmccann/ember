@@ -56,22 +56,29 @@ export async function POST(
     return NextResponse.json({ stopped: false, error: (err as Error).message }, { status: 200 });
   }
 
-  // Persist the interrupted turn so it survives reload. Only append the user
-  // message if it isn't already the last turn (the streaming /message route may
-  // have raced a write in); always append the agent's partial + stop marker.
+  // Persist the interrupted turn so it survives reload. putSession is a full
+  // Put (last writer wins), and the streaming /message route may also persist
+  // its own turns when StopRuntimeSession aborts its upstream — a race that
+  // could clobber either write. StopRuntimeSession has now torn the VM down, so
+  // /message's write has almost certainly landed; RE-READ the latest row and
+  // append onto it (rather than the snapshot from line 40) so we merge with,
+  // not overwrite, whatever /message wrote.
   try {
     const now = new Date().toISOString();
-    const last = session.turns[session.turns.length - 1];
+    const fresh = (await getSession(params.id)) || session;
+    // Only append the user message if it isn't already the last turn (the
+    // /message route may have written it in); always append the partial + marker.
+    const last = fresh.turns[fresh.turns.length - 1];
     if (prompt && !(last?.role === "user" && last.text === prompt)) {
-      session.turns.push({ role: "user", text: prompt, at: now });
+      fresh.turns.push({ role: "user", text: prompt, at: now });
     }
     const agentText = partial ? `${partial}\n\n${STOP_NOTE}` : STOP_NOTE;
     const agentTurn: EmberTurn = { role: "agent", text: agentText, at: now };
-    session.turns.push(agentTurn);
-    if (session.title === "New session" && prompt) session.title = prompt.slice(0, 80);
-    session.pendingSeed = undefined;
-    session.updatedAt = now;
-    await putSession(session);
+    fresh.turns.push(agentTurn);
+    if (fresh.title === "New session" && prompt) fresh.title = prompt.slice(0, 80);
+    fresh.pendingSeed = undefined;
+    fresh.updatedAt = now;
+    await putSession(fresh);
   } catch (err) {
     console.error("[ember] stop persist error:", err);
     // Stop itself succeeded; a persist failure shouldn't 500 the action.
