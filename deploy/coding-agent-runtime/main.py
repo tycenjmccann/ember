@@ -653,16 +653,18 @@ def _checkpoint_transcript(session_id: str, workdir: str) -> dict:
     return {"key": key, "bytes": len(data), "branch": branch}
 
 
-def _purge_session(session_id: str, claude_session_id: str | None = None) -> dict:
+def _purge_session(session_id: str, conversation_id: str | None = None,
+                   cli: str = "claude") -> dict:
     """Reclaim everything a session left on disk, so deleting it in the UI also
     frees the backend storage it was paying for. Three stores:
 
       • EFS  — the session's isolated dir (clone, resume hint, markers) at
                sessions/<id>/. The big one: a full clone can be 100s of MB.
-      • EFS  — the Claude conversation transcript, which lives OUTSIDE that dir at
-               $CLAUDE_CONFIG_DIR/projects/<workdir-slug>/<claudeSessionId>.jsonl.
-               We don't know the slug here, but the claude id is a unique filename,
-               so we glob projects/*/<claudeSessionId>.jsonl to find it.
+      • EFS  — the conversation transcript, which lives OUTSIDE that dir:
+                 claude → $CLAUDE_CONFIG_DIR/projects/<workdir-slug>/<id>.jsonl
+                 codex  → $CODEX_HOME/sessions/**/<...id...>  (rollout files)
+               We don't know the claude slug here, but the id is a unique filename,
+               so we glob for it; for codex we match files whose name carries the id.
       • S3   — the ported transcript + git bundle (ember/resume/<id>/) and any
                checkpoint uploads (ember/checkpoint/<id>/).
 
@@ -682,22 +684,37 @@ def _purge_session(session_id: str, claude_session_id: str | None = None) -> dic
                 removed["efs"] = True
         except OSError as exc:
             logger.warning("purge_efs_failed", extra={"session": session_id, "error": str(exc)[:200]})
-    # EFS transcript: the conversation .jsonl is keyed by the cwd slug, not the
-    # session id, so rmtree above misses it. The claude id is a unique filename —
-    # glob projects/*/<id>.jsonl (+ its resume marker) and remove the matches.
-    if claude_session_id:
-        safe_cid = re.sub(r"[^A-Za-z0-9._-]", "-", claude_session_id)
-        proj_root = os.path.join(CLAUDE_CONFIG_DIR, "projects")
+    # EFS transcript: the conversation log lives OUTSIDE sessions/<id> (keyed by
+    # the cwd slug for claude, by the rollout path for codex), so rmtree above
+    # misses it. The conversation id is unique, so glob for files carrying it.
+    if conversation_id:
+        safe_cid = re.sub(r"[^A-Za-z0-9._-]", "-", conversation_id)
+        if cli == "codex":
+            # Codex rollout files persist under $CODEX_HOME/sessions/**; the id is
+            # embedded in the filename (e.g. rollout-...-<uuid>.jsonl). Match it
+            # anywhere in the tree (recursive), and also try the raw id form.
+            patterns = [
+                os.path.join(CODEX_HOME, "sessions", "**", f"*{safe_cid}*"),
+                os.path.join(CODEX_HOME, "sessions", "**", f"*{conversation_id}*"),
+            ]
+        else:
+            # Claude: $CLAUDE_CONFIG_DIR/projects/<workdir-slug>/<id>.jsonl.
+            patterns = [os.path.join(CLAUDE_CONFIG_DIR, "projects", "*", f"{safe_cid}.jsonl")]
         try:
-            for path in glob.glob(os.path.join(proj_root, "*", f"{safe_cid}.jsonl")):
-                try:
-                    os.remove(path)
-                    removed["transcripts"] += 1
-                except OSError:
-                    pass
+            seen: set[str] = set()
+            for pat in patterns:
+                for path in glob.glob(pat, recursive=True):
+                    if path in seen or not os.path.isfile(path):
+                        continue
+                    seen.add(path)
+                    try:
+                        os.remove(path)
+                        removed["transcripts"] += 1
+                    except OSError:
+                        pass
         except OSError as exc:
             logger.warning("purge_transcript_failed",
-                           extra={"session": session_id, "error": str(exc)[:200]})
+                           extra={"session": session_id, "cli": cli, "error": str(exc)[:200]})
     # S3: delete every object under the session's resume + checkpoint prefixes.
     if ARTIFACT_BUCKET:
         s3 = boto3.client("s3", region_name=os.environ.get("AWS_REGION", "us-east-1"))
@@ -1203,7 +1220,8 @@ async def invocations(request: Request):
         sid = payload.get("session_id")
         if not sid:
             return JSONResponse({"error": "purge needs a session id"}, status_code=400)
-        return JSONResponse({"purged": True, **_purge_session(sid, payload.get("claude_session_id"))})
+        return JSONResponse({"purged": True, **_purge_session(
+            sid, payload.get("claude_session_id"), (payload.get("cli") or "claude").lower())})
 
     prompt = (payload.get("prompt") or "").strip()
     if not prompt and not warm and not checkpoint and not prepare:

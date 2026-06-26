@@ -179,38 +179,48 @@ export async function purgeCodingSession(params: {
 
   // Reclaim disk FIRST while the VM/EFS mount is still alive — stopping the
   // session can recycle the microVM, and the purge handler needs the EFS mount.
+  // Each step is INDIVIDUALLY time-bounded: the runtime invoke can stall behind a
+  // busy session (the shared client has a 900s timeout), and if the disk purge
+  // hangs we must STILL reach StopRuntimeSession — otherwise the row is gone while
+  // the CLI/microVM keeps running and an in-flight handler can persist state after.
+  const withTimeout = <T>(p: Promise<T>, ms: number): Promise<T | null> =>
+    Promise.race([p.catch(() => null), new Promise<null>((r) => setTimeout(() => r(null), ms))]);
+
   let purged = false;
   let efs: boolean | undefined;
   let s3Objects: number | undefined;
-  try {
-    const command = new InvokeAgentRuntimeCommand({
-      agentRuntimeArn: CODING_RUNTIME_ARN,
-      runtimeSessionId: params.sessionId,
-      payload: new TextEncoder().encode(
-        JSON.stringify({
-          purge: true,
-          session_id: params.sessionId,
-          cli: params.cli || "claude",
-          ...(params.claudeSessionId ? { claude_session_id: params.claudeSessionId } : {}),
-        })
-      ),
-      contentType: "application/json",
-      accept: "application/json",
-    });
-    const res = await client(region).send(command);
-    const body = res.response ? await res.response.transformToString() : "";
-    const parsed = JSON.parse(body);
-    purged = Boolean(parsed.purged);
-    efs = parsed.efs;
-    s3Objects = parsed.s3_objects;
-  } catch {
-    /* best-effort: the storage ages out / a lifecycle sweep catches it later */
+  const command = new InvokeAgentRuntimeCommand({
+    agentRuntimeArn: CODING_RUNTIME_ARN,
+    runtimeSessionId: params.sessionId,
+    payload: new TextEncoder().encode(
+      JSON.stringify({
+        purge: true,
+        session_id: params.sessionId,
+        cli: params.cli || "claude",
+        ...(params.claudeSessionId ? { claude_session_id: params.claudeSessionId } : {}),
+      })
+    ),
+    contentType: "application/json",
+    accept: "application/json",
+  });
+  const res = await withTimeout(client(region).send(command), 6000);
+  if (res) {
+    try {
+      const body = res.response ? await res.response.transformToString() : "";
+      const parsed = JSON.parse(body);
+      purged = Boolean(parsed.purged);
+      efs = parsed.efs;
+      s3Objects = parsed.s3_objects;
+    } catch {
+      /* non-JSON / no body — disk purge ran best-effort, stop still follows */
+    }
   }
 
-  // Then stop the runtime session to free the microVM (idempotent; a no-op if it
-  // already aged out). Never let a failed stop mask a successful purge.
+  // ALWAYS stop the runtime session to free the microVM, even if the disk purge
+  // above stalled/timed out — a busy session that kept its turn running is exactly
+  // when stopping matters most (idempotent; a no-op if it already aged out).
   try {
-    await stopCodingSession({ sessionId: params.sessionId, region });
+    await withTimeout(stopCodingSession({ sessionId: params.sessionId, region }), 6000);
   } catch {
     /* already stopped / never started */
   }
