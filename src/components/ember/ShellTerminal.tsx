@@ -4,6 +4,7 @@ import { useEffect, useRef, useState } from "react";
 import { Terminal } from "@xterm/xterm";
 import { FitAddon } from "@xterm/addon-fit";
 import { WebglAddon } from "@xterm/addon-webgl";
+import { WebLinksAddon } from "@xterm/addon-web-links";
 import "@xterm/xterm/css/xterm.css";
 import {
   ShellChannel,
@@ -77,6 +78,14 @@ export default function ShellTerminal({
     fit = new FitAddon();
     fitRef.current = fit;
     term0.loadAddon(fit);
+    // Make URLs in TUI/CLI output clickable (open in a new tab) — Claude prints
+    // PR/docs links the user expects to click, not select-and-copy.
+    term0.loadAddon(
+      new WebLinksAddon((event, uri) => {
+        event.preventDefault();
+        window.open(uri, "_blank", "noopener,noreferrer");
+      })
+    );
     if (hostRef.current) {
       term0.open(hostRef.current);
       // GPU renderer — DPR-aware glyph rasterization, so text stays crisp on
