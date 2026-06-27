@@ -182,6 +182,30 @@ def main() -> None:
     if gh_pat := os.environ.get("GITHUB_PAT"):
         env_vars["GITHUB_PAT"] = gh_pat
 
+    runtime_id = find_runtime(control, RUNTIME_NAME)
+
+    # Env is ADDITIVE on update, never subtractive: update_agent_runtime REPLACES
+    # the whole env map, so a redeploy from a shell missing GITHUB_PAT (or the
+    # gateway vars) would silently wipe them and break private clones / MCP. Start
+    # from the live runtime's existing env and overlay only what we computed above,
+    # so a var only changes when this run actually provides it.
+    if runtime_id is not None:
+        try:
+            existing = control.get_agent_runtime(agentRuntimeId=runtime_id).get("environmentVariables") or {}
+            merged = dict(existing)
+            merged.update(env_vars)
+            env_vars = merged
+        except ClientError as e:
+            print(f"WARN could not read existing env, using computed only: "
+                  f"{e.response['Error']['Code']}", file=sys.stderr)
+
+    # Hard guard: a runtime with no GitHub PAT can't clone/push private repos —
+    # the core flow. Refuse rather than ship a broken runtime. (Skip the guard for
+    # a first-time create where no PAT was ever configured.)
+    if runtime_id is not None and not env_vars.get("GITHUB_PAT"):
+        fail("GITHUB_PAT missing from both the live runtime and this shell — "
+             "export it (or set it in .env.local) so private repo clone/push works.")
+
     print("=" * 63)
     print(f"  Deploying {RUNTIME_NAME}")
     print(f"  Region:   {region}")
@@ -190,7 +214,6 @@ def main() -> None:
     print(f"  Storage:  {EFS_MOUNT} (EFS — elastic, persistent)")
     print("=" * 63)
 
-    runtime_id = find_runtime(control, RUNTIME_NAME)
     try:
         if runtime_id is None:
             resp = control.create_agent_runtime(
