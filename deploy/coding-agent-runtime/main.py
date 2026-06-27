@@ -584,36 +584,82 @@ def _restore_resume_launch_hint(session_id: str | None) -> None:
         logger.warning("resume_hint_restore_failed", extra={"error": str(exc)[:200]})
 
 
-def _install_resume_transcript(s3_key: str, session_id: str, workdir: str) -> bool:
+def _install_resume_transcript(s3_key: str, session_id: str, workdir: str,
+                               runtime_session_id: str | None = None) -> bool:
     """Download a ported Claude transcript from S3 and place it where
     `claude --resume <session_id>` will find it (the workdir's project slug).
 
     This is how "port my laptop session to the cloud" achieves a LOSSLESS,
-    native resume: we ship the real .jsonl, not a text summary. Idempotent — a
-    marker per (session, key) means we download once per warm microVM.
-    Returns True if the transcript is in place (freshly or already)."""
+    native resume: we ship the real .jsonl, not a text summary.
+
+    Called on EVERY ported turn (not just the seed), because Claude scopes a
+    conversation by its project slug = realpath(cwd), and the cwd can change
+    between turns (e.g. the seed turn's clone failed → bare session dir, a later
+    turn's clone succeeds → repo subdir). A new cwd means a new slug where the
+    .jsonl is absent, so `claude --resume <id>` reports "No conversation found".
+
+    Resolution order, picking the MOST COMPLETE transcript so cloud turns are
+    never dropped:
+      1. Already at the target slug → done.
+      2. Present at a DIFFERENT slug (the cwd moved) → relocate it. This is the
+         grown transcript with the cloud's appended turns; never clobber it with
+         the smaller original from S3.
+      3. Nowhere on disk → download the original from S3.
+    Returns True if the transcript is in place after this."""
     if not (s3_key and session_id and ARTIFACT_BUCKET):
         return False
     config_dir = os.environ.get("CLAUDE_CONFIG_DIR", os.path.join(WORKSPACE_ROOT, ".claude-data"))
-    proj = os.path.join(config_dir, "projects", _claude_project_slug(workdir))
+    projects_root = os.path.join(config_dir, "projects")
+    proj = os.path.join(projects_root, _claude_project_slug(workdir))
     dest = os.path.join(proj, f"{session_id}.jsonl")
-    marker = os.path.join(_session_dir(session_id), ".resume-installed")
+
+    # 1. Already where the resume will look.
+    if os.path.exists(dest):
+        return True
+
+    # 2. Present under another slug (cwd changed across turns) — relocate the
+    # existing copy rather than re-downloading, so the cloud's appended turns
+    # survive. Pick the largest if somehow more than one exists.
+    #
+    # CRITICAL scoping: several ember sessions can share one Claude conversation
+    # id (the user ported the same laptop session more than once), so each writes
+    # <cid>.jsonl under ITS OWN session-dir slug. A bare glob on the cid would
+    # match those sibling sessions and move a DIFFERENT live session's transcript.
+    # Every slug for THIS session derives from realpath(_session_dir(session_id)),
+    # so restrict candidates to slugs carrying this session's dir marker.
     try:
-        if os.path.exists(dest) and os.path.exists(marker):
-            with open(marker) as f:
-                if f.read().strip() == s3_key:
-                    return True  # this exact transcript already installed
-    except OSError:
-        pass
+        # Skip relocation unless we can scope to this ember session's slugs —
+        # otherwise a sibling session's transcript could be matched + moved.
+        sess_marker = (
+            _claude_project_slug(_session_dir(runtime_session_id))
+            if runtime_session_id else None
+        )
+        candidates = (
+            glob.glob(os.path.join(projects_root, "*", f"{glob.escape(session_id)}.jsonl"))
+            if sess_marker else []
+        )
+        candidates = [
+            c for c in candidates
+            if os.path.realpath(c) != os.path.realpath(dest)
+            and sess_marker in os.path.basename(os.path.dirname(c))
+        ]
+        if candidates:
+            src = max(candidates, key=lambda p: os.path.getsize(p))
+            os.makedirs(proj, exist_ok=True)
+            shutil.move(src, dest)
+            logger.info("resume_transcript_relocated",
+                        extra={"session": session_id, "slug": _claude_project_slug(workdir)})
+            return True
+    except OSError as exc:
+        logger.warning("resume_transcript_relocate_failed", extra={"error": str(exc)[:200]})
+
+    # 3. Not on disk anywhere — download the original from S3.
     try:
         os.makedirs(proj, exist_ok=True)
         s3 = boto3.client("s3", region_name=os.environ.get("AWS_REGION", "us-east-1"))
         obj = s3.get_object(Bucket=ARTIFACT_BUCKET, Key=s3_key)
         with open(dest, "wb") as f:
             f.write(obj["Body"].read())
-        os.makedirs(os.path.dirname(marker), exist_ok=True)
-        with open(marker, "w") as f:
-            f.write(s3_key)
         logger.info("resume_transcript_installed",
                     extra={"session": session_id, "slug": _claude_project_slug(workdir)})
         return True
@@ -1379,7 +1425,8 @@ async def invocations(request: Request):
         # Install a ported transcript and resume it natively. On success the turn
         # runs as `claude --resume <resume_session_id>` — true continuation.
         if cli == "claude" and resume_transcript and resume_session_id:
-            if _install_resume_transcript(resume_transcript, resume_session_id, workdir):
+            if _install_resume_transcript(resume_transcript, resume_session_id, workdir,
+                                          runtime_session_id=session_id):
                 claude_session_id = claude_session_id or resume_session_id
         # Hand the interactive Terminal a one-shot launch hint: which dir to cd
         # into and which conversation to `claude --resume`. shell-init.sh reads
