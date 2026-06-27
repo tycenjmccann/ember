@@ -45,6 +45,10 @@ export default function EmberPage() {
   const [showConfig, setShowConfig] = useState(false);
   const [showAccount, setShowAccount] = useState(false);
   const [toast, setToast] = useState<string | null>(null);
+  // Session pending delete-confirmation (null = no dialog open). Deletion is
+  // irreversible — the backend reaper purges the workspace + transcript — so we
+  // confirm first to catch accidental taps.
+  const [confirmDelete, setConfirmDelete] = useState<EmberSessionSummary | null>(null);
   const [view, setView] = useState<"chat" | "terminal">("chat");
   const [voiceActive, setVoiceActive] = useState(false); // dictating → keep mic mounted
   const [sessionsOpen, setSessionsOpen] = useState(false); // mobile session drawer
@@ -363,6 +367,15 @@ export default function EmberPage() {
     fetchSessions();
   };
 
+  // Confirm before deleting — the delete is permanent (backend reaper purges the
+  // workspace + transcript), so a stray tap shouldn't lose a session.
+  const confirmRemove = async () => {
+    const target = confirmDelete;
+    if (!target) return;
+    setConfirmDelete(null);
+    await remove(target.sessionId);
+  };
+
   // Ported session: fire its pending seed once on open.
   useEffect(() => {
     if (!active?.pendingSeed) return;
@@ -444,7 +457,7 @@ export default function EmberPage() {
                     </div>
                   </div>
                   <button
-                    onClick={(e) => { e.stopPropagation(); remove(s.sessionId); }}
+                    onClick={(e) => { e.stopPropagation(); setConfirmDelete(s); }}
                     className="press-sm opacity-0 group-hover:opacity-100 md:opacity-0 p-1.5 rounded-full text-[var(--color-text-muted)] hover:text-[var(--ios-red)] hover:bg-[var(--ios-red)]/10 transition-all shrink-0"
                     title="Delete session"
                     aria-label={`Delete session: ${s.title}`}
@@ -685,6 +698,13 @@ export default function EmberPage() {
       )}
       {showConfig && <ConfigSheet onClose={() => setShowConfig(false)} onToast={flash} />}
       {showAccount && <AccountSheet onClose={() => setShowAccount(false)} onToast={flash} />}
+      {confirmDelete && (
+        <DeleteConfirmSheet
+          session={confirmDelete}
+          onCancel={() => setConfirmDelete(null)}
+          onConfirm={confirmRemove}
+        />
+      )}
 
       {toast && (
         <div className="fixed bottom-6 left-1/2 -translate-x-1/2 px-4 py-2.5 rounded-full text-white text-[13px] font-medium shadow-xl z-[300] msg-in" style={{ background: "var(--ios-red)" }}>
@@ -714,6 +734,52 @@ function Sheet({ onClose, children, labelledBy }: { onClose: () => void; childre
         {children}
       </div>
     </div>
+  );
+}
+
+/* ── Delete confirmation ──────────────────────────────────────────────── */
+function DeleteConfirmSheet({
+  session,
+  onCancel,
+  onConfirm,
+}: {
+  session: EmberSessionSummary;
+  onCancel: () => void;
+  onConfirm: () => void;
+}) {
+  return (
+    <Sheet onClose={onCancel} labelledBy="cc-delete-title">
+      <div className="flex flex-col items-center text-center gap-3 pt-1">
+        <div className="w-11 h-11 rounded-full flex items-center justify-center" style={{ background: "rgba(255,59,48,0.12)" }}>
+          <Trash2 className="w-5 h-5 text-[var(--ios-red)]" />
+        </div>
+        <h2 id="cc-delete-title" className="text-[17px] font-semibold text-[var(--color-text-primary)]">
+          Delete this session?
+        </h2>
+        <p className="text-[14px] text-[var(--color-text-secondary)] leading-snug">
+          <span className="font-medium text-[var(--color-text-primary)]">{session.title}</span>
+          <br />
+          This permanently removes the session and its cloud workspace. This can&apos;t be undone.
+        </p>
+      </div>
+      <div className="flex flex-col gap-2 mt-5">
+        <button
+          onClick={onConfirm}
+          data-testid="cc-delete-confirm"
+          className="press w-full py-3 rounded-[14px] text-[15px] font-semibold text-white"
+          style={{ background: "var(--ios-red)" }}
+        >
+          Delete session
+        </button>
+        <button
+          onClick={onCancel}
+          className="press w-full py-3 rounded-[14px] text-[15px] font-medium text-[var(--color-text-primary)]"
+          style={{ background: "var(--color-surface-2)" }}
+        >
+          Cancel
+        </button>
+      </div>
+    </Sheet>
   );
 }
 
