@@ -143,19 +143,42 @@ echo "        Pushed $FULL_TAG"
 # ─── 5. App Runner service ────────────────────────────────────────────────────
 echo "  [5/5] App Runner service: $SERVICE_NAME"
 
-# Runtime env. HOSTNAME=0.0.0.0 + PORT=8080 so the standalone server binds where
-# App Runner's TCP health check looks. The rest is forwarded from .env.local.
-ENV_VARS='{"HOSTNAME":"0.0.0.0","PORT":"8080","NODE_ENV":"production"'
-for var in AWS_REGION CODING_AGENT_RUNTIME_ARN EMBER_TABLE ARTIFACT_BUCKET DEPLOYMENT_URL NEXT_PUBLIC_BRAND_NAME; do
-  val="${!var:-}"
-  [[ -n "$val" ]] && ENV_VARS+=", \"${var}\": \"${val//\"/\\\"}\""
-done
-ENV_VARS+='}'
-
 EXISTING_ARN=$(aws apprunner list-services --region "$AWS_REGION" --output json 2>/dev/null \
   | python3 -c "import json,sys
 for s in json.load(sys.stdin).get('ServiceSummaryList',[]):
     if s.get('ServiceName')=='${SERVICE_NAME}': print(s['ServiceArn']); break" 2>/dev/null || true)
+
+# Runtime env. HOSTNAME=0.0.0.0 + PORT=8080 so the standalone server binds where
+# App Runner's TCP health check looks.
+#
+# Env is ADDITIVE, never subtractive: start from the LIVE service's existing
+# RuntimeEnvironmentVariables (so a redeploy from a shell that didn't export every
+# var can't silently drop CODING_AGENT_RUNTIME_ARN etc. and break the app), then
+# overlay any values the current shell/.env.local provides. config.sh defaults
+# fill the rest. A var only changes if explicitly set this run.
+source "$REPO_ROOT/deploy/config.sh" 2>/dev/null || true
+EXISTING_ENV='{}'
+if [[ -n "$EXISTING_ARN" ]]; then
+  EXISTING_ENV=$(aws apprunner describe-service --service-arn "$EXISTING_ARN" --region "$AWS_REGION" \
+    --query 'Service.SourceConfiguration.ImageRepository.ImageConfiguration.RuntimeEnvironmentVariables' \
+    --output json 2>/dev/null || echo '{}')
+fi
+ENV_VARS=$(EXISTING_ENV="$EXISTING_ENV" python3 -c "
+import json, os
+env = json.loads(os.environ.get('EXISTING_ENV') or '{}')
+env.update({'HOSTNAME':'0.0.0.0','PORT':'8080','NODE_ENV':'production'})
+# Overlay only vars actually present in this shell's environment.
+for k in ['AWS_REGION','CODING_AGENT_RUNTIME_ARN','EMBER_TABLE','ARTIFACT_BUCKET','DEPLOYMENT_URL','NEXT_PUBLIC_BRAND_NAME']:
+    v = os.environ.get(k)
+    if v: env[k] = v
+print(json.dumps(env))
+")
+# Hard guard: never deploy without the runtime ARN — the whole app is dead without it.
+if ! echo "$ENV_VARS" | grep -q 'CODING_AGENT_RUNTIME_ARN'; then
+  echo "ERROR: CODING_AGENT_RUNTIME_ARN missing from both the live service and this shell." >&2
+  echo "       Export it (or set it in deploy/config.sh) before deploying." >&2
+  exit 1
+fi
 
 if [[ -n "$EXISTING_ARN" ]]; then
   echo "        Updating existing service..."
