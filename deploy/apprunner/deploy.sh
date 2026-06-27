@@ -146,7 +146,7 @@ echo "  [5/5] App Runner service: $SERVICE_NAME"
 # Runtime env. HOSTNAME=0.0.0.0 + PORT=8080 so the standalone server binds where
 # App Runner's TCP health check looks. The rest is forwarded from .env.local.
 ENV_VARS='{"HOSTNAME":"0.0.0.0","PORT":"8080","NODE_ENV":"production"'
-for var in AWS_REGION CODING_AGENT_RUNTIME_ARN EMBER_TABLE ARTIFACT_BUCKET NEXT_PUBLIC_BRAND_NAME; do
+for var in AWS_REGION CODING_AGENT_RUNTIME_ARN EMBER_TABLE ARTIFACT_BUCKET DEPLOYMENT_URL NEXT_PUBLIC_BRAND_NAME; do
   val="${!var:-}"
   [[ -n "$val" ]] && ENV_VARS+=", \"${var}\": \"${val//\"/\\\"}\""
 done
