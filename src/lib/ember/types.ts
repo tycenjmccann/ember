@@ -28,7 +28,11 @@ export interface EmberTurn {
 
 export interface EmberSession {
   sessionId: string; // runtimeSessionId — the resume handle
-  userId: string; // "default" until app-wide SSO lands
+  userId: string; // Cognito `sub` (the employee). "default" in no-auth deploys.
+  // Company boundary (Cognito `custom:tenantId`). "default" in no-auth deploys.
+  // Present so the store can filter cross-tenant and Phase 2/3 can scope infra by
+  // it without a data migration.
+  tenantId?: string;
   title: string;
   cli: EmberCli;
   // How this session authenticates to the model. Defaults to "bedrock" when

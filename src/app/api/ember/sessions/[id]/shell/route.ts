@@ -13,7 +13,8 @@ import { NextRequest, NextResponse } from "next/server";
 import { SignatureV4 } from "@smithy/signature-v4";
 import { Sha256 } from "@aws-crypto/sha256-js";
 import { defaultProvider } from "@aws-sdk/credential-provider-node";
-import { getSession, DEFAULT_USER_ID } from "@/lib/ember/sessions";
+import { getOwnedSession, DEFAULT_USER_ID } from "@/lib/ember/sessions";
+import { getIdentity } from "@/lib/ember/identity";
 import { currentConfigVersion } from "@/lib/ember/config-store";
 import { prepareCodingSession, warmCodingSession } from "@/lib/ember/runtime";
 
@@ -28,7 +29,7 @@ const RUNTIME_ARN = process.env.CODING_AGENT_RUNTIME_ARN || "";
 const EXPIRES = 300; // AgentCore presigned-URL max
 
 export async function POST(
-  _request: NextRequest,
+  request: NextRequest,
   { params }: { params: { id: string } }
 ) {
   if (!RUNTIME_ARN) {
@@ -38,7 +39,8 @@ export async function POST(
     );
   }
 
-  const session = await getSession(params.id);
+  const { tenantId } = getIdentity(request);
+  const session = await getOwnedSession(params.id, tenantId);
   if (!session) {
     return NextResponse.json({ error: "Session not found" }, { status: 404 });
   }

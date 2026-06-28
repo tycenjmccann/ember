@@ -20,7 +20,8 @@
  */
 
 import { NextRequest, NextResponse } from "next/server";
-import { getSession, putSession, DEFAULT_USER_ID } from "@/lib/ember/sessions";
+import { getSession, getOwnedSession, putSession, DEFAULT_USER_ID } from "@/lib/ember/sessions";
+import { getIdentity } from "@/lib/ember/identity";
 import { stopCodingSession, prepareCodingSession, codingRuntimeConfigured } from "@/lib/ember/runtime";
 import { currentConfigVersion } from "@/lib/ember/config-store";
 import type { EmberTurn } from "@/lib/ember/types";
@@ -37,7 +38,8 @@ export async function POST(
   if (!codingRuntimeConfigured()) {
     return NextResponse.json({ error: "Coding runtime not configured" }, { status: 503 });
   }
-  const session = await getSession(params.id);
+  const { tenantId } = getIdentity(request);
+  const session = await getOwnedSession(params.id, tenantId);
   if (!session) {
     return NextResponse.json({ error: "Session not found" }, { status: 404 });
   }

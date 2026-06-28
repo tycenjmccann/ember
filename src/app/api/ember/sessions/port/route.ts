@@ -33,7 +33,8 @@ import { NextRequest, NextResponse } from "next/server";
 import { randomUUID } from "crypto";
 import { S3Client, PutObjectCommand } from "@aws-sdk/client-s3";
 import { getSignedUrl } from "@aws-sdk/s3-request-presigner";
-import { putSession, DEFAULT_USER_ID } from "@/lib/ember/sessions";
+import { putSession } from "@/lib/ember/sessions";
+import { getIdentity } from "@/lib/ember/identity";
 import type { EmberSession, EmberCli, EmberAuthMode } from "@/lib/ember/types";
 
 export const dynamic = "force-dynamic";
@@ -66,6 +67,7 @@ export async function POST(request: NextRequest) {
     if (!ARTIFACT_BUCKET) {
       return NextResponse.json({ error: "ARTIFACT_BUCKET not configured" }, { status: 503 });
     }
+    const { userId, tenantId } = getIdentity(request);
     const body = await request.json().catch(() => ({}));
     const gitMode: "pushed" | "bundle" | "selfContained" | "none" =
       body.gitMode === "bundle" ? "bundle"
@@ -110,7 +112,8 @@ export async function POST(request: NextRequest) {
 
     const session: EmberSession = {
       sessionId,
-      userId: DEFAULT_USER_ID,
+      userId,
+      tenantId,
       title,
       cli,
       authMode,

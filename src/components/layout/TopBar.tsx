@@ -8,7 +8,7 @@ import ThemeToggle from "./ThemeToggle";
  * The Ember page sizes its panes to calc(100dvh - 52px), so this height is
  * part of the layout contract.
  */
-export default function TopBar() {
+export default function TopBar({ authEnabled = false }: { authEnabled?: boolean }) {
   return (
     <header
       className="ios-blur hairline-b sticky top-0 z-50 flex-shrink-0 flex items-center justify-between px-4 md:px-5"
@@ -28,6 +28,16 @@ export default function TopBar() {
         >
           Cost
         </Link>
+        {/* Plain <a>, not <Link>: must hit the server route (clears cookie +
+            Cognito session), not a client-side nav. Hidden in no-auth deploys. */}
+        {authEnabled && (
+          <a
+            href="/api/auth/logout"
+            className="press text-[15px] text-[var(--color-text-secondary)] px-2 py-1 rounded-[8px]"
+          >
+            Sign out
+          </a>
+        )}
         <ThemeToggle />
       </div>
     </header>

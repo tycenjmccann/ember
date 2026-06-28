@@ -1,10 +1,14 @@
 /**
  * Ember — DynamoDB session store.
  *
- * One row per coding conversation, keyed by sessionId (== runtimeSessionId).
- * Single-user for now: every row carries userId "default"; swap for the Cognito
- * `sub` when app-wide SSO lands (no migration — just start writing the real id
- * and filter by it).
+ * One row per coding conversation, keyed by sessionId (== runtimeSessionId). Each
+ * row carries the owning tenantId (company) + userId (Cognito `sub`). In no-auth
+ * deploys both are "default".
+ *
+ * Phase 1 scopes reads by tenant via a filtered Scan + an explicit ownership
+ * check on point reads. The Scan→Query re-key (PK=TENANT#…) is Phase 1 task #4;
+ * doing the filtering here first means the access surface is already tenant-safe
+ * before the key change lands.
  */
 
 import { DynamoDBClient } from "@aws-sdk/client-dynamodb";
@@ -20,11 +24,17 @@ import type {
   EmberSessionSummary,
   SessionWarmth,
 } from "./types";
+import { DEFAULT_TENANT_ID, DEFAULT_USER_ID } from "./identity";
+
+export { DEFAULT_USER_ID, DEFAULT_TENANT_ID } from "./identity";
 
 const REGION = process.env.AWS_REGION || "us-east-1";
 const TABLE = process.env.EMBER_TABLE || "ember-sessions";
 
-export const DEFAULT_USER_ID = "default";
+/** Tenant a row belongs to, tolerating legacy rows written before tenantId. */
+function tenantOf(s: EmberSession): string {
+  return s.tenantId || DEFAULT_TENANT_ID;
+}
 
 // Warmth thresholds (ms since last activity). The coding runtime idles a session
 // out at 1800s; mark idle well before that and cold past it.
@@ -42,11 +52,32 @@ function warmthOf(updatedAt: string): SessionWarmth {
   return "cold";
 }
 
+/**
+ * Raw point read by id. Does NOT enforce ownership — callers in a request path
+ * MUST use getOwnedSession instead. Reserved for internal/system paths (e.g. the
+ * soft-delete read-modify-write, which re-keys by the same id it was handed).
+ */
 export async function getSession(sessionId: string): Promise<EmberSession | null> {
   const res = await ddb.send(
     new GetCommand({ TableName: TABLE, Key: { sessionId }, ConsistentRead: true })
   );
   return (res.Item as EmberSession) || null;
+}
+
+/**
+ * Tenant-checked point read for request handlers. Returns null when the row is
+ * missing OR belongs to another tenant — callers map both to 404 so a probe
+ * can't even distinguish "exists elsewhere" from "doesn't exist". sessionIds are
+ * unguessable UUIDs, but this is the actual boundary, not the id space.
+ */
+export async function getOwnedSession(
+  sessionId: string,
+  tenantId: string
+): Promise<EmberSession | null> {
+  const s = await getSession(sessionId);
+  if (!s) return null;
+  if (tenantOf(s) !== tenantId) return null;
+  return s;
 }
 
 export async function putSession(session: EmberSession): Promise<void> {
@@ -72,17 +103,27 @@ const REAP_GRACE_S = 60;
  * EFS/S3. No multi-step cleanup runs in the request path, so there's no race to
  * lose: a failed cleanup just re-arms the TTL and fires again.
  */
-export async function softDeleteSession(sessionId: string): Promise<void> {
-  const session = await getSession(sessionId);
-  if (!session) return;
+export async function softDeleteSession(
+  sessionId: string,
+  tenantId: string
+): Promise<boolean> {
+  const session = await getOwnedSession(sessionId, tenantId);
+  if (!session) return false; // missing or not this tenant's → no-op
   session.deletedAt = new Date().toISOString();
   (session as EmberSession & { ttl?: number }).ttl =
     Math.floor(Date.now() / 1000) + REAP_GRACE_S;
   await putSession(session);
+  return true;
 }
 
+/**
+ * List a tenant's sessions for the sidebar. Scoped by tenantId (the company),
+ * NOT userId — colleagues in the same tenant share a workspace by design; the
+ * cross-company boundary is the security one. (Pass a userId too if/when we want
+ * per-user views within a tenant.)
+ */
 export async function listSessions(
-  userId: string = DEFAULT_USER_ID
+  tenantId: string = DEFAULT_TENANT_ID
 ): Promise<EmberSessionSummary[]> {
   const items: EmberSession[] = [];
   let lastKey: Record<string, unknown> | undefined;
@@ -95,13 +136,14 @@ export async function listSessions(
   } while (lastKey);
 
   return items
-    // Exclude non-session rows that share this table (e.g. config:{userId}
-    // metadata written by the config-bundle store) — they have no turns/cli.
-    .filter((s) => !String(s.sessionId).startsWith("config:") && s.cli)
+    // Exclude non-session metadata rows sharing this table (config:{userId},
+    // auth:{userId}) — they have no turns/cli.
+    .filter((s) => !String(s.sessionId).startsWith("config:") &&
+                   !String(s.sessionId).startsWith("auth:") && s.cli)
     // Hide soft-deleted rows: to the user they're gone the moment DELETE stamps
     // deletedAt; the row lingers only until the reaper finishes backend cleanup.
     .filter((s) => !s.deletedAt)
-    .filter((s) => (s.userId || DEFAULT_USER_ID) === userId)
+    .filter((s) => tenantOf(s) === tenantId)
     .sort((a, b) => new Date(b.updatedAt).getTime() - new Date(a.updatedAt).getTime())
     .map((s) => ({
       sessionId: s.sessionId,

@@ -33,6 +33,11 @@ export default function RootLayout({
 }: {
   children: React.ReactNode;
 }) {
+  // Runtime-evaluated (server component): auth is on when a pool is wired and not
+  // explicitly disabled. NOT a NEXT_PUBLIC_ build-time var — the App Runner image
+  // is prebuilt, so those would bake in stale.
+  const authEnabled =
+    Boolean(process.env.COGNITO_USER_POOL_ID) && process.env.EMBER_AUTH_DISABLED !== "1";
   return (
     <html lang="en" suppressHydrationWarning>
       <head>
@@ -57,7 +62,7 @@ export default function RootLayout({
       <body>
         <ThemeProvider>
           <div className="flex flex-col h-[100dvh] overflow-hidden">
-            <TopBar />
+            <TopBar authEnabled={authEnabled} />
             <main className="flex-1 min-h-0">{children}</main>
           </div>
         </ThemeProvider>

@@ -5,14 +5,16 @@
 
 import { NextRequest, NextResponse } from "next/server";
 import { randomUUID } from "crypto";
-import { listSessions, putSession, DEFAULT_USER_ID } from "@/lib/ember/sessions";
+import { listSessions, putSession } from "@/lib/ember/sessions";
+import { getIdentity } from "@/lib/ember/identity";
 import type { EmberSession, EmberCli, EmberAuthMode } from "@/lib/ember/types";
 
 export const dynamic = "force-dynamic";
 
-export async function GET() {
+export async function GET(request: NextRequest) {
   try {
-    const sessions = await listSessions(DEFAULT_USER_ID);
+    const { tenantId } = getIdentity(request);
+    const sessions = await listSessions(tenantId);
     return NextResponse.json({ sessions });
   } catch (err) {
     console.error("[ember] list error:", err);
@@ -25,6 +27,7 @@ export async function GET() {
 
 export async function POST(request: NextRequest) {
   try {
+    const { userId, tenantId } = getIdentity(request);
     const body = await request.json().catch(() => ({}));
     const cli: EmberCli = body.cli === "codex" ? "codex" : "claude";
     const authMode: EmberAuthMode = body.authMode === "subscription" ? "subscription" : "bedrock";
@@ -37,7 +40,8 @@ export async function POST(request: NextRequest) {
 
     const session: EmberSession = {
       sessionId,
-      userId: DEFAULT_USER_ID,
+      userId,
+      tenantId,
       title,
       cli,
       authMode,

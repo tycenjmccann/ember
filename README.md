@@ -171,10 +171,28 @@ full tool reference (`port`, `pull`, `sync-config`, `login`).
 
 ## Going to production / company-wide
 
-Out of the box this is single-user (`userId: "default"`) with no auth on the API —
-fine for a personal deployment behind a private URL, **not** for multi-tenant or
-public exposure. The path to SSO, per-user IAM scoping, VPC/PrivateLink isolation,
-and audit export is laid out in [`docs/ENTERPRISE.md`](docs/ENTERPRISE.md).
+**Auth (Phase 1).** Ember supports multi-tenant Cognito auth: an admin-create-only
+user pool (no self-signup), Hosted-UI sign-in, and a JWT gate (`src/middleware.ts`)
+on every route. Each user carries a `custom:tenantId` (the company) and `sub` (the
+employee); sessions, config, and credentials are scoped to them. Set it up:
+
+```bash
+deploy/cognito/setup-cognito.sh                 # provision pool + client + domain
+# add COGNITO_* output to deploy/.env.local, then:
+deploy/apprunner/deploy.sh
+deploy/cognito/admin-user.sh add you@co.com --tenant acme --admin
+```
+
+For a **personal, single-user** deploy behind a private URL, skip Cognito and set
+`EMBER_AUTH_DISABLED=1` — every request resolves to the `"default"` tenant/user,
+exactly as before. The deploy fails closed if you set neither.
+
+> **Phase 1 caveat:** the auth gate closes the control plane (API + data scoping
+> by tenant). It does **not** yet isolate the *compute* layer — coding sessions
+> still share one EFS filesystem and a bucket-wide runtime role, so a tenant's
+> agent code could reach another tenant's files on the runtime. Per-tenant
+> compute/secret/storage isolation is Phases 2–4. Don't expose multi-tenant to
+> mutually-untrusted companies until those land. See [`docs/ENTERPRISE.md`](docs/ENTERPRISE.md).
 
 ## License
 
