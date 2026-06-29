@@ -79,18 +79,20 @@ inside the repo you're porting. Reconnect (`/mcp`) after a rebuild to load chang
 If the deploy has Cognito auth on, every API call must carry your identity. The
 MCP attaches a Cognito id-token as a **Bearer token** to its `EMBER_URL` calls.
 
-**Just run the login — sign in once:**
+**You don't have to do anything — login is automatic.** The first time you run
+`port` / `pull` / `sync-config` / `login` against an auth-enabled deploy without
+a valid token, the call gets a `401`, the MCP **opens the Cognito Hosted UI in
+your browser**, captures the result on a localhost loopback (PKCE — no client
+secret), saves the tokens to `~/.ember/credentials.json` (mode 0600), and retries
+the call. After that the id-token **auto-refreshes** from the stored refresh
+token — you sign in once, transparently, and not again until the session fully
+expires.
+
+Want to sign in ahead of time (or switch accounts)? Run it explicitly:
 
 ```
 /mcp__port-session__auth
 ```
-
-It opens the Cognito Hosted UI in your browser, captures the result on a
-localhost loopback (PKCE — no client secret), and saves the tokens to
-`~/.ember/credentials.json` (mode 0600). After that, `port` / `pull` /
-`sync-config` / `login` all carry your identity automatically, and the id-token
-**auto-refreshes** from the stored refresh token — you don't sign in again until
-the session fully expires. (Re-run `auth` if you ever see a `401`.)
 
 Token source order (first wins):
 1. `EMBER_TOKEN` env — explicit override (e.g. CI with a pre-minted token).
@@ -182,12 +184,14 @@ is never uploaded (Codex `config.toml` ships verbatim — check it for inline se
 
 ### `authenticate`  (slash: `/mcp__port-session__auth`)
 
-Sign in to an auth-enabled Ember deployment (Cognito). Opens the Hosted UI in
-your browser, captures the code on a localhost loopback (PKCE — no client
-secret), and writes `~/.ember/credentials.json`. One-time; the id-token then
-auto-refreshes. No args. A personal deploy (`EMBER_AUTH_DISABLED=1`) needs no
-login. Requires the public CLI client — the admin gets it from
-`deploy/cognito/setup-cognito.sh` (`COGNITO_CLI_CLIENT_ID`).
+**Optional / manual** — sign-in is normally automatic (any tool that hits a
+`401` triggers this same flow and retries). Run it explicitly only to sign in
+ahead of time or switch accounts. Opens the Hosted UI in your browser, captures
+the code on a localhost loopback (PKCE — no client secret), and writes
+`~/.ember/credentials.json`. One-time; the id-token then auto-refreshes. No args.
+A personal deploy (`EMBER_AUTH_DISABLED=1`) needs no login. Requires the public
+CLI client — the admin gets it from `deploy/cognito/setup-cognito.sh`
+(`COGNITO_CLI_CLIENT_ID`).
 
 ## Limits / future
 
