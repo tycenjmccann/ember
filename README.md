@@ -132,11 +132,12 @@ AWS_PROFILE=<your-profile> npm run dev          # http://localhost:3000
 | `src/app/ember/` | The UI — session sidebar, chat stream, live terminal, account/config sheets. |
 | `src/app/cost/` | In-app cost calculator. |
 | `src/app/api/ember/` | API routes: sessions CRUD, message (stream + buffered), shell presign, warm, checkpoint, port, config, auth. |
-| `src/lib/ember/` | Runtime client, DynamoDB session store, S3 config/auth stores, shell wire protocol. |
-| `deploy/` | `install.sh` building blocks: stores, IAM role, VPC/EFS, runtime, App Runner. |
+| `src/lib/ember/` | Runtime client, DynamoDB session store, S3 config/auth/secrets stores, tenant silo registry, request identity, shell wire protocol. |
+| `src/middleware.ts` | The auth gate — verifies the Cognito JWT and stamps `tenantId`/`userId` on every request. |
+| `deploy/` | `install.sh` building blocks: stores, IAM role, VPC/EFS, runtime, App Runner; `provision-tenant.sh` / `offboard-tenant.sh` for per-tenant silos; `cognito/` setup + admin-user CLI. |
 | `deploy/coding-agent-runtime/` | The AgentCore runtime image + deploy (Claude Code + Codex, EFS workspace, OTel). |
 | `mcp/port-session/` | Local stdio MCP server — `port`, `pull`, `sync-config`, `login` tools. |
-| `docs/ENTERPRISE.md` | The VPC/SSO/audit hardening path for company-wide rollout. |
+| `docs/ENTERPRISE.md` | Multi-tenant architecture + the VPC/SSO/audit hardening path for company-wide rollout. |
 
 ## Features
 

@@ -2,8 +2,9 @@
 
 The wedge in one sentence: **Claude Code / Codex on the web, running inside your
 own AWS account** — your code, your credentials, your audit logs, your model
-choice. This doc is the gap list between the open single-user build and a
-company-wide rollout, plus why that posture matters right now.
+choice. This doc covers the multi-tenant architecture that ships today and the
+remaining gap list to a full company-wide rollout, plus why that posture matters
+right now.
 
 ## Why now
 
@@ -27,21 +28,69 @@ what this answers. Post-Ona, every platform/security team is asking it.
 - Live web terminal over a presigned `wss://` straight to the microVM.
 - Laptop ⇄ cloud session handoff (the `port-session` MCP).
 - One-command install into a fresh account (`install.sh`).
+- **Multi-tenant auth + tenant isolation** (the four phases below) — Cognito gate,
+  per-tenant data + storage scoping, opt-in per-tenant compute silos, and
+  Secrets Manager credentials. See the architecture below.
+
+## Multi-tenant architecture
+
+A tenant = a company (`custom:tenantId`); a user = an employee (Cognito `sub`).
+The **control plane is pooled** (one App Runner app, one DynamoDB table, one
+bucket — all scoped by tenant), and the **compute plane is silo-on-demand**: a
+tenant runs on the shared pool runtime until you provision it a dedicated one.
+
+```mermaid
+flowchart TB
+  subgraph Browser["Browser / port-session MCP"]
+    U["employee<br/>(Cognito id-token)"]
+  end
+
+  U -->|"Bearer JWT"| MW["middleware.ts<br/>verify token → stamp tenantId+userId"]
+
+  subgraph CP["Control plane (pooled, tenant-scoped)"]
+    MW --> API["/api/ember/*"]
+    API --> DDB[("DynamoDB<br/>tenant-index GSI<br/>Query by tenantId")]
+    API --> S3[("S3<br/>ember/t/&lt;tenant&gt;/…")]
+    API --> SM[("Secrets Manager<br/>ember/t/&lt;tenant&gt;/auth/…")]
+  end
+
+  API -->|"resolveRuntimeArn(tenant)"| RES{"tenant<br/>siloed?"}
+  RES -->|no| POOL["shared pool runtime<br/>(EFS root AP)"]
+  RES -->|yes| SILO["tenant runtime<br/>EFS AP uid 1000 /t/&lt;tenant&gt;<br/>role fenced to ember/t/&lt;tenant&gt;/*"]
+
+  POOL -.session delete.-> REAP["session-reaper<br/>stop + purge on tenant runtime"]
+  SILO -.session delete.-> REAP
+```
+
+**The four isolation layers (all merged):**
+
+| Layer | Boundary | Mechanism |
+|---|---|---|
+| Auth | request → identity | Cognito admin-create-only pool; `middleware.ts` verifies the id-token and stamps `tenantId`/`userId` (routes never trust a client header) |
+| Data | DynamoDB | `tenant-index` GSI → `listSessions` Querys one tenant; point reads ownership-checked |
+| Storage | S3 + Secrets Manager | every artifact under `ember/t/<tenantId>/…`; subscription creds in Secrets Manager (KMS), materialized to **tmpfs** (`/dev/shm`) — Claude token directly, Codex `auth.json` via a tmpfs symlink — never the shared EFS |
+| Compute | AgentCore runtime + EFS | opt-in silo: dedicated runtime, EFS access point (non-root uid 1000, private root dir), runtime role fenced to the tenant's S3 + secret prefix |
+
+Pooled tenants share one runtime + EFS + role and are isolated only logically —
+**provision a silo (`deploy/provision-tenant.sh <id>`) per tenant before
+onboarding mutually-untrusted companies.**
 
 ## The gap to enterprise-ready
 
 Ordered by what unblocks a paid pilot fastest.
 
-### 1. Authentication + multi-tenancy  *(blocker)*
-Today every row is `userId: "default"` and the API has no auth — fine behind a
-private URL for one person, unacceptable for a team.
-- **AuthN:** Amazon Cognito user pool (hosted UI) or SAML/OIDC federation to the
-  customer's IdP (Okta, Entra, Google). App Runner sits behind it.
-- **AuthZ:** stamp the real `sub` on every session, config, and auth row; filter all
-  list/get/delete by it. The data model already keys on `userId` — it's a
-  find-and-replace of `DEFAULT_USER_ID`, not a migration.
-- **API gate:** middleware that rejects unauthenticated requests to
-  `/api/ember/*`, including the port/checkpoint/presign endpoints.
+### 1. Authentication + multi-tenancy  *(shipped)*
+Cognito **admin-create-only** user pool (no self-signup), Hosted-UI sign-in, and a
+JWT gate (`src/middleware.ts`) on every route. **Session** rows carry `tenantId`
+(company) + `userId` (`sub`) and are listed via the `tenant-index` GSI; point reads
+are ownership-checked. (`config:{userId}` / `auth:{userId}` metadata rows are keyed
+by the globally-unique userId, not tenant-stamped — tenant-scoped DDB cleanup applies
+to session rows; metadata rows are removed with their user at offboarding.)
+`EMBER_AUTH_DISABLED=1` keeps the personal single-user mode; the deploy **fails
+closed** if neither auth nor that flag is set.
+- **Still open:** SAML/OIDC federation to the customer's IdP (Okta/Entra/Google) —
+  today it's a standalone Cognito pool. Cognito supports IdP federation, so this is
+  configuration, not new code.
 
 ### 2. Network isolation  *(the core enterprise selling point)*
 
@@ -86,13 +135,22 @@ needs `ec2:CreateSubnet`, `ec2:*NatGateway*`, `ec2:*RouteTable*`, `ec2:AllocateA
   registries via your proxy or NAT-fronted firewall.
 - Private App Runner ingress + WAF, or front with an internal ALB.
 
-### 3. Per-user credential isolation  *(security)*
-- Subscription tokens + ported transcripts live in S3 under `ember/{userId}/…`.
-  Move secrets to **AWS Secrets Manager** (or AgentCore Identity vault) with
-  per-user KMS grants; scope the runtime role so a session can read only its own
-  user's prefix (IAM session policy / ABAC on `userId` tag).
-- Short-lived, scoped GitHub tokens (GitHub App installation tokens) instead of a
-  single shared PAT.
+### 3. Per-tenant credential + storage isolation  *(shipped)*
+- All artifacts (config bundles, ported transcripts, bundles, checkpoints) live
+  under `ember/t/<tenantId>/…` in S3.
+- Subscription tokens move to **AWS Secrets Manager** (`EMBER_SECRETS_BACKEND=secretsmanager`,
+  one secret per tenant/user/CLI, KMS-at-rest). Default `s3` backend keeps the
+  prior behavior for personal deploys. Both creds are materialized to **tmpfs**
+  (`/dev/shm`), never the shared EFS: the Claude PTY token directly, and the Codex
+  `auth.json` via a tmpfs file that `$CODEX_HOME/auth.json` symlinks to (the `codex`
+  CLI reads through the link; only the symlink lives on EFS).
+- A **siloed tenant's runtime role is fenced** to `ember/t/<tenantId>/*` for both
+  S3 and its own secret prefix, and its EFS access point forces non-root uid 1000
+  on a private root dir — so a session can physically reach only its tenant's bytes.
+- Offboarding (`deploy/offboard-tenant.sh <id>`) removes users, purges sessions,
+  deletes the tenant's secrets + S3 prefix, and tears down its silo.
+- **Still open:** short-lived, scoped GitHub tokens (GitHub App installation tokens)
+  instead of the single shared PAT.
 
 ### 4. Audit + observability  *(compliance)*
 - OTel → CloudWatch tracing already exists. Add an **immutable audit log** (every
@@ -113,9 +171,10 @@ needs `ec2:CreateSubnet`, `ec2:*NatGateway*`, `ec2:*RouteTable*`, `ec2:AllocateA
 
 ## Suggested rollout
 
-1. **Pilot (single team, private):** items 1–2. SSO + VPC isolation. This is the
-   demo that closes a security review.
-2. **Department:** items 3–4. Per-user secret isolation + audit export.
+1. **Pilot (single team, private):** items 1–3 ship today — Cognito auth, tenant
+   data/storage scoping, per-tenant compute silos, VPC isolation. This is the demo
+   that closes a security review. Provision a silo per tenant for untrusted companies.
+2. **Department:** item 4 (audit export) + IdP federation (item 1's open piece).
 3. **Org-wide:** items 5–6. Budgets, admin console, AWS Marketplace listing for
    procurement-friendly purchasing and co-sell.
 
