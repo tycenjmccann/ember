@@ -24,7 +24,7 @@ export function oauthEnv(origin: string): OAuthEnv | null {
   };
 }
 
-export function authorizeUrl(env: OAuthEnv, state: string): string {
+export function authorizeUrl(env: OAuthEnv, state: string, idp?: string): string {
   const q = new URLSearchParams({
     client_id: env.clientId,
     response_type: "code",
@@ -32,6 +32,11 @@ export function authorizeUrl(env: OAuthEnv, state: string): string {
     redirect_uri: env.redirectUri,
     state,
   });
+  // identity_provider sends the user straight to that federated IdP (e.g. a
+  // customer's Okta) instead of the Hosted-UI chooser. The name must match a
+  // provider registered on the pool (deploy/cognito/add-idp.sh) and enabled on
+  // this client; an unknown name just falls back to the chooser.
+  if (idp) q.set("identity_provider", idp);
   return `${env.domain}/oauth2/authorize?${q.toString()}`;
 }
 

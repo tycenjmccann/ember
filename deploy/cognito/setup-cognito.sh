@@ -68,6 +68,18 @@ else
 fi
 COGNITO_DOMAIN="https://${DOMAIN_PREFIX_FINAL}.auth.${AWS_REGION}.amazoncognito.com"
 
+# A rerun must NOT drop federated IdPs added later via add-idp.sh. update-user-pool-client
+# replaces the whole client, so when we reuse a client we re-send the UNION of its
+# current providers with COGNITO instead of COGNITO alone. Echoes a space-separated list.
+client_idps_union() {
+  local client_id="$1" current p out="COGNITO"
+  current=$(aws cognito-idp describe-user-pool-client --user-pool-id "$POOL_ID" \
+    --client-id "$client_id" --region "$AWS_REGION" \
+    --query 'UserPoolClient.SupportedIdentityProviders' --output text 2>/dev/null || true)
+  for p in $current; do [[ "$p" == "COGNITO" || "$p" == "None" || -z "$p" ]] || out="$out $p"; done
+  echo "$out"
+}
+
 # ── 4. Confidential app client (auth-code flow, with secret) ─────────────────
 CLIENT_ID=$(aws cognito-idp list-user-pool-clients --user-pool-id "$POOL_ID" --region "$AWS_REGION" \
   --max-results 60 --query "UserPoolClients[?ClientName=='${CLIENT_NAME}'].ClientId | [0]" --output text)
@@ -88,11 +100,12 @@ if [[ "$CLIENT_ID" == "None" || -z "$CLIENT_ID" ]]; then
     --query 'UserPoolClient.ClientId' --output text)
 else
   echo "Reusing app client ${CLIENT_ID} (updating callback URLs)..."
+  # shellcheck disable=SC2046
   aws cognito-idp update-user-pool-client \
     --user-pool-id "$POOL_ID" --client-id "$CLIENT_ID" --region "$AWS_REGION" \
     --allowed-o-auth-flows code --allowed-o-auth-flows-user-pool-client \
     --allowed-o-auth-scopes openid email profile \
-    --supported-identity-providers COGNITO \
+    --supported-identity-providers $(client_idps_union "$CLIENT_ID") \
     --callback-urls "$CALLBACK_URLS" --logout-urls "$LOGOUT_URLS" \
     --explicit-auth-flows ALLOW_REFRESH_TOKEN_AUTH >/dev/null
 fi
@@ -132,7 +145,7 @@ else
     --user-pool-id "$POOL_ID" --client-id "$CLI_CLIENT_ID" --region "$AWS_REGION" \
     --allowed-o-auth-flows code --allowed-o-auth-flows-user-pool-client \
     --allowed-o-auth-scopes openid email profile \
-    --supported-identity-providers COGNITO \
+    --supported-identity-providers $(client_idps_union "$CLI_CLIENT_ID") \
     --callback-urls $CLI_CALLBACKS --logout-urls $CLI_LOGOUTS \
     --explicit-auth-flows ALLOW_REFRESH_TOKEN_AUTH >/dev/null
 fi
