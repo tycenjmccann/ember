@@ -18,8 +18,15 @@
  */
 
 import { NextRequest, NextResponse } from "next/server";
-import { cognitoConfig, verifyIdToken } from "@/lib/auth/cognito";
-import { SESSION_COOKIE } from "@/lib/auth/session";
+import { cognitoConfig, verifyIdToken, type VerifiedClaims } from "@/lib/auth/cognito";
+import { oauthEnv, refreshTokens } from "@/lib/auth/oauth";
+import {
+  SESSION_COOKIE,
+  REFRESH_COOKIE,
+  SESSION_MAX_AGE_S,
+  sessionCookieOptions,
+  refreshCookieOptions,
+} from "@/lib/auth/session";
 import { USER_HEADER, TENANT_HEADER } from "@/lib/ember/identity";
 
 // Paths that must remain reachable without a session.
@@ -72,18 +79,52 @@ export async function middleware(req: NextRequest) {
   // Browser uses the httpOnly cookie; programmatic clients (the port-session MCP)
   // send the same Cognito JWT as a Bearer token. Both verify identically.
   const bearer = req.headers.get("authorization");
-  const token =
-    (bearer?.toLowerCase().startsWith("bearer ") ? bearer.slice(7).trim() : null) ||
-    req.cookies.get(SESSION_COOKIE)?.value;
-  if (!token) return unauthenticated(req);
+  const bearerToken = bearer?.toLowerCase().startsWith("bearer ") ? bearer.slice(7).trim() : null;
+  const cookieToken = req.cookies.get(SESSION_COOKIE)?.value;
+  const token = bearerToken || cookieToken;
 
-  const claims = await verifyIdToken(token, cfg);
+  let claims: VerifiedClaims | null = token ? await verifyIdToken(token, cfg) : null;
+
+  // id-token missing or expired → transparently re-mint it from the refresh token
+  // so the browser session survives until the refresh token itself expires (10y).
+  // Bearer (MCP) callers manage their own refresh, so only the cookie path here.
+  let refreshedIdToken: string | null = null;
+  let rotatedRefreshToken: string | null = null;
+  if (!claims && !bearerToken) {
+    const refresh = req.cookies.get(REFRESH_COOKIE)?.value;
+    const env = oauthEnv(req.nextUrl.origin);
+    if (refresh && env) {
+      const next = await refreshTokens(env, refresh);
+      if (next?.id_token) {
+        const verified = await verifyIdToken(next.id_token, cfg);
+        if (verified) {
+          claims = verified;
+          refreshedIdToken = next.id_token;
+          // With refresh-token rotation on, the endpoint returns a replacement
+          // refresh token and invalidates the old one after a grace period —
+          // persist it or the next refresh fails and forces a re-login.
+          if (next.refresh_token && next.refresh_token !== refresh) {
+            rotatedRefreshToken = next.refresh_token;
+          }
+        }
+      }
+    }
+  }
+
   if (!claims) return unauthenticated(req);
 
   const headers = stripIdentityHeaders(req);
   headers.set(USER_HEADER, claims.userId);
   headers.set(TENANT_HEADER, claims.tenantId);
-  return NextResponse.next({ request: { headers } });
+  const res = NextResponse.next({ request: { headers } });
+  // Persist the freshly minted id-token so subsequent requests skip the refresh.
+  if (refreshedIdToken) {
+    res.cookies.set(SESSION_COOKIE, refreshedIdToken, sessionCookieOptions(SESSION_MAX_AGE_S));
+  }
+  if (rotatedRefreshToken) {
+    res.cookies.set(REFRESH_COOKIE, rotatedRefreshToken, refreshCookieOptions());
+  }
+  return res;
 }
 
 export const config = {
