@@ -29,6 +29,7 @@ import io
 import json
 import os
 import re
+from datetime import datetime, timezone
 import shlex
 import shutil
 import socket
@@ -730,19 +731,83 @@ def _install_resume_transcript(s3_key: str, session_id: str, workdir: str,
         return False
 
 
-def _checkpoint_transcript(session_id: str, workdir: str,
-                           tenant_id: str | None = None) -> dict:
-    """Reverse of install: read the (now-grown) Claude transcript off EFS and
-    upload it to S3 so the laptop can pull it back and `claude --resume` locally.
+def _install_codex_resume_transcript(s3_key: str, session_id: str) -> bool:
+    """Codex analog of _install_resume_transcript. Download a ported codex rollout
+    from S3 and place it under $CODEX_HOME/sessions so `codex exec resume <uuid>`
+    finds it. Codex locates a session by scanning that tree for the uuid in the
+    filename and reading the .jsonl directly (the SQLite index is a rebuildable
+    cache with a filesystem fallback), so a flat placement is picked up — we don't
+    need the original YYYY/MM/DD path. Idempotent: if a rollout for this uuid is
+    already present (e.g. a prior turn grew it), keep that grown copy."""
+    if not (s3_key and session_id and ARTIFACT_BUCKET):
+        return False
+    existing = _find_codex_rollout(session_id)
+    if existing:
+        return True  # already on disk (possibly grown by a prior cloud turn)
+    # Codex locates a session by parsing BOTH a timestamp and the uuid out of the
+    # filename (rollout-<YYYY-MM-DDThh-mm-ss>-<uuid>.jsonl), so the name must match
+    # that shape or the scan skips it. Place it under today's YYYY/MM/DD like codex
+    # itself does, with a synthetic timestamp.
+    now = datetime.now(timezone.utc)
+    dest_dir = os.path.join(CODEX_HOME, "sessions",
+                            f"{now.year:04d}", f"{now.month:02d}", f"{now.day:02d}")
+    ts = now.strftime("%Y-%m-%dT%H-%M-%S")
+    dest = os.path.join(dest_dir, f"rollout-{ts}-{session_id}.jsonl")
+    try:
+        os.makedirs(dest_dir, exist_ok=True)
+        s3 = boto3.client("s3", region_name=os.environ.get("AWS_REGION", "us-east-1"))
+        obj = s3.get_object(Bucket=ARTIFACT_BUCKET, Key=s3_key)
+        with open(dest, "wb") as f:
+            f.write(obj["Body"].read())
+        logger.info("codex_resume_transcript_installed", extra={"session": session_id})
+        return True
+    except Exception as exc:  # noqa: BLE001 — non-fatal; fall back to a cold turn
+        logger.warning("codex_resume_transcript_install_failed",
+                       extra={"key": s3_key, "error": str(exc)[:200]})
+        return False
 
-    The transcript lives at {CLAUDE_CONFIG_DIR}/projects/<slug>/<session_id>.jsonl
+
+def _find_codex_rollout(session_id: str) -> str | None:
+    """Locate a codex session's rollout .jsonl by its thread uuid. Codex stores
+    one file per session at $CODEX_HOME/sessions/YYYY/MM/DD/rollout-<ts>-<uuid>.jsonl,
+    so we glob the tree for the uuid anywhere in the filename and take the newest
+    match (a resumed session keeps the same uuid)."""
+    safe = re.sub(r"[^A-Za-z0-9._-]", "-", session_id)
+    matches: list[str] = []
+    for cid in {session_id, safe}:
+        matches += glob.glob(
+            os.path.join(CODEX_HOME, "sessions", "**", f"*{glob.escape(cid)}*.jsonl"),
+            recursive=True,
+        )
+    files = [m for m in set(matches) if os.path.isfile(m)]
+    if not files:
+        return None
+    files.sort(key=lambda p: os.path.getmtime(p), reverse=True)
+    return files[0]
+
+
+def _checkpoint_transcript(session_id: str, workdir: str,
+                           tenant_id: str | None = None, cli: str = "claude") -> dict:
+    """Reverse of install: read the (now-grown) transcript off EFS and upload it
+    to S3 so the laptop can pull it back and resume locally.
+
+    Per-CLI on-disk layout:
+      claude → {CLAUDE_CONFIG_DIR}/projects/<slug>/<session_id>.jsonl
+      codex  → {CODEX_HOME}/sessions/**/rollout-<ts>-<session_id>.jsonl
     — the same file the cloud appended to during the session. Returns
     {key, bytes, branch?} for the caller to presign a GET. The branch (current
     checkout) lets the laptop pull the cloud's commits before resuming."""
-    config_dir = os.environ.get("CLAUDE_CONFIG_DIR", os.path.join(WORKSPACE_ROOT, ".claude-data"))
-    src = os.path.join(config_dir, "projects", _claude_project_slug(workdir), f"{session_id}.jsonl")
-    if not os.path.isfile(src):
-        raise FileNotFoundError(f"no transcript at {src} (session never resumed on this VM?)")
+    if cli == "codex":
+        src = _find_codex_rollout(session_id)
+        if not src:
+            raise FileNotFoundError(
+                f"no codex rollout for {session_id} under {CODEX_HOME}/sessions "
+                "(session never ran on this VM?)")
+    else:
+        config_dir = os.environ.get("CLAUDE_CONFIG_DIR", os.path.join(WORKSPACE_ROOT, ".claude-data"))
+        src = os.path.join(config_dir, "projects", _claude_project_slug(workdir), f"{session_id}.jsonl")
+        if not os.path.isfile(src):
+            raise FileNotFoundError(f"no transcript at {src} (session never resumed on this VM?)")
     if not ARTIFACT_BUCKET:
         raise RuntimeError("ARTIFACT_BUCKET not set")
     key = f"{_tenant_prefix(tenant_id)}/checkpoint/{session_id}/{session_id}.jsonl"
@@ -1504,10 +1569,14 @@ async def invocations(request: Request):
         if cli == "claude":
             _seed_claude_first_run(workdir)
         # Install a ported transcript and resume it natively. On success the turn
-        # runs as `claude --resume <resume_session_id>` — true continuation.
+        # runs as `claude --resume <id>` / `codex exec resume <id>` — true
+        # continuation of the laptop conversation.
         if cli == "claude" and resume_transcript and resume_session_id:
             if _install_resume_transcript(resume_transcript, resume_session_id, workdir,
                                           runtime_session_id=session_id):
+                claude_session_id = claude_session_id or resume_session_id
+        elif cli == "codex" and resume_transcript and resume_session_id:
+            if _install_codex_resume_transcript(resume_transcript, resume_session_id):
                 claude_session_id = claude_session_id or resume_session_id
         # Hand the interactive Terminal a one-shot launch hint: which dir to cd
         # into and which conversation to `claude --resume`. shell-init.sh reads
@@ -1530,7 +1599,7 @@ async def invocations(request: Request):
         if not cp_id:
             return JSONResponse({"error": "checkpoint needs a session id"}, status_code=400)
         try:
-            info = _checkpoint_transcript(cp_id, workdir, tenant_id)
+            info = _checkpoint_transcript(cp_id, workdir, tenant_id, cli)
         except FileNotFoundError as exc:
             return JSONResponse({"error": str(exc)}, status_code=404)
         except Exception as exc:  # noqa: BLE001
