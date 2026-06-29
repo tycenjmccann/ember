@@ -76,17 +76,30 @@ inside the repo you're porting. Reconnect (`/mcp`) after a rebuild to load chang
 
 ### Auth (multi-tenant deploys)
 
-If the deploy has Cognito auth on (Phase 1), every API call must carry your
-identity. The MCP attaches a **Bearer token** to its calls to `EMBER_URL`:
+If the deploy has Cognito auth on, every API call must carry your identity. The
+MCP attaches a Cognito id-token as a **Bearer token** to its `EMBER_URL` calls.
 
-- `EMBER_TOKEN` env (above) — your Cognito **id-token**, OR
-- `~/.ember/token` — drop the token in this file instead (override the path with
-  `EMBER_TOKEN_FILE`), so a rotating token doesn't mean re-editing the MCP config.
+**Just run the login — sign in once:**
+
+```
+/mcp__port-session__auth
+```
+
+It opens the Cognito Hosted UI in your browser, captures the result on a
+localhost loopback (PKCE — no client secret), and saves the tokens to
+`~/.ember/credentials.json` (mode 0600). After that, `port` / `pull` /
+`sync-config` / `login` all carry your identity automatically, and the id-token
+**auto-refreshes** from the stored refresh token — you don't sign in again until
+the session fully expires. (Re-run `auth` if you ever see a `401`.)
+
+Token source order (first wins):
+1. `EMBER_TOKEN` env — explicit override (e.g. CI with a pre-minted token).
+2. `~/.ember/credentials.json` — from `authenticate`; auto-refreshed.
+3. `~/.ember/token` — a plain id-token you dropped in (`EMBER_TOKEN_FILE` overrides the path).
 
 The token is sent **only** to `EMBER_URL`, never to the presigned S3 URLs (those
 carry their own signature). For a personal deploy (`EMBER_AUTH_DISABLED=1`) leave
-both unset — calls go through unauthenticated, as before. Against an auth'd deploy
-with no token you'll get a `401` telling you to set `EMBER_TOKEN`.
+all unset — calls go through unauthenticated, as before.
 
 ## Tools
 
@@ -166,6 +179,15 @@ ships the runnable ones**:
 The sync output prints all three buckets so you know exactly what will and won't
 work, and how to fix the rest. `port-session` itself is always excluded. Secret env
 is never uploaded (Codex `config.toml` ships verbatim — check it for inline secrets).
+
+### `authenticate`  (slash: `/mcp__port-session__auth`)
+
+Sign in to an auth-enabled Ember deployment (Cognito). Opens the Hosted UI in
+your browser, captures the code on a localhost loopback (PKCE — no client
+secret), and writes `~/.ember/credentials.json`. One-time; the id-token then
+auto-refreshes. No args. A personal deploy (`EMBER_AUTH_DISABLED=1`) needs no
+login. Requires the public CLI client — the admin gets it from
+`deploy/cognito/setup-cognito.sh` (`COGNITO_CLI_CLIENT_ID`).
 
 ## Limits / future
 

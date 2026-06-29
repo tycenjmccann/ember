@@ -32,6 +32,7 @@ import { newestTranscript, sessionIdForTranscript, installLocalTranscript } from
 import { gatherBundle, type Cli } from "./config.js";
 import { gatherLoginBody } from "./login.js";
 import { emberAuthHeaders } from "./auth.js";
+import { runCognitoLogin } from "./cognito-login.js";
 
 const EMBER_URL = (process.env.EMBER_URL || "").replace(/\/$/, "");
 
@@ -150,7 +151,20 @@ const LOGIN_TOOL = {
   },
 };
 
-server.setRequestHandler(ListToolsRequestSchema, async () => ({ tools: [TOOL, PULL_TOOL, SYNC_TOOL, LOGIN_TOOL] }));
+const AUTH_TOOL = {
+  name: "authenticate",
+  description:
+    "Sign in to Ember (Cognito) so this MCP can call an auth-enabled deployment. " +
+    "Opens your browser to the Ember Hosted-UI login, captures the result on a " +
+    "localhost loopback, and saves the tokens to ~/.ember/credentials.json. After " +
+    "this, port/pull/sync/login all carry your identity automatically and the " +
+    "token auto-refreshes — you sign in ONCE, not hourly. Run this if those tools " +
+    "return 401, or once after the admin turns on auth. No-op note: a personal " +
+    "deploy (EMBER_AUTH_DISABLED=1) needs no login.",
+  inputSchema: { type: "object", properties: {} },
+};
+
+server.setRequestHandler(ListToolsRequestSchema, async () => ({ tools: [TOOL, PULL_TOOL, SYNC_TOOL, LOGIN_TOOL, AUTH_TOOL] }));
 
 // Slash-command surface: a `port` prompt shows up as
 // /mcp__port-session__port. Selecting it tells Claude to call the tool now.
@@ -188,9 +202,31 @@ const LOGIN_PROMPT = {
   arguments: [{ name: "cli", description: "claude or codex (required).", required: true }],
 };
 
-server.setRequestHandler(ListPromptsRequestSchema, async () => ({ prompts: [PORT_PROMPT, PULL_PROMPT, SYNC_PROMPT, LOGIN_PROMPT] }));
+const AUTH_PROMPT = {
+  name: "auth",
+  description: "Sign in to Ember (Cognito Hosted UI) so this MCP can call an auth-enabled deployment.",
+  arguments: [],
+};
+
+server.setRequestHandler(ListPromptsRequestSchema, async () => ({ prompts: [PORT_PROMPT, PULL_PROMPT, SYNC_PROMPT, LOGIN_PROMPT, AUTH_PROMPT] }));
 
 server.setRequestHandler(GetPromptRequestSchema, async (req) => {
+  if (req.params.name === "auth") {
+    return {
+      messages: [
+        {
+          role: "user",
+          content: {
+            type: "text",
+            text:
+              "Sign me in to Ember by calling the authenticate tool now. A browser " +
+              "window will open for the Cognito login; after it returns, confirm I'm " +
+              "signed in and that port/pull/sync will now carry my identity.",
+          },
+        },
+      ],
+    };
+  }
   if (req.params.name === "login") {
     const cli = (Object.values((req.params.arguments ?? {}) as Record<string, string>)[0] || "claude").trim();
     return {
@@ -434,7 +470,28 @@ async function runLogin(rawArgs: unknown) {
   return { content: [{ type: "text", text: lines.join("\n") }] };
 }
 
+async function runAuth() {
+  if (!EMBER_URL) throw new Error("EMBER_URL is not set in the MCP server environment.");
+  const { email } = await runCognitoLogin(EMBER_URL);
+  const lines = [
+    `✅ Signed in to Ember${email ? ` as ${email}` : ""}.`,
+    ``,
+    `Saved to ~/.ember/credentials.json (id-token + refresh token, 0600).`,
+    `port / pull / sync / login now carry your identity automatically, and the`,
+    `token auto-refreshes — you won't need to sign in again until the session`,
+    `fully expires.`,
+  ];
+  return { content: [{ type: "text", text: lines.join("\n") }] };
+}
+
 server.setRequestHandler(CallToolRequestSchema, async (req) => {
+  if (req.params.name === AUTH_TOOL.name) {
+    try {
+      return await runAuth();
+    } catch (err) {
+      return { isError: true, content: [{ type: "text", text: `Sign-in failed: ${(err as Error).message}` }] };
+    }
+  }
   if (req.params.name === LOGIN_TOOL.name) {
     try {
       return await runLogin(req.params.arguments);
