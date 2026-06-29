@@ -101,6 +101,42 @@ CLIENT_SECRET=$(aws cognito-idp describe-user-pool-client \
   --user-pool-id "$POOL_ID" --client-id "$CLIENT_ID" --region "$AWS_REGION" \
   --query 'UserPoolClient.ClientSecret' --output text)
 
+# ── 5. Public CLI app client (PKCE, NO secret) for the port-session MCP ───────
+# The MCP runs on a laptop, so it can't hold a client secret — it uses a PUBLIC
+# client with the authorization-code + PKCE flow and a loopback redirect. This is
+# what `/mcp__port-session__auth` drives: opens the Hosted UI, captures the code
+# on http://localhost:<port>/callback, exchanges it with PKCE (no secret).
+CLI_CLIENT_NAME="ember-cli"
+# Loopback ports the MCP may bind; all registered so whichever is free works.
+CLI_CALLBACKS="http://localhost:8717/callback http://localhost:8718/callback http://localhost:8719/callback"
+CLI_LOGOUTS="http://localhost:8717/logout http://localhost:8718/logout http://localhost:8719/logout"
+CLI_CLIENT_ID=$(aws cognito-idp list-user-pool-clients --user-pool-id "$POOL_ID" --region "$AWS_REGION" \
+  --max-results 60 --query "UserPoolClients[?ClientName=='${CLI_CLIENT_NAME}'].ClientId | [0]" --output text)
+
+if [[ "$CLI_CLIENT_ID" == "None" || -z "$CLI_CLIENT_ID" ]]; then
+  echo "Creating public CLI app client ${CLI_CLIENT_NAME}..."
+  # shellcheck disable=SC2086
+  CLI_CLIENT_ID=$(aws cognito-idp create-user-pool-client \
+    --user-pool-id "$POOL_ID" --client-name "$CLI_CLIENT_NAME" --region "$AWS_REGION" \
+    --no-generate-secret \
+    --allowed-o-auth-flows code --allowed-o-auth-flows-user-pool-client \
+    --allowed-o-auth-scopes openid email profile \
+    --supported-identity-providers COGNITO \
+    --callback-urls $CLI_CALLBACKS --logout-urls $CLI_LOGOUTS \
+    --explicit-auth-flows ALLOW_REFRESH_TOKEN_AUTH \
+    --query 'UserPoolClient.ClientId' --output text)
+else
+  echo "Reusing public CLI app client ${CLI_CLIENT_ID} (updating callbacks)..."
+  # shellcheck disable=SC2086
+  aws cognito-idp update-user-pool-client \
+    --user-pool-id "$POOL_ID" --client-id "$CLI_CLIENT_ID" --region "$AWS_REGION" \
+    --allowed-o-auth-flows code --allowed-o-auth-flows-user-pool-client \
+    --allowed-o-auth-scopes openid email profile \
+    --supported-identity-providers COGNITO \
+    --callback-urls $CLI_CALLBACKS --logout-urls $CLI_LOGOUTS \
+    --explicit-auth-flows ALLOW_REFRESH_TOKEN_AUTH >/dev/null
+fi
+
 cat <<EOF
 
 ── Cognito ready ──────────────────────────────────────────────────────────────
@@ -110,6 +146,7 @@ COGNITO_USER_POOL_ID="${POOL_ID}"
 COGNITO_CLIENT_ID="${CLIENT_ID}"
 COGNITO_CLIENT_SECRET="${CLIENT_SECRET}"
 COGNITO_DOMAIN="${COGNITO_DOMAIN}"
+COGNITO_CLI_CLIENT_ID="${CLI_CLIENT_ID}"
 
 Callback URL registered: ${CALLBACK_URLS}
 (If DEPLOYMENT_URL was unset/localhost, rerun this after the first App Runner

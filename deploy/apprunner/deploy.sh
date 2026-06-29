@@ -179,7 +179,7 @@ env.update({'HOSTNAME':'0.0.0.0','PORT':'8080','NODE_ENV':'production'})
 # Overlay only vars actually present in this shell's environment.
 for k in ['AWS_REGION','CODING_AGENT_RUNTIME_ARN','EMBER_TABLE','ARTIFACT_BUCKET','DEPLOYMENT_URL','NEXT_PUBLIC_BRAND_NAME',
           'COGNITO_USER_POOL_ID','COGNITO_CLIENT_ID','COGNITO_CLIENT_SECRET','COGNITO_DOMAIN','EMBER_AUTH_DISABLED',
-          'EMBER_SECRETS_BACKEND']:
+          'COGNITO_CLI_CLIENT_ID','EMBER_SECRETS_BACKEND']:
     v = os.environ.get(k)
     if v: env[k] = v
 print(json.dumps(env))
