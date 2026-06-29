@@ -13,8 +13,9 @@
  *   3. ~/.ember/token — a plain id-token the user dropped in (legacy / manual).
  *
  * Nothing set → no header. Correct for a personal deploy (EMBER_AUTH_DISABLED=1).
- * Against an auth'd deploy the call 401s and the error tells the user to run
- * `/mcp__port-session__auth`.
+ * Against an auth'd deploy the call 401s; emberFetch (below) catches that, runs
+ * the Hosted-UI login automatically, and retries — so the user never hand-runs
+ * `/mcp__port-session__auth` (it stays available for signing in ahead of time).
  *
  * The token is sent ONLY to EMBER_URL — never to presigned S3 URLs (their SigV4
  * must not see a third-party bearer). Only the helpers here add it.
@@ -23,7 +24,7 @@
 import { readFile, writeFile, chmod } from "node:fs/promises";
 import { homedir } from "node:os";
 import { join } from "node:path";
-import { CRED_PATH, type StoredCreds } from "./cognito-login.js";
+import { CRED_PATH, runCognitoLogin, type StoredCreds } from "./cognito-login.js";
 
 const LEGACY_TOKEN_PATH = process.env.EMBER_TOKEN_FILE || join(homedir(), ".ember", "token");
 // Refresh when the id-token has under this many seconds left (covers clock skew
@@ -119,4 +120,64 @@ async function resolveToken(): Promise<string | null> {
 export async function emberAuthHeaders(): Promise<Record<string, string>> {
   const token = await resolveToken();
   return token ? { Authorization: `Bearer ${token}` } : {};
+}
+
+// One in-flight interactive login at a time — if two API calls 401 at once, they
+// share the same browser flow instead of opening two tabs.
+let loginInFlight: Promise<void> | null = null;
+
+async function ensureLogin(emberUrl: string): Promise<void> {
+  if (!loginInFlight) {
+    loginInFlight = runCognitoLogin(emberUrl)
+      .then(() => {})
+      .finally(() => {
+        loginInFlight = null;
+      });
+  }
+  return loginInFlight;
+}
+
+/**
+ * fetch() against the Ember API that transparently logs in on a 401.
+ *
+ * Steady state it's a plain authed fetch. When the token is missing/expired and
+ * the deploy has auth on, the first call 401s → we open the Hosted-UI login
+ * (PKCE loopback), persist the fresh credentials, and retry ONCE. So port/pull/
+ * sync just open the browser when needed instead of erroring with "run /auth".
+ *
+ * `init.headers` is merged AFTER the auth header so an explicit Authorization
+ * (or Content-Type) the caller passes still wins. The retried request re-reads
+ * the now-fresh token. A personal deploy (no auth) never 401s, so this is inert.
+ *
+ * Pass per-request timeouts via `timeoutMs`, NOT a caller-built `init.signal`:
+ * the interactive login between attempts can take minutes, and a single
+ * AbortSignal.timeout would already have fired by the retry. We mint a FRESH
+ * timeout signal for each attempt instead.
+ */
+export async function emberFetch(
+  emberUrl: string,
+  path: string,
+  init: RequestInit = {},
+  timeoutMs?: number
+): Promise<Response> {
+  const build = async (): Promise<RequestInit> => ({
+    ...init,
+    signal: timeoutMs ? AbortSignal.timeout(timeoutMs) : init.signal,
+    headers: { ...(await emberAuthHeaders()), ...(init.headers as Record<string, string>) },
+  });
+
+  const url = `${emberUrl}${path}`;
+  let res = await fetch(url, await build());
+  if (res.status !== 401) return res;
+
+  // 401: try an interactive login, then retry once. If login itself fails
+  // (e.g. no CLI client configured / user cancelled), surface the ORIGINAL 401
+  // so the caller's error message is about the request, not the login attempt.
+  try {
+    await ensureLogin(emberUrl);
+  } catch {
+    return res;
+  }
+  res = await fetch(url, await build());
+  return res;
 }

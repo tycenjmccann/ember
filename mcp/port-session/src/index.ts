@@ -31,7 +31,7 @@ import { readState, prepareGitHandoff, pullBranch } from "./git.js";
 import { newestTranscript, sessionIdForTranscript, installLocalTranscript } from "./transcript.js";
 import { gatherBundle, type Cli } from "./config.js";
 import { gatherLoginBody } from "./login.js";
-import { emberAuthHeaders } from "./auth.js";
+import { emberFetch } from "./auth.js";
 import { runCognitoLogin } from "./cognito-login.js";
 
 const EMBER_URL = (process.env.EMBER_URL || "").replace(/\/$/, "");
@@ -311,11 +311,9 @@ async function runPull(rawArgs: unknown) {
   const sid = m ? m[0] : args.session.trim();
 
   // 1. checkpoint: cloud uploads the grown transcript + returns a presigned GET.
-  const res = await fetch(`${EMBER_URL}/api/ember/sessions/${sid}/checkpoint`, {
+  const res = await emberFetch(EMBER_URL, `/api/ember/sessions/${sid}/checkpoint`, {
     method: "POST",
-    headers: { ...(await emberAuthHeaders()) },
-    signal: AbortSignal.timeout(110_000),
-  });
+  }, 110_000);
   const data = (await res.json().catch(() => ({}))) as {
     transcriptUrl?: string;
     claudeSessionId?: string;
@@ -386,12 +384,10 @@ async function runSync(rawArgs: unknown) {
   form.set("bundle", new Blob([new Uint8Array(g.zip)], { type: "application/zip" }), `${cli}-config.zip`);
   form.set("label", `${cli} config sync`);
   form.set("scope", cli);
-  const res = await fetch(`${EMBER_URL}/api/ember/config`, {
+  const res = await emberFetch(EMBER_URL, `/api/ember/config`, {
     method: "POST",
-    headers: { ...(await emberAuthHeaders()) },
     body: form,
-    signal: AbortSignal.timeout(60_000),
-  });
+  }, 60_000);
   const data = (await res.json().catch(() => ({}))) as {
     version?: { version?: string; fileCount?: number };
     currentVersion?: string;
@@ -447,12 +443,11 @@ async function runLogin(rawArgs: unknown) {
   // Read the local subscription credential (or use an explicit setup-token).
   const body = await gatherLoginBody(cli, token);
 
-  const res = await fetch(`${EMBER_URL}/api/ember/auth`, {
+  const res = await emberFetch(EMBER_URL, `/api/ember/auth`, {
     method: "POST",
-    headers: { "Content-Type": "application/json", ...(await emberAuthHeaders()) },
+    headers: { "Content-Type": "application/json" },
     body: JSON.stringify(body),
-    signal: AbortSignal.timeout(30_000),
-  });
+  }, 30_000);
   const data = (await res.json().catch(() => ({}))) as { meta?: { label?: string }; error?: string };
   if (!res.ok) throw new Error(data.error || `auth endpoint returned ${res.status}`);
 
@@ -552,9 +547,9 @@ server.setRequestHandler(CallToolRequestSchema, async (req) => {
 
     // 3. create the cloud session + presigned upload URLs (transcript always;
     //    bundle only when we produced one).
-    const res = await fetch(`${EMBER_URL}/api/ember/sessions/port`, {
+    const res = await emberFetch(EMBER_URL, `/api/ember/sessions/port`, {
       method: "POST",
-      headers: { "Content-Type": "application/json", ...(await emberAuthHeaders()) },
+      headers: { "Content-Type": "application/json" },
       body: JSON.stringify({
         repo: handoff.mode === "none" ? undefined : state.remoteRepo,
         cloneUrl: handoff.mode === "none" ? undefined : (handoff as any).cloneUrl,
@@ -605,11 +600,9 @@ server.setRequestHandler(CallToolRequestSchema, async (req) => {
     let warmed = false;
     if (sid) {
       try {
-        const w = await fetch(`${EMBER_URL}/api/ember/sessions/${sid}/warm`, {
+        const w = await emberFetch(EMBER_URL, `/api/ember/sessions/${sid}/warm`, {
           method: "POST",
-          headers: { ...(await emberAuthHeaders()) },
-          signal: AbortSignal.timeout(60_000),
-        });
+        }, 60_000);
         warmed = w.ok && Boolean((await w.json().catch(() => ({}))).warmed);
       } catch {
         /* warming is an optimization; the first turn clones on demand */
