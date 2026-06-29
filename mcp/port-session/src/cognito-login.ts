@@ -64,10 +64,19 @@ async function fetchCliConfig(emberUrl: string): Promise<CliConfig> {
 }
 
 function openBrowser(url: string): void {
-  const cmd =
-    process.platform === "darwin" ? "open" : process.platform === "win32" ? "start" : "xdg-open";
+  // `start` is a cmd.exe builtin (no standalone exe); xdg-open may be absent on
+  // headless Linux. spawn reports those as an async 'error' event, not a throw,
+  // so swallow both paths — the URL is always printed to stderr by the caller.
+  const [cmd, args] =
+    process.platform === "darwin"
+      ? ["open", [url]]
+      : process.platform === "win32"
+      ? ["cmd", ["/c", "start", "", url]]
+      : ["xdg-open", [url]];
   try {
-    spawn(cmd, [url], { detached: true, stdio: "ignore" }).unref();
+    const child = spawn(cmd as string, args as string[], { detached: true, stdio: "ignore" });
+    child.on("error", () => {});
+    child.unref();
   } catch {
     /* fall back to printing the URL (done by the caller) */
   }
