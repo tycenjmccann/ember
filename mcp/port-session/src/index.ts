@@ -313,8 +313,7 @@ async function runPull(rawArgs: unknown) {
   // 1. checkpoint: cloud uploads the grown transcript + returns a presigned GET.
   const res = await emberFetch(EMBER_URL, `/api/ember/sessions/${sid}/checkpoint`, {
     method: "POST",
-    signal: AbortSignal.timeout(110_000),
-  });
+  }, 110_000);
   const data = (await res.json().catch(() => ({}))) as {
     transcriptUrl?: string;
     claudeSessionId?: string;
@@ -388,8 +387,7 @@ async function runSync(rawArgs: unknown) {
   const res = await emberFetch(EMBER_URL, `/api/ember/config`, {
     method: "POST",
     body: form,
-    signal: AbortSignal.timeout(60_000),
-  });
+  }, 60_000);
   const data = (await res.json().catch(() => ({}))) as {
     version?: { version?: string; fileCount?: number };
     currentVersion?: string;
@@ -449,8 +447,7 @@ async function runLogin(rawArgs: unknown) {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify(body),
-    signal: AbortSignal.timeout(30_000),
-  });
+  }, 30_000);
   const data = (await res.json().catch(() => ({}))) as { meta?: { label?: string }; error?: string };
   if (!res.ok) throw new Error(data.error || `auth endpoint returned ${res.status}`);
 
@@ -605,8 +602,7 @@ server.setRequestHandler(CallToolRequestSchema, async (req) => {
       try {
         const w = await emberFetch(EMBER_URL, `/api/ember/sessions/${sid}/warm`, {
           method: "POST",
-          signal: AbortSignal.timeout(60_000),
-        });
+        }, 60_000);
         warmed = w.ok && Boolean((await w.json().catch(() => ({}))).warmed);
       } catch {
         /* warming is an optimization; the first turn clones on demand */

@@ -148,14 +148,21 @@ async function ensureLogin(emberUrl: string): Promise<void> {
  * `init.headers` is merged AFTER the auth header so an explicit Authorization
  * (or Content-Type) the caller passes still wins. The retried request re-reads
  * the now-fresh token. A personal deploy (no auth) never 401s, so this is inert.
+ *
+ * Pass per-request timeouts via `timeoutMs`, NOT a caller-built `init.signal`:
+ * the interactive login between attempts can take minutes, and a single
+ * AbortSignal.timeout would already have fired by the retry. We mint a FRESH
+ * timeout signal for each attempt instead.
  */
 export async function emberFetch(
   emberUrl: string,
   path: string,
-  init: RequestInit = {}
+  init: RequestInit = {},
+  timeoutMs?: number
 ): Promise<Response> {
   const build = async (): Promise<RequestInit> => ({
     ...init,
+    signal: timeoutMs ? AbortSignal.timeout(timeoutMs) : init.signal,
     headers: { ...(await emberAuthHeaders()), ...(init.headers as Record<string, string>) },
   });
 
