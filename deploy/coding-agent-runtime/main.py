@@ -302,7 +302,7 @@ def _apply_config_bundle(user_id: str | None, version: str | None,
         logger.warning("config_bundle_fetch_failed", extra={"key": key, "error": str(exc)[:200]})
         return
 
-    dests = {"claude": CLAUDE_CONFIG_DIR, "codex": CODEX_HOME}
+    dests = {"claude": CLAUDE_CONFIG_DIR, "codex": CODEX_HOME, "kiro": KIRO_HOME}
     for d in dests.values():
         os.makedirs(d, exist_ok=True)
     applied_paths: list = []
@@ -427,6 +427,7 @@ def _clear_subscription_creds() -> None:
     for p in (_CLAUDE_SUB_TOKEN_PATH,
               _CODEX_AUTH_TMPFS,
               _CODEX_AUTH_LINK,  # symlink (or pre-fix real file) at $CODEX_HOME/auth.json
+              _KIRO_KEY_PATH,
               os.path.join(CLAUDE_CONFIG_DIR, ".sub-token")):  # legacy
         try:
             os.remove(p)
@@ -441,6 +442,13 @@ def _materialize_kiro_key(user_id: str | None, tenant_id: str | None = None) -> 
     cred = _fetch_subscription_cred(user_id, "kiro", tenant_id) or {}
     key = cred.get("token") or cred.get("api_key") or cred.get("access_key")
     if not key:
+        # Fail closed: no key fetched (disconnected / unreadable) → remove any
+        # stale key a prior session left on this warm VM so shell-init.sh / the
+        # turn never silently run on an old credential.
+        try:
+            os.remove(_KIRO_KEY_PATH)
+        except OSError:
+            pass
         return False
     try:
         os.makedirs(EPHEMERAL_CREDS_DIR, mode=0o700, exist_ok=True)
@@ -652,16 +660,39 @@ CREATE INDEX IF NOT EXISTS idx_conversations_v2_updated_at ON conversations_v2(u
 """
 
 
+# Config entries (synced agents/prompts) the bundle materializes into the GLOBAL
+# KIRO_HOME; we symlink them into each per-session home so a session sees the
+# user's synced kiro config without sharing the per-session conversations DB.
+_KIRO_CONFIG_ENTRIES = ("agents", "cli-agents", "prompts", "global_context.json", "AGENTS.md")
+
+
 def _kiro_home_for(session_id: str | None) -> str:
     """Per-Ember-session KIRO_HOME so two sessions resuming the same kiro uuid
-    don't share one DB. Lives under _session_dir(session_id) so deleting the
-    session reclaims it. No shared per-user state to link (kiro auth is the
-    per-turn KIRO_API_KEY env var, not a file)."""
+    don't share one conversations DB. Lives under _session_dir(session_id) so
+    deleting the session reclaims it. The user's synced config (agents/prompts,
+    materialized into the global KIRO_HOME by _apply_config_bundle) is symlinked
+    in, mirroring how _codex_home_for links codex's shared per-user state. Kiro
+    auth is the per-turn KIRO_API_KEY env var, so there's no credential to link."""
     if not session_id:
         return KIRO_HOME
     home = os.path.join(_session_dir(session_id), ".kiro")
     try:
         os.makedirs(home, exist_ok=True)
+        # (Re)link the synced config entries from the global home. Refresh each
+        # call so a newly-synced bundle is picked up on the next turn.
+        for name in _KIRO_CONFIG_ENTRIES:
+            link = os.path.join(home, name)
+            target = os.path.join(KIRO_HOME, name)
+            try:
+                if os.path.islink(link) or os.path.exists(link):
+                    os.remove(link)
+            except OSError:
+                pass
+            if os.path.lexists(target):
+                try:
+                    os.symlink(target, link)
+                except OSError:
+                    pass
     except OSError as exc:
         logger.warning("kiro_home_prepare_failed",
                        extra={"session": session_id, "error": str(exc)[:200]})

@@ -28,6 +28,7 @@
  */
 
 import { readdir, readFile, stat, realpath, mkdir, writeFile } from "node:fs/promises";
+import { mkdirSync } from "node:fs";
 import { DatabaseSync } from "node:sqlite";
 import { homedir } from "node:os";
 import path from "node:path";
@@ -150,6 +151,10 @@ function kiroValueById(sessionId: string): string | null {
  *  the local cwd so `kiro-cli chat --resume-id` (scoped to cwd) finds it. */
 function kiroUpsertRow(cwd: string, sessionId: string, value: string): { overwrote: boolean } {
   const dbPath = kiroDbPath();
+  // DatabaseSync creates the file but NOT missing parent dirs — on a machine that
+  // hasn't run kiro yet (fresh $KIRO_HOME / ~/.local/share/kiro-cli) the dir is
+  // absent, so create it first or the open throws.
+  mkdirSync(path.dirname(dbPath), { recursive: true });
   const db = new DatabaseSync(dbPath); // creates the file if absent
   try {
     db.exec(KIRO_DDL);
