@@ -42,6 +42,7 @@ export interface CliAuthMeta {
 export interface UserAuthStatus {
   claude?: CliAuthMeta;
   codex?: CliAuthMeta;
+  kiro?: CliAuthMeta;
 }
 
 export function authConfigured(): boolean {
@@ -56,7 +57,7 @@ export async function getAuthStatus(userId: string = DEFAULT_USER_ID): Promise<U
   );
   const item = res.Item as (UserAuthStatus & { sessionId: string }) | undefined;
   if (!item) return {};
-  return { claude: item.claude, codex: item.codex };
+  return { claude: item.claude, codex: item.codex, kiro: item.kiro };
 }
 
 async function saveAuthStatus(userId: string, status: UserAuthStatus): Promise<void> {

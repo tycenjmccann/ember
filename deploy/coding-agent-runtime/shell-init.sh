@@ -118,6 +118,17 @@ else
   _CODEX_AUTH="GPT-5.5 via Mantle"
 fi
 
+# ── Kiro → the user's access key (no Bedrock; bring-your-own-key only) ──
+# The prepare step materializes the access key to the tmpfs creds dir when the
+# session is kiro. KIRO_HOME points at the per-session SQLite store. Secret never
+# lands on the shared EFS.
+export KIRO_HOME="${KIRO_HOME:-$WORKSPACE_ROOT/.kiro-data}"
+mkdir -p "$KIRO_HOME" 2>/dev/null || true
+if [ -f "$_EPHEMERAL_CREDS_DIR/.kiro-api-key" ]; then
+  export KIRO_API_KEY="$(cat "$_EPHEMERAL_CREDS_DIR/.kiro-api-key")"
+  _KIRO_AUTH="your access key"
+fi
+
 # ── GitHub CLI / git → authenticated via the PAT (no `gh auth login`) ──
 if [ -n "${GITHUB_PAT:-}" ]; then
   export GH_TOKEN="$GITHUB_PAT"
@@ -127,7 +138,8 @@ if [ -n "${GITHUB_PAT:-}" ]; then
 fi
 
 if [ -t 1 ]; then
-  echo "Coding agents ready: 'claude' (${_CLAUDE_AUTH:-Bedrock}) · 'codex' (${_CODEX_AUTH:-GPT-5.5 via Mantle}) · 'gh' (authed). No login needed."
+  _kiro_status="${_KIRO_AUTH:+ · 'kiro' (${_KIRO_AUTH})}"
+  echo "Coding agents ready: 'claude' (${_CLAUDE_AUTH:-Bedrock}) · 'codex' (${_CODEX_AUTH:-GPT-5.5 via Mantle})${_kiro_status} · 'gh' (authed). No login needed."
   echo "Workspace: $WORKSPACE_ROOT   (run 'codextoken' if codex auth expires)"
 fi
 
@@ -147,6 +159,10 @@ if [ -t 1 ] && [ -t 0 ] && [ -f "$_resume_hint" ]; then
   . "$_resume_hint"
   if [ -n "${EMBER_RESUME_SID:-}" ]; then
     cd "${EMBER_RESUME_DIR:-$WORKSPACE_ROOT}" 2>/dev/null || cd "$WORKSPACE_ROOT"
-    exec claude --resume "$EMBER_RESUME_SID"
+    case "${EMBER_RESUME_CLI:-claude}" in
+      kiro) exec kiro-cli chat --resume-id "$EMBER_RESUME_SID" ;;
+      codex) exec codex resume "$EMBER_RESUME_SID" ;;
+      *) exec claude --resume "$EMBER_RESUME_SID" ;;
+    esac
   fi
 fi

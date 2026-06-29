@@ -19,7 +19,7 @@ import { promisify } from "node:util";
 
 const exec = promisify(execFile);
 
-export type Cli = "claude" | "codex";
+export type Cli = "claude" | "codex" | "kiro";
 
 /** Read Claude's subscription OAuth access token from the local machine. */
 async function readClaudeToken(): Promise<{ token: string; label?: string } | null> {
@@ -93,6 +93,21 @@ export async function gatherLoginBody(
       );
     }
     return { cli, token: c.token, label: c.label };
+  }
+  if (cli === "kiro") {
+    // Kiro is bring-your-own-credential (no Bedrock). Prefer an explicit pasted
+    // access key; else auto-read $KIRO_API_KEY (zero-paste when exported). The
+    // `kiro-cli login` OAuth token is device/keychain-bound → not portable to a
+    // Linux microVM, so we don't use it.
+    const key = explicitToken?.trim() || process.env.KIRO_API_KEY?.trim();
+    if (!key) {
+      throw new Error(
+        "No Kiro access key found. Generate one at https://kiro.dev (Account → access keys), " +
+        "then either export KIRO_API_KEY=<key> and retry, or pass it: login_cli({cli:'kiro', token:'<key>'})."
+      );
+    }
+    const fromEnv = !explicitToken?.trim();
+    return { cli, token: key, label: fromEnv ? "Kiro (access key, $KIRO_API_KEY)" : "Kiro access key" };
   }
   const c = await readCodexAuth();
   if (!c) {

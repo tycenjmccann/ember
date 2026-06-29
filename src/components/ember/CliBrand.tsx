@@ -1,11 +1,12 @@
 import type { EmberCli } from "@/lib/ember/types";
 
-// Brand palette for the two coding agents. Centralized so the sidebar row,
+// Brand palette for the coding agents. Centralized so the sidebar row,
 // session header, new-session modal, and agent-turn label all stay in sync.
 //   Claude  → Anthropic coral/clay (#D97757)
 //   Codex   → OpenAI monochrome; on a dark theme that reads as near-white/neutral
+//   Kiro    → Kiro purple (#7C5CFF)
 // TODO(brand): the marks below are hand-built approximations. Swap in the
-// official Anthropic / OpenAI SVG assets before shipping externally.
+// official Anthropic / OpenAI / Kiro SVG assets before shipping externally.
 export const CLI_BRAND: Record<
   EmberCli,
   { label: string; chip: string; dot: string }
@@ -20,6 +21,12 @@ export const CLI_BRAND: Record<
     label: "Codex",
     chip: "bg-white/10 text-[var(--color-text-secondary)]",
     dot: "text-[var(--color-text-secondary)]",
+  },
+  kiro: {
+    label: "Kiro",
+    // purple text on a faint purple wash
+    chip: "bg-[#7C5CFF]/15 text-[#A28BFF]",
+    dot: "text-[#7C5CFF]",
   },
 };
 
@@ -43,8 +50,19 @@ function CodexMark({ className }: { className?: string }) {
   );
 }
 
+// Kiro mark — simplified "k"/spark glyph. Approximation; see TODO above.
+function KiroMark({ className }: { className?: string }) {
+  return (
+    <svg viewBox="0 0 24 24" className={className} fill="currentColor" aria-hidden="true">
+      <path d="M7 3.5h2.3v7l5.2-7h2.7l-5.1 6.8 5.4 7.2h-2.8l-4.1-5.6-1.3 1.7v3.9H7V3.5Z" />
+    </svg>
+  );
+}
+
 export function CliMark({ cli, className = "w-3.5 h-3.5" }: { cli: EmberCli; className?: string }) {
-  return cli === "claude" ? <ClaudeMark className={className} /> : <CodexMark className={className} />;
+  if (cli === "claude") return <ClaudeMark className={className} />;
+  if (cli === "kiro") return <KiroMark className={className} />;
+  return <CodexMark className={className} />;
 }
 
 // Small brand chip: logo mark + name, brand-tinted. `size` toggles padding.

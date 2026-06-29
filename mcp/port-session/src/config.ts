@@ -20,7 +20,7 @@ import { readFile, readdir, stat } from "node:fs/promises";
 import { homedir } from "node:os";
 import path from "node:path";
 
-export type Cli = "claude" | "codex";
+export type Cli = "claude" | "codex" | "kiro";
 
 /** Portability of one MCP server in the cloud microVM. */
 export type ServerCategory = "works" | "needs-secret" | "unsupported";
@@ -334,6 +334,29 @@ async function gatherCodex(): Promise<GatherResult> {
   return res;
 }
 
+async function gatherKiro(): Promise<GatherResult> {
+  const zip = new JSZip();
+  const res = emptyResult();
+  // Kiro (Amazon Q successor) keeps user config under ~/.aws/amazonq: custom
+  // agents, prompts, and a global context file. (V3 may also read ~/.kiro; we
+  // ship the populated ~/.aws/amazonq tree.) Shipped under the `kiro/` prefix.
+  const root = path.join(HOME, ".aws", "amazonq");
+
+  for (const dir of ["agents", "cli-agents", "prompts"]) {
+    if (!(await addDir(zip, path.join(root, dir), `kiro/${dir}`, res.files)))
+      res.skipped.push(`~/.aws/amazonq/${dir}/`);
+  }
+  for (const file of ["global_context.json", "AGENTS.md"]) {
+    if (!(await addFile(zip, path.join(root, file), `kiro/${file}`, res.files)))
+      res.skipped.push(`~/.aws/amazonq/${file}`);
+  }
+
+  res.zip = await zip.generateAsync({ type: "nodebuffer" });
+  return res;
+}
+
 export async function gatherBundle(cli: Cli): Promise<GatherResult> {
-  return cli === "codex" ? gatherCodex() : gatherClaude();
+  if (cli === "codex") return gatherCodex();
+  if (cli === "kiro") return gatherKiro();
+  return gatherClaude();
 }

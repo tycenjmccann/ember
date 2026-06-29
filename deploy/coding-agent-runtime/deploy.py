@@ -163,10 +163,14 @@ def main() -> None:
         # used when a session opts into auth_mode="subscription".
         "CLAUDE_SUB_MODEL": os.environ.get("CLAUDE_SUB_MODEL", "claude-opus-4-8"),
         "CODEX_SUB_MODEL": os.environ.get("CODEX_SUB_MODEL", "gpt-5.1-codex"),
+        # Kiro is bring-your-own-key only (per-user KIRO_API_KEY fetched per turn —
+        # NOT set here). Empty model → kiro uses its account default.
+        "KIRO_MODEL": os.environ.get("KIRO_MODEL", ""),
         # Workspace + CLI config dirs live on the EFS mount (elastic, persistent).
         "WORKSPACE_ROOT": EFS_MOUNT,
         "CLAUDE_CONFIG_DIR": f"{EFS_MOUNT}/.claude-data",
         "CODEX_HOME": f"{EFS_MOUNT}/.codex",
+        "KIRO_HOME": f"{EFS_MOUNT}/.kiro-data",
         # Browser-automation MCP servers use the image's system chromium (no
         # per-session download). Mirrored in shell-init.sh for the PTY surface.
         "PUPPETEER_EXECUTABLE_PATH": "/usr/bin/chromium",

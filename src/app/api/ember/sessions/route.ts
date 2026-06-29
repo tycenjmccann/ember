@@ -29,7 +29,7 @@ export async function POST(request: NextRequest) {
   try {
     const { userId, tenantId } = getIdentity(request);
     const body = await request.json().catch(() => ({}));
-    const cli: EmberCli = body.cli === "codex" ? "codex" : "claude";
+    const cli: EmberCli = body.cli === "codex" || body.cli === "kiro" ? body.cli : "claude";
     const authMode: EmberAuthMode = body.authMode === "subscription" ? "subscription" : "bedrock";
     const repo: string | undefined = body.repo?.trim() || undefined;
     const title: string = (body.title?.trim() || "New session").slice(0, 120);

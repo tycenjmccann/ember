@@ -71,7 +71,7 @@ export function s3KeyFor(
 export async function mergeScopedBundle(
   currentZip: Buffer | null,
   incomingZip: Buffer,
-  scope: "claude" | "codex"
+  scope: "claude" | "codex" | "kiro"
 ): Promise<{ zip: Buffer; fileCount: number }> {
   const JSZip = (await import("jszip")).default;
   const out = new JSZip();
