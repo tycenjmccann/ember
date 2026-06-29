@@ -218,9 +218,10 @@ export default function CostPage() {
           S3 ${RATES.s3.gbMo}/GB-mo · EFS ${RATES.efs.gbMo}/GB-mo ·
           Cognito {RATES.cognito.freeMau.toLocaleString()} MAU free, then ${RATES.cognito.perMau}/MAU.
           Storage assumes ~{RATES.efs.gbPerDev} GB EFS + {RATES.s3.gbPerDev} GB S3 per developer.
-          The {RATES.capacity.concurrentSessions.toLocaleString()}+ figure is the default AgentCore concurrent-session
-          quota (raisable via AWS support) — peak concurrency, not a monthly run-rate; you pay only for active
-          compute. App Runner can be paused outside work hours to cut its floor further.
+          The {RATES.capacity.concurrentSessions.toLocaleString()}+ figure is the default AgentCore Runtime
+          active-session quota per account in US East / US West (raisable via AWS Service Quotas) — peak
+          concurrency, not a monthly run-rate; you pay only for active compute. App Runner can be paused
+          outside work hours to cut its floor further.
         </p>
       </div>
     </div>
