@@ -10,9 +10,15 @@
 
 export const SESSION_COOKIE = "ember_id_token";
 export const STATE_COOKIE = "ember_oauth_state";
+// The long-lived refresh token. Middleware uses it to silently mint a fresh
+// id-token when the short one expires, so the user is never logged out until the
+// refresh token itself expires (Cognito max 10y, set on the app client).
+export const REFRESH_COOKIE = "ember_refresh_token";
 
-/** Cognito id-tokens last 1h by default; cap the cookie to the same. */
-export const SESSION_MAX_AGE_S = 60 * 60;
+/** id-token cookie lifetime — matches the id-token validity on the app client. */
+export const SESSION_MAX_AGE_S = 24 * 60 * 60;
+/** Refresh-token cookie lifetime — the cap on "stay logged in" (10y). */
+export const REFRESH_MAX_AGE_S = 3650 * 24 * 60 * 60;
 
 export function sessionCookieOptions(maxAgeS: number = SESSION_MAX_AGE_S) {
   return {
@@ -22,6 +28,10 @@ export function sessionCookieOptions(maxAgeS: number = SESSION_MAX_AGE_S) {
     path: "/",
     maxAge: maxAgeS,
   };
+}
+
+export function refreshCookieOptions(maxAgeS: number = REFRESH_MAX_AGE_S) {
+  return sessionCookieOptions(maxAgeS);
 }
 
 export function clearedCookieOptions() {

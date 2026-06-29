@@ -68,6 +68,13 @@ else
 fi
 COGNITO_DOMAIN="https://${DOMAIN_PREFIX_FINAL}.auth.${AWS_REGION}.amazoncognito.com"
 
+# Token lifetimes — default to "stay logged in". The web app pairs these with a
+# refresh-token cookie + transparent middleware refresh, so the only real ceiling
+# is the refresh token (Cognito max: 10y/3650d). id/access run 24h between silent
+# refreshes. Applied to BOTH clients so the CLI's id-token also auto-refreshes.
+TOKEN_VALIDITY=(--refresh-token-validity 3650 --access-token-validity 24 --id-token-validity 24
+  --token-validity-units RefreshToken=days,AccessToken=hours,IdToken=hours)
+
 # A rerun must NOT drop federated IdPs added later via add-idp.sh. update-user-pool-client
 # replaces the whole client, so when we reuse a client we re-send the UNION of its
 # current providers with COGNITO instead of COGNITO alone. Echoes a space-separated list.
@@ -97,6 +104,7 @@ if [[ "$CLIENT_ID" == "None" || -z "$CLIENT_ID" ]]; then
     --supported-identity-providers COGNITO \
     --callback-urls "$CALLBACK_URLS" --logout-urls "$LOGOUT_URLS" \
     --explicit-auth-flows ALLOW_REFRESH_TOKEN_AUTH \
+    "${TOKEN_VALIDITY[@]}" \
     --query 'UserPoolClient.ClientId' --output text)
 else
   echo "Reusing app client ${CLIENT_ID} (updating callback URLs)..."
@@ -107,7 +115,8 @@ else
     --allowed-o-auth-scopes openid email profile \
     --supported-identity-providers $(client_idps_union "$CLIENT_ID") \
     --callback-urls "$CALLBACK_URLS" --logout-urls "$LOGOUT_URLS" \
-    --explicit-auth-flows ALLOW_REFRESH_TOKEN_AUTH >/dev/null
+    --explicit-auth-flows ALLOW_REFRESH_TOKEN_AUTH \
+    "${TOKEN_VALIDITY[@]}" >/dev/null
 fi
 
 CLIENT_SECRET=$(aws cognito-idp describe-user-pool-client \
@@ -137,6 +146,7 @@ if [[ "$CLI_CLIENT_ID" == "None" || -z "$CLI_CLIENT_ID" ]]; then
     --supported-identity-providers COGNITO \
     --callback-urls $CLI_CALLBACKS --logout-urls $CLI_LOGOUTS \
     --explicit-auth-flows ALLOW_REFRESH_TOKEN_AUTH \
+    "${TOKEN_VALIDITY[@]}" \
     --query 'UserPoolClient.ClientId' --output text)
 else
   echo "Reusing public CLI app client ${CLI_CLIENT_ID} (updating callbacks)..."
@@ -147,7 +157,8 @@ else
     --allowed-o-auth-scopes openid email profile \
     --supported-identity-providers $(client_idps_union "$CLI_CLIENT_ID") \
     --callback-urls $CLI_CALLBACKS --logout-urls $CLI_LOGOUTS \
-    --explicit-auth-flows ALLOW_REFRESH_TOKEN_AUTH >/dev/null
+    --explicit-auth-flows ALLOW_REFRESH_TOKEN_AUTH \
+    "${TOKEN_VALIDITY[@]}" >/dev/null
 fi
 
 cat <<EOF

@@ -12,7 +12,10 @@ import { verifyIdToken } from "@/lib/auth/cognito";
 import {
   SESSION_COOKIE,
   STATE_COOKIE,
+  REFRESH_COOKIE,
+  SESSION_MAX_AGE_S,
   sessionCookieOptions,
+  refreshCookieOptions,
   clearedCookieOptions,
 } from "@/lib/auth/session";
 
@@ -45,11 +48,12 @@ export async function GET(req: NextRequest) {
   }
 
   const res = NextResponse.redirect(`${(process.env.DEPLOYMENT_URL || url.origin).replace(/\/$/, "")}/ember`);
-  res.cookies.set(
-    SESSION_COOKIE,
-    tokens.id_token,
-    sessionCookieOptions(Math.min(tokens.expires_in || 3600, 3600))
-  );
+  res.cookies.set(SESSION_COOKIE, tokens.id_token, sessionCookieOptions(SESSION_MAX_AGE_S));
+  // Stash the refresh token so middleware can silently re-mint the id-token. This
+  // is the "stay logged in" handle — its own expiry (10y) is the only ceiling.
+  if (tokens.refresh_token) {
+    res.cookies.set(REFRESH_COOKIE, tokens.refresh_token, refreshCookieOptions());
+  }
   res.cookies.set(STATE_COOKIE, "", clearedCookieOptions());
   return res;
 }

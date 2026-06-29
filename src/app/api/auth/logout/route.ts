@@ -8,7 +8,7 @@
 
 import { NextRequest, NextResponse } from "next/server";
 import { oauthEnv, logoutUrl } from "@/lib/auth/oauth";
-import { SESSION_COOKIE, clearedCookieOptions } from "@/lib/auth/session";
+import { SESSION_COOKIE, REFRESH_COOKIE, clearedCookieOptions } from "@/lib/auth/session";
 
 export const dynamic = "force-dynamic";
 
@@ -19,5 +19,6 @@ export async function GET(req: NextRequest) {
   const target = env ? logoutUrl(env, `${origin}/login`) : `${origin}/login`;
   const res = NextResponse.redirect(target);
   res.cookies.set(SESSION_COOKIE, "", clearedCookieOptions());
+  res.cookies.set(REFRESH_COOKIE, "", clearedCookieOptions());
   return res;
 }
