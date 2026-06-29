@@ -166,8 +166,9 @@ export default function CostPage() {
           What the platform costs
         </h1>
         <p className="text-[15px] text-[var(--color-text-secondary)] mb-5 leading-snug">
-          The full AWS bill to run Ember — compute, storage, and auth. No models, no
-          tokens. Drag to match your team.
+          The AWS bill to host Ember — compute, storage, and auth. Model inference is
+          separate: on Bedrock it’s billed per token to your AWS account; on your own
+          Claude/Codex plan it’s $0 here. Drag to match your team.
         </p>
 
         {/* Headline infra total */}
@@ -206,9 +207,9 @@ export default function CostPage() {
 
         <div className="rounded-ios px-4 py-3 mb-4 text-[13px] leading-snug"
              style={{ background: "var(--ios-fill-tertiary)", color: "var(--color-text-secondary)" }}>
-          <strong className="text-[var(--ios-green)]">Platform only.</strong> This is what you pay AWS to run
-          Ember for this team. Models and tokens are not included — sessions run on Bedrock or on the
-          Claude / Codex plan you already have, billed by that provider.
+          <strong className="text-[var(--ios-green)]">Platform only.</strong> This is what you pay AWS to host
+          Ember for this team. Inference is separate and not included: Bedrock bills per token to your AWS
+          account, while a connected Claude / Codex plan is billed by that provider (often already paid for).
         </div>
 
         <p className="text-[12px] text-[var(--color-text-muted)] leading-relaxed px-1">
