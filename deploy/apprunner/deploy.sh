@@ -100,7 +100,10 @@ aws iam put-role-policy --role-name "$INSTANCE_ROLE" --policy-name "EmberAppRunn
           \"dynamodb:GetItem\", \"dynamodb:PutItem\", \"dynamodb:UpdateItem\",
           \"dynamodb:DeleteItem\", \"dynamodb:Query\", \"dynamodb:Scan\"
         ],
-        \"Resource\": \"arn:aws:dynamodb:${AWS_REGION}:${ACCOUNT_ID}:table/${EMBER_TABLE}\"
+        \"Resource\": [
+          \"arn:aws:dynamodb:${AWS_REGION}:${ACCOUNT_ID}:table/${EMBER_TABLE}\",
+          \"arn:aws:dynamodb:${AWS_REGION}:${ACCOUNT_ID}:table/${EMBER_TABLE}/index/*\"
+        ]
       },
       {
         \"Sid\": \"S3Artifacts\",

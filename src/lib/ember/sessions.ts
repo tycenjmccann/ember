@@ -16,7 +16,7 @@ import {
   DynamoDBDocumentClient,
   GetCommand,
   PutCommand,
-  ScanCommand,
+  QueryCommand,
   DeleteCommand,
 } from "@aws-sdk/lib-dynamodb";
 import type {
@@ -30,6 +30,7 @@ export { DEFAULT_USER_ID, DEFAULT_TENANT_ID } from "./identity";
 
 const REGION = process.env.AWS_REGION || "us-east-1";
 const TABLE = process.env.EMBER_TABLE || "ember-sessions";
+const TENANT_INDEX = "tenant-index";
 
 /** Tenant a row belongs to, tolerating legacy rows written before tenantId. */
 function tenantOf(s: EmberSession): string {
@@ -81,6 +82,11 @@ export async function getOwnedSession(
 }
 
 export async function putSession(session: EmberSession): Promise<void> {
+  // Always stamp a tenant. The tenant-index GSI only indexes rows that carry a
+  // tenantId, so an unstamped row would silently vanish from listSessions. New
+  // rows get their real tenant from the route; this backstops any path that
+  // builds an EmberSession without one (and re-indexes legacy rows on rewrite).
+  if (!session.tenantId) session.tenantId = DEFAULT_TENANT_ID;
   await ddb.send(new PutCommand({ TableName: TABLE, Item: session }));
 }
 
@@ -121,6 +127,10 @@ export async function softDeleteSession(
  * NOT userId — colleagues in the same tenant share a workspace by design; the
  * cross-company boundary is the security one. (Pass a userId too if/when we want
  * per-user views within a tenant.)
+ *
+ * Queries the tenant-index GSI, so it reads only this tenant's rows — the
+ * boundary is enforced by the partition, not a post-Scan filter. config:/auth:
+ * metadata rows carry no tenantId and are therefore absent from the index.
  */
 export async function listSessions(
   tenantId: string = DEFAULT_TENANT_ID
@@ -129,21 +139,26 @@ export async function listSessions(
   let lastKey: Record<string, unknown> | undefined;
   do {
     const res = await ddb.send(
-      new ScanCommand({ TableName: TABLE, ExclusiveStartKey: lastKey })
+      new QueryCommand({
+        TableName: TABLE,
+        IndexName: TENANT_INDEX,
+        KeyConditionExpression: "tenantId = :t",
+        ExpressionAttributeValues: { ":t": tenantId },
+        ExclusiveStartKey: lastKey,
+      })
     );
     items.push(...((res.Items as EmberSession[]) || []));
     lastKey = res.LastEvaluatedKey;
   } while (lastKey);
 
   return items
-    // Exclude non-session metadata rows sharing this table (config:{userId},
-    // auth:{userId}) — they have no turns/cli.
+    // The GSI excludes metadata rows (no tenantId), but a config:/auth: row that
+    // ever got a tenant stamp would slip in — belt-and-suspenders.
     .filter((s) => !String(s.sessionId).startsWith("config:") &&
                    !String(s.sessionId).startsWith("auth:") && s.cli)
     // Hide soft-deleted rows: to the user they're gone the moment DELETE stamps
     // deletedAt; the row lingers only until the reaper finishes backend cleanup.
     .filter((s) => !s.deletedAt)
-    .filter((s) => tenantOf(s) === tenantId)
     .sort((a, b) => new Date(b.updatedAt).getTime() - new Date(a.updatedAt).getTime())
     .map((s) => ({
       sessionId: s.sessionId,

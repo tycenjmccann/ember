@@ -62,7 +62,8 @@ Add to your global MCP config (`~/.claude.json` → `mcpServers`):
       "command": "node",
       "args": ["/absolute/path/to/ember/mcp/port-session/dist/index.js"],
       "env": {
-        "EMBER_URL": "https://<your-app-runner-url>"
+        "EMBER_URL": "https://<your-app-runner-url>",
+        "EMBER_TOKEN": "<your-cognito-id-token>"
       }
     }
   }
@@ -72,6 +73,20 @@ Add to your global MCP config (`~/.claude.json` → `mcpServers`):
 `EMBER_URL` = the deployed app base URL. The tool reads git + the transcript
 for whatever directory it's launched in (its `cwd`), so run Claude Code from
 inside the repo you're porting. Reconnect (`/mcp`) after a rebuild to load changes.
+
+### Auth (multi-tenant deploys)
+
+If the deploy has Cognito auth on (Phase 1), every API call must carry your
+identity. The MCP attaches a **Bearer token** to its calls to `EMBER_URL`:
+
+- `EMBER_TOKEN` env (above) — your Cognito **id-token**, OR
+- `~/.ember/token` — drop the token in this file instead (override the path with
+  `EMBER_TOKEN_FILE`), so a rotating token doesn't mean re-editing the MCP config.
+
+The token is sent **only** to `EMBER_URL`, never to the presigned S3 URLs (those
+carry their own signature). For a personal deploy (`EMBER_AUTH_DISABLED=1`) leave
+both unset — calls go through unauthenticated, as before. Against an auth'd deploy
+with no token you'll get a `401` telling you to set `EMBER_TOKEN`.
 
 ## Tools
 
@@ -156,9 +171,9 @@ is never uploaded (Codex `config.toml` ships verbatim — check it for inline se
 
 - **Claude only.** `--resume` is a Claude Code mechanism. Codex resume uses a
   different `thread_id`, not wired through the transcript path yet.
-- **Single-user.** Uses the app's `userId: "default"`. Multi-user waits on the
-  app-wide SSO work; this server would then send an auth token.
-- **No auth on the port/checkpoint endpoints / presigned URLs yet** — same posture
-  as the rest of Ember today. Tighten before exposing publicly.
+- **Multi-tenant aware.** Sends a Cognito Bearer token (`EMBER_TOKEN` /
+  `~/.ember/token`) so ported sessions land in your tenant. Unset = personal
+  no-auth deploy. The identity rides the API calls; the per-user config/auth
+  bundle the cloud materializes is keyed off it.
 - **Pull skips a dirty local tree** (won't clobber uncommitted work) — it fetches
   the branch and tells you to stash/checkout manually.
