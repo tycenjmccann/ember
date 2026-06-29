@@ -171,10 +171,64 @@ full tool reference (`port`, `pull`, `sync-config`, `login`).
 
 ## Going to production / company-wide
 
-Out of the box this is single-user (`userId: "default"`) with no auth on the API —
-fine for a personal deployment behind a private URL, **not** for multi-tenant or
-public exposure. The path to SSO, per-user IAM scoping, VPC/PrivateLink isolation,
-and audit export is laid out in [`docs/ENTERPRISE.md`](docs/ENTERPRISE.md).
+**Auth (Phase 1).** Ember supports multi-tenant Cognito auth: an admin-create-only
+user pool (no self-signup), Hosted-UI sign-in, and a JWT gate (`src/middleware.ts`)
+on every route. Each user carries a `custom:tenantId` (the company) and `sub` (the
+employee); sessions, config, and credentials are scoped to them. Set it up:
+
+```bash
+deploy/cognito/setup-cognito.sh                 # provision pool + client + domain
+# add COGNITO_* output to deploy/.env.local, then:
+deploy/apprunner/deploy.sh
+deploy/cognito/admin-user.sh add you@co.com --tenant acme --admin
+```
+
+For a **personal, single-user** deploy behind a private URL, skip Cognito and set
+`EMBER_AUTH_DISABLED=1` — every request resolves to the `"default"` tenant/user,
+exactly as before. The deploy fails closed if you set neither.
+
+> **Isolation status.** Phase 1 closes the control plane (API auth + per-tenant
+> data scoping; sessions list via a tenant-partition GSI, never a table scan).
+> Phase 2 puts **every S3 artifact under a per-tenant prefix** (`ember/t/<tenantId>/…`).
+> Phase 3 adds an **opt-in per-tenant compute silo** — run
+> `deploy/provision-tenant.sh <tenantId>` and that tenant gets its own AgentCore
+> runtime (separate microVMs), its own EFS access point (a private root dir,
+> mounted as non-root uid 1000), and a runtime IAM role whose S3 access is fenced
+> to `ember/t/<tenantId>/*`. The app + reaper route a siloed tenant to its own
+> runtime automatically; un-provisioned tenants keep sharing the pool runtime
+> unchanged.
+>
+> Phase 4 hardens secrets + offboarding: set `EMBER_SECRETS_BACKEND=secretsmanager`
+> and subscription creds move from S3 to **AWS Secrets Manager** (one secret per
+> tenant/user/CLI, KMS-at-rest, scoped per-tenant), materialized to a **tmpfs**
+> (`/dev/shm`) on the runtime — never the shared EFS. `deploy/offboard-tenant.sh
+> <tenantId> --yes` fully removes a tenant (users, sessions, secrets, S3, and the
+> dedicated silo).
+>
+> So: for **mutually-untrusted companies, provision a silo per tenant** before
+> onboarding them — the shared pool runtime still co-locates un-siloed tenants on
+> one filesystem + role. See [`docs/ENTERPRISE.md`](docs/ENTERPRISE.md).
+
+### Give a tenant its own compute silo (Phase 3)
+
+```bash
+deploy/provision-tenant.sh acme        # dedicated runtime + EFS AP + fenced role
+```
+
+Idempotent and isolated: provisioning one tenant never touches another or the
+shared pool. New sessions for that tenant route to the dedicated runtime within
+~60s (the resolver caches the mapping).
+
+### Offboard a tenant (Phase 4)
+
+```bash
+deploy/offboard-tenant.sh acme --yes   # remove users, sessions, secrets, S3, silo
+```
+
+Soft-deletes the tenant's sessions (the reaper then reclaims their microVMs +
+storage), deletes its Secrets Manager creds + `ember/t/acme/` S3 prefix, tears
+down its dedicated runtime/role/EFS access point, and removes its registry row.
+Destructive and irreversible — pass `--yes` to skip the interactive confirm.
 
 ## License
 

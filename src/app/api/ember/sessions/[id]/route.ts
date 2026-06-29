@@ -12,7 +12,8 @@
  */
 
 import { NextRequest, NextResponse } from "next/server";
-import { getSession, putSession, softDeleteSession } from "@/lib/ember/sessions";
+import { getOwnedSession, putSession, softDeleteSession } from "@/lib/ember/sessions";
+import { getIdentity } from "@/lib/ember/identity";
 
 export const dynamic = "force-dynamic";
 
@@ -27,7 +28,8 @@ export async function PATCH(
   { params }: { params: { id: string } }
 ) {
   try {
-    const session = await getSession(params.id);
+    const { tenantId } = getIdentity(request);
+    const session = await getOwnedSession(params.id, tenantId);
     if (!session) return NextResponse.json({ error: "Session not found" }, { status: 404 });
     const body = await request.json().catch(() => ({}));
     if (body.clearPendingSeed) session.pendingSeed = undefined;
@@ -41,11 +43,12 @@ export async function PATCH(
 }
 
 export async function GET(
-  _request: NextRequest,
+  request: NextRequest,
   { params }: { params: { id: string } }
 ) {
   try {
-    const session = await getSession(params.id);
+    const { tenantId } = getIdentity(request);
+    const session = await getOwnedSession(params.id, tenantId);
     if (!session) {
       return NextResponse.json({ error: "Session not found" }, { status: 404 });
     }
@@ -57,15 +60,18 @@ export async function GET(
 }
 
 export async function DELETE(
-  _request: NextRequest,
+  request: NextRequest,
   { params }: { params: { id: string } }
 ) {
   try {
+    const { tenantId } = getIdentity(request);
     // Soft-delete only: stamp the tombstone + TTL and return immediately. The row
     // disappears from the list now; the reaper Lambda (fired by the TTL-expiry
     // stream event) does the stop + EFS/S3 purge out of band. No distributed
-    // cleanup in the request path = no race to lose.
-    await softDeleteSession(params.id);
+    // cleanup in the request path = no race to lose. Tenant-scoped: a cross-tenant
+    // id is a no-op that still reports 404 (can't distinguish from missing).
+    const deleted = await softDeleteSession(params.id, tenantId);
+    if (!deleted) return NextResponse.json({ error: "Session not found" }, { status: 404 });
     return NextResponse.json({ deleted: true });
   } catch (err) {
     console.error("[ember] delete error:", err);

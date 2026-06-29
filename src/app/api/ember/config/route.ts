@@ -15,7 +15,7 @@
 
 import { NextRequest, NextResponse } from "next/server";
 import { S3Client, PutObjectCommand } from "@aws-sdk/client-s3";
-import { DEFAULT_USER_ID } from "@/lib/ember/sessions";
+import { getIdentity } from "@/lib/ember/identity";
 import {
   getUserConfig,
   saveUserConfig,
@@ -33,8 +33,9 @@ const REGION = process.env.AWS_REGION || "us-east-1";
 const s3 = new S3Client({ region: REGION });
 const MAX_BYTES = 25 * 1024 * 1024; // 25 MB — configs are small
 
-export async function GET() {
-  const cfg = await getUserConfig(DEFAULT_USER_ID);
+export async function GET(request: NextRequest) {
+  const { userId } = getIdentity(request);
+  const cfg = await getUserConfig(userId);
   return NextResponse.json(cfg);
 }
 
@@ -42,6 +43,7 @@ export async function POST(request: NextRequest) {
   if (!ARTIFACT_BUCKET) {
     return NextResponse.json({ error: "ARTIFACT_BUCKET not configured" }, { status: 503 });
   }
+  const { userId, tenantId } = getIdentity(request);
   const form = await request.formData().catch(() => null);
   const file = form?.get("bundle");
   if (!file || !(file instanceof File)) {
@@ -65,7 +67,7 @@ export async function POST(request: NextRequest) {
   // Scoped sync: fold the incoming CLI subtree into the current bundle so the
   // other CLI's config survives. The merged zip becomes the new version.
   if (scope) {
-    const current = await getCurrentBundleZip(DEFAULT_USER_ID);
+    const current = await getCurrentBundleZip(userId, tenantId);
     const merged = await mergeScopedBundle(current, bytes, scope);
     bytes = Buffer.from(merged.zip);
   }
@@ -77,13 +79,13 @@ export async function POST(request: NextRequest) {
   await s3.send(
     new PutObjectCommand({
       Bucket: ARTIFACT_BUCKET,
-      Key: s3KeyFor(DEFAULT_USER_ID, version),
+      Key: s3KeyFor(userId, version, tenantId),
       Body: bytes,
       ContentType: "application/zip",
     })
   );
 
-  const cfg = await getUserConfig(DEFAULT_USER_ID);
+  const cfg = await getUserConfig(userId);
   const entry: ConfigVersion = {
     version,
     label,
@@ -100,9 +102,10 @@ export async function POST(request: NextRequest) {
 }
 
 export async function PUT(request: NextRequest) {
+  const { userId } = getIdentity(request);
   const body = await request.json().catch(() => ({}));
   const version: string | undefined = body.version;
-  const cfg = await getUserConfig(DEFAULT_USER_ID);
+  const cfg = await getUserConfig(userId);
   // null/empty → disable the bundle (launch with no user config).
   if (version && !cfg.versions.some((v) => v.version === version)) {
     return NextResponse.json({ error: "unknown version" }, { status: 404 });

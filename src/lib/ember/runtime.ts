@@ -15,9 +15,22 @@ import {
   StopRuntimeSessionCommand,
 } from "@aws-sdk/client-bedrock-agentcore";
 import type { EmberCli, EmberAuthMode } from "./types";
+import { resolveRuntimeArn } from "./tenant-store";
 
 const REGION = process.env.AWS_REGION || "us-east-1";
 const CODING_RUNTIME_ARN = process.env.CODING_AGENT_RUNTIME_ARN || "";
+
+/**
+ * The runtime ARN this turn invokes: the tenant's dedicated silo runtime if it
+ * has one, else the shared default (Phase 3). Throws if neither exists. Every
+ * invoke path resolves through here so a siloed tenant's microVMs are physically
+ * its own.
+ */
+async function runtimeArnFor(tenantId?: string): Promise<string> {
+  const arn = tenantId ? await resolveRuntimeArn(tenantId) : CODING_RUNTIME_ARN;
+  if (!arn) throw new Error("CODING_AGENT_RUNTIME_ARN is not set");
+  return arn;
+}
 
 // A coding turn can run for many minutes; give the SDK a long read timeout.
 const clients = new Map<string, BedrockAgentCoreClient>();
@@ -51,6 +64,10 @@ export interface CodingTurnParams {
   repo?: string;
   claudeSessionId?: string;
   userId?: string;
+  // Tenant (company) the session belongs to. The runtime uses it to build
+  // tenant-scoped S3 keys (config/auth fetch, checkpoint upload, purge) so a
+  // per-tenant runtime role can be locked to ember/t/<tenantId>/*.
+  tenantId?: string;
   configVersion?: string;
   region?: string;
   // "bedrock" (default) or "subscription" (user's own Claude/ChatGPT plan).
@@ -82,6 +99,7 @@ function buildTurnPayload(params: CodingTurnParams): Record<string, unknown> {
   if (params.claudeSessionId) payload.claude_session_id = params.claudeSessionId;
   // Per-user config bundle (MCP/skills/agents) the runtime materializes first.
   if (params.userId) payload.user_id = params.userId;
+  if (params.tenantId) payload.tenant_id = params.tenantId;
   if (params.configVersion) payload.config_version = params.configVersion;
   if (params.authMode) payload.auth_mode = params.authMode;
   if (params.branch) payload.branch = params.branch;
@@ -94,15 +112,13 @@ function buildTurnPayload(params: CodingTurnParams): Record<string, unknown> {
 }
 
 export async function invokeCodingTurn(params: CodingTurnParams): Promise<CodingTurnResult> {
-  if (!CODING_RUNTIME_ARN) {
-    throw new Error("CODING_AGENT_RUNTIME_ARN is not set");
-  }
+  const runtimeArn = await runtimeArnFor(params.tenantId);
   const region = params.region || REGION;
 
   const payload = buildTurnPayload(params);
 
   const command = new InvokeAgentRuntimeCommand({
-    agentRuntimeArn: CODING_RUNTIME_ARN,
+    agentRuntimeArn: runtimeArn,
     runtimeSessionId: params.sessionId,
     payload: new TextEncoder().encode(JSON.stringify(payload)),
     contentType: "application/json",
@@ -143,14 +159,15 @@ export async function invokeCodingTurn(params: CodingTurnParams): Promise<Coding
  */
 export async function stopCodingSession(params: {
   sessionId: string;
+  tenantId?: string;
   region?: string;
 }): Promise<void> {
-  if (!CODING_RUNTIME_ARN) throw new Error("CODING_AGENT_RUNTIME_ARN is not set");
+  const runtimeArn = await runtimeArnFor(params.tenantId);
   const region = params.region || REGION;
   await client(region).send(
     new StopRuntimeSessionCommand({
       runtimeSessionId: params.sessionId,
-      agentRuntimeArn: CODING_RUNTIME_ARN,
+      agentRuntimeArn: runtimeArn,
       qualifier: "DEFAULT",
     })
   );
@@ -162,15 +179,13 @@ export async function stopCodingSession(params: {
  * frames as the Claude turn runs. Claude only — codex stays buffered.
  */
 export async function invokeCodingTurnStream(params: CodingTurnParams): Promise<ReadableStream<Uint8Array>> {
-  if (!CODING_RUNTIME_ARN) {
-    throw new Error("CODING_AGENT_RUNTIME_ARN is not set");
-  }
+  const runtimeArn = await runtimeArnFor(params.tenantId);
   const region = params.region || REGION;
 
   const payload = { ...buildTurnPayload(params), stream: true };
 
   const command = new InvokeAgentRuntimeCommand({
-    agentRuntimeArn: CODING_RUNTIME_ARN,
+    agentRuntimeArn: runtimeArn,
     runtimeSessionId: params.sessionId,
     payload: new TextEncoder().encode(JSON.stringify(payload)),
     contentType: "application/json",
@@ -203,17 +218,19 @@ export async function warmCodingSession(params: {
   // Materialize the user's config bundle (skills/agents/MCP) as part of warming,
   // so an opened session is hot AND has the user's tools without a chat turn.
   userId?: string;
+  tenantId?: string;
   configVersion?: string;
   region?: string;
   authMode?: EmberAuthMode;
 }): Promise<{ resumeReady: boolean }> {
-  if (!CODING_RUNTIME_ARN) throw new Error("CODING_AGENT_RUNTIME_ARN is not set");
+  const runtimeArn = await runtimeArnFor(params.tenantId);
   const region = params.region || REGION;
   const payload: Record<string, unknown> = {
     warm: true,
     cli: params.cli,
     session_id: params.sessionId,
   };
+  if (params.tenantId) payload.tenant_id = params.tenantId;
   if (params.repo) payload.repo = params.repo;
   if (params.branch) payload.branch = params.branch;
   if (params.resumeTranscriptKey) payload.resume_transcript = params.resumeTranscriptKey;
@@ -226,7 +243,7 @@ export async function warmCodingSession(params: {
   if (params.authMode) payload.auth_mode = params.authMode;
 
   const command = new InvokeAgentRuntimeCommand({
-    agentRuntimeArn: CODING_RUNTIME_ARN,
+    agentRuntimeArn: runtimeArn,
     runtimeSessionId: params.sessionId,
     payload: new TextEncoder().encode(JSON.stringify(payload)),
     contentType: "application/json",
@@ -259,23 +276,25 @@ export async function prepareCodingSession(params: {
   sessionId: string;
   cli: EmberCli;
   userId?: string;
+  tenantId?: string;
   configVersion?: string;
   region?: string;
   authMode?: EmberAuthMode;
 }): Promise<{ resumeReady: boolean }> {
-  if (!CODING_RUNTIME_ARN) throw new Error("CODING_AGENT_RUNTIME_ARN is not set");
+  const runtimeArn = await runtimeArnFor(params.tenantId);
   const region = params.region || REGION;
   const payload: Record<string, unknown> = {
     prepare: true,
     cli: params.cli,
     session_id: params.sessionId,
   };
+  if (params.tenantId) payload.tenant_id = params.tenantId;
   if (params.userId) payload.user_id = params.userId;
   if (params.configVersion) payload.config_version = params.configVersion;
   if (params.authMode) payload.auth_mode = params.authMode;
 
   const command = new InvokeAgentRuntimeCommand({
-    agentRuntimeArn: CODING_RUNTIME_ARN,
+    agentRuntimeArn: runtimeArn,
     runtimeSessionId: params.sessionId,
     payload: new TextEncoder().encode(JSON.stringify(payload)),
     contentType: "application/json",
@@ -304,20 +323,22 @@ export async function checkpointCodingSession(params: {
   cli: EmberCli;
   repo?: string;
   resumeSessionId?: string; // the conversation's real id (the transcript filename)
+  tenantId?: string;
   region?: string;
 }): Promise<{ key?: string; bytes?: number; branch?: string }> {
-  if (!CODING_RUNTIME_ARN) throw new Error("CODING_AGENT_RUNTIME_ARN is not set");
+  const runtimeArn = await runtimeArnFor(params.tenantId);
   const region = params.region || REGION;
   const payload: Record<string, unknown> = {
     checkpoint: true,
     cli: params.cli,
     session_id: params.sessionId,
   };
+  if (params.tenantId) payload.tenant_id = params.tenantId;
   if (params.repo) payload.repo = params.repo;
   if (params.resumeSessionId) payload.resume_session_id = params.resumeSessionId;
 
   const command = new InvokeAgentRuntimeCommand({
-    agentRuntimeArn: CODING_RUNTIME_ARN,
+    agentRuntimeArn: runtimeArn,
     runtimeSessionId: params.sessionId,
     payload: new TextEncoder().encode(JSON.stringify(payload)),
     contentType: "application/json",

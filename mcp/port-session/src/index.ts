@@ -31,6 +31,7 @@ import { readState, prepareGitHandoff, pullBranch } from "./git.js";
 import { newestTranscript, sessionIdForTranscript, installLocalTranscript } from "./transcript.js";
 import { gatherBundle, type Cli } from "./config.js";
 import { gatherLoginBody } from "./login.js";
+import { emberAuthHeaders } from "./auth.js";
 
 const EMBER_URL = (process.env.EMBER_URL || "").replace(/\/$/, "");
 
@@ -276,6 +277,7 @@ async function runPull(rawArgs: unknown) {
   // 1. checkpoint: cloud uploads the grown transcript + returns a presigned GET.
   const res = await fetch(`${EMBER_URL}/api/ember/sessions/${sid}/checkpoint`, {
     method: "POST",
+    headers: { ...(await emberAuthHeaders()) },
     signal: AbortSignal.timeout(110_000),
   });
   const data = (await res.json().catch(() => ({}))) as {
@@ -350,6 +352,7 @@ async function runSync(rawArgs: unknown) {
   form.set("scope", cli);
   const res = await fetch(`${EMBER_URL}/api/ember/config`, {
     method: "POST",
+    headers: { ...(await emberAuthHeaders()) },
     body: form,
     signal: AbortSignal.timeout(60_000),
   });
@@ -410,7 +413,7 @@ async function runLogin(rawArgs: unknown) {
 
   const res = await fetch(`${EMBER_URL}/api/ember/auth`, {
     method: "POST",
-    headers: { "Content-Type": "application/json" },
+    headers: { "Content-Type": "application/json", ...(await emberAuthHeaders()) },
     body: JSON.stringify(body),
     signal: AbortSignal.timeout(30_000),
   });
@@ -494,7 +497,7 @@ server.setRequestHandler(CallToolRequestSchema, async (req) => {
     //    bundle only when we produced one).
     const res = await fetch(`${EMBER_URL}/api/ember/sessions/port`, {
       method: "POST",
-      headers: { "Content-Type": "application/json" },
+      headers: { "Content-Type": "application/json", ...(await emberAuthHeaders()) },
       body: JSON.stringify({
         repo: handoff.mode === "none" ? undefined : state.remoteRepo,
         cloneUrl: handoff.mode === "none" ? undefined : (handoff as any).cloneUrl,
@@ -547,6 +550,7 @@ server.setRequestHandler(CallToolRequestSchema, async (req) => {
       try {
         const w = await fetch(`${EMBER_URL}/api/ember/sessions/${sid}/warm`, {
           method: "POST",
+          headers: { ...(await emberAuthHeaders()) },
           signal: AbortSignal.timeout(60_000),
         });
         warmed = w.ok && Boolean((await w.json().catch(() => ({}))).warmed);

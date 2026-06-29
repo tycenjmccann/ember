@@ -100,7 +100,10 @@ aws iam put-role-policy --role-name "$INSTANCE_ROLE" --policy-name "EmberAppRunn
           \"dynamodb:GetItem\", \"dynamodb:PutItem\", \"dynamodb:UpdateItem\",
           \"dynamodb:DeleteItem\", \"dynamodb:Query\", \"dynamodb:Scan\"
         ],
-        \"Resource\": \"arn:aws:dynamodb:${AWS_REGION}:${ACCOUNT_ID}:table/${EMBER_TABLE}\"
+        \"Resource\": [
+          \"arn:aws:dynamodb:${AWS_REGION}:${ACCOUNT_ID}:table/${EMBER_TABLE}\",
+          \"arn:aws:dynamodb:${AWS_REGION}:${ACCOUNT_ID}:table/${EMBER_TABLE}/index/*\"
+        ]
       },
       {
         \"Sid\": \"S3Artifacts\",
@@ -116,6 +119,12 @@ aws iam put-role-policy --role-name "$INSTANCE_ROLE" --policy-name "EmberAppRunn
         \"Effect\": \"Allow\",
         \"Action\": [\"bedrock:InvokeModel\", \"bedrock:InvokeModelWithResponseStream\"],
         \"Resource\": \"*\"
+      },
+      {
+        \"Sid\": \"SecretsManagerCreds\",
+        \"Effect\": \"Allow\",
+        \"Action\": [\"secretsmanager:CreateSecret\", \"secretsmanager:PutSecretValue\", \"secretsmanager:DeleteSecret\", \"secretsmanager:DescribeSecret\", \"secretsmanager:TagResource\"],
+        \"Resource\": \"arn:aws:secretsmanager:${AWS_REGION}:${ACCOUNT_ID}:secret:ember/t/*\"
       },
       {
         \"Sid\": \"STS\",
@@ -168,7 +177,9 @@ import json, os
 env = json.loads(os.environ.get('EXISTING_ENV') or '{}')
 env.update({'HOSTNAME':'0.0.0.0','PORT':'8080','NODE_ENV':'production'})
 # Overlay only vars actually present in this shell's environment.
-for k in ['AWS_REGION','CODING_AGENT_RUNTIME_ARN','EMBER_TABLE','ARTIFACT_BUCKET','DEPLOYMENT_URL','NEXT_PUBLIC_BRAND_NAME']:
+for k in ['AWS_REGION','CODING_AGENT_RUNTIME_ARN','EMBER_TABLE','ARTIFACT_BUCKET','DEPLOYMENT_URL','NEXT_PUBLIC_BRAND_NAME',
+          'COGNITO_USER_POOL_ID','COGNITO_CLIENT_ID','COGNITO_CLIENT_SECRET','COGNITO_DOMAIN','EMBER_AUTH_DISABLED',
+          'EMBER_SECRETS_BACKEND']:
     v = os.environ.get(k)
     if v: env[k] = v
 print(json.dumps(env))
@@ -177,6 +188,15 @@ print(json.dumps(env))
 if ! echo "$ENV_VARS" | grep -q 'CODING_AGENT_RUNTIME_ARN'; then
   echo "ERROR: CODING_AGENT_RUNTIME_ARN missing from both the live service and this shell." >&2
   echo "       Export it (or set it in deploy/config.sh) before deploying." >&2
+  exit 1
+fi
+
+# Auth guard: fail closed. Either a Cognito pool must be wired (multi-tenant) OR
+# the deployer must explicitly opt into the no-auth personal mode. Shipping with
+# neither would leave every session reachable by anyone — the pre-Phase-1 hole.
+if ! echo "$ENV_VARS" | grep -q 'COGNITO_USER_POOL_ID' && ! echo "$ENV_VARS" | grep -q '"EMBER_AUTH_DISABLED": *"1"'; then
+  echo "ERROR: No auth configured. Set COGNITO_* (run deploy/cognito/setup-cognito.sh) for" >&2
+  echo "       multi-tenant auth, or export EMBER_AUTH_DISABLED=1 for a personal no-auth deploy." >&2
   exit 1
 fi
 

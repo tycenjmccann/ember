@@ -13,9 +13,11 @@ import { NextRequest, NextResponse } from "next/server";
 import { SignatureV4 } from "@smithy/signature-v4";
 import { Sha256 } from "@aws-crypto/sha256-js";
 import { defaultProvider } from "@aws-sdk/credential-provider-node";
-import { getSession, DEFAULT_USER_ID } from "@/lib/ember/sessions";
+import { getOwnedSession, DEFAULT_USER_ID } from "@/lib/ember/sessions";
+import { getIdentity } from "@/lib/ember/identity";
 import { currentConfigVersion } from "@/lib/ember/config-store";
 import { prepareCodingSession, warmCodingSession } from "@/lib/ember/runtime";
+import { resolveRuntimeArn } from "@/lib/ember/tenant-store";
 
 export const dynamic = "force-dynamic";
 // Bounded by the prepare/warm race below; the presign itself is instant. A
@@ -28,7 +30,7 @@ const RUNTIME_ARN = process.env.CODING_AGENT_RUNTIME_ARN || "";
 const EXPIRES = 300; // AgentCore presigned-URL max
 
 export async function POST(
-  _request: NextRequest,
+  request: NextRequest,
   { params }: { params: { id: string } }
 ) {
   if (!RUNTIME_ARN) {
@@ -38,10 +40,17 @@ export async function POST(
     );
   }
 
-  const session = await getSession(params.id);
+  const { tenantId } = getIdentity(request);
+  const session = await getOwnedSession(params.id, tenantId);
   if (!session) {
     return NextResponse.json({ error: "Session not found" }, { status: 404 });
   }
+
+  // The PTY must attach to the SAME runtime we warm/prepare below. For a siloed
+  // tenant that's its dedicated runtime, not the shared default — sign the URL
+  // against it or the browser crosses into the pool runtime (wrong VM, missing
+  // resume/config, broken compute boundary). Falls back to the shared ARN.
+  const runtimeArn = await resolveRuntimeArn(tenantId);
 
   // Ready the session's microVM BEFORE the browser opens the PTY — a terminal
   // session never runs a chat turn, which is otherwise the only thing that
@@ -77,6 +86,7 @@ export async function POST(
           cloneUrl: session.cloneUrl,
           resumeBundleKey: session.resumeBundleKey,
           userId,
+          tenantId,
           configVersion,
           region: REGION,
           authMode: session.authMode,
@@ -98,6 +108,7 @@ export async function POST(
           sessionId: session.sessionId,
           cli: session.cli,
           userId,
+          tenantId,
           configVersion,
           region: REGION,
           authMode: session.authMode,
@@ -113,7 +124,7 @@ export async function POST(
   // A shell id is the reconnect handle for this PTY; one per attach is fine.
   const shellId = `sh-${params.id}`.slice(0, 60);
   const host = `bedrock-agentcore.${REGION}.amazonaws.com`;
-  const path = `/runtimes/${encodeURIComponent(RUNTIME_ARN)}/ws/shells`;
+  const path = `/runtimes/${encodeURIComponent(runtimeArn)}/ws/shells`;
 
   const signer = new SignatureV4({
     service: "bedrock-agentcore",

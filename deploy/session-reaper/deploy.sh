@@ -98,8 +98,11 @@ aws iam put-role-policy --role-name "$ROLE_NAME" --policy-name reaper --policy-d
      \"Action\":[\"dynamodb:GetRecords\",\"dynamodb:GetShardIterator\",\"dynamodb:DescribeStream\",\"dynamodb:ListStreams\"],
      \"Resource\":\"${TABLE_ARN}/stream/*\"},
     {\"Effect\":\"Allow\",
+     \"Action\":[\"dynamodb:GetItem\"],
+     \"Resource\":\"${TABLE_ARN}\"},
+    {\"Effect\":\"Allow\",
      \"Action\":[\"bedrock-agentcore:InvokeAgentRuntime\",\"bedrock-agentcore:StopRuntimeSession\"],
-     \"Resource\":\"${CODING_AGENT_RUNTIME_ARN}*\"},
+     \"Resource\":\"arn:aws:bedrock-agentcore:${AWS_REGION}:${ACCOUNT_ID}:runtime/*\"},
     {\"Effect\":\"Allow\",
      \"Action\":[\"s3:ListBucket\"],\"Resource\":\"arn:aws:s3:::${ARTIFACT_BUCKET}\"},
     {\"Effect\":\"Allow\",
@@ -118,7 +121,7 @@ if aws lambda get-function --function-name "$FN_NAME" --region "$AWS_REGION" >/d
     --zip-file "fileb://$ZIP" --output text >/dev/null
   aws lambda wait function-updated --function-name "$FN_NAME" --region "$AWS_REGION"
   aws lambda update-function-configuration --function-name "$FN_NAME" --region "$AWS_REGION" \
-    --environment "Variables={CODING_AGENT_RUNTIME_ARN=$CODING_AGENT_RUNTIME_ARN}" \
+    --environment "Variables={CODING_AGENT_RUNTIME_ARN=$CODING_AGENT_RUNTIME_ARN,EMBER_TABLE=$EMBER_TABLE}" \
     --timeout 120 --output text >/dev/null
 else
   echo "  [create] Lambda $FN_NAME"
@@ -127,7 +130,7 @@ else
     if aws lambda create-function --function-name "$FN_NAME" --region "$AWS_REGION" \
         --runtime python3.12 --handler handler.handler --role "$ROLE_ARN" \
         --zip-file "fileb://$ZIP" --timeout 120 --memory-size 256 \
-        --environment "Variables={CODING_AGENT_RUNTIME_ARN=$CODING_AGENT_RUNTIME_ARN}" \
+        --environment "Variables={CODING_AGENT_RUNTIME_ARN=$CODING_AGENT_RUNTIME_ARN,EMBER_TABLE=$EMBER_TABLE}" \
         --output text >/dev/null 2>&1; then
       break
     fi

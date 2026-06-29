@@ -17,6 +17,8 @@
 import { DynamoDBClient } from "@aws-sdk/client-dynamodb";
 import { DynamoDBDocumentClient, GetCommand, PutCommand } from "@aws-sdk/lib-dynamodb";
 import { DEFAULT_USER_ID } from "./sessions";
+import { DEFAULT_TENANT_ID } from "./identity";
+import { configKey } from "./s3keys";
 
 const REGION = process.env.AWS_REGION || "us-east-1";
 const TABLE = process.env.EMBER_TABLE || "ember-sessions";
@@ -43,8 +45,18 @@ export interface UserConfig {
 
 const keyFor = (userId: string) => `config:${userId}`;
 
-export function s3KeyFor(userId: string, version: string): string {
-  return `ember/configs/${userId}/${version}.zip`;
+/**
+ * S3 key for a config bundle version. Tenant-scoped (ember/t/<tenantId>/…) so a
+ * per-tenant runtime role can be locked to its own prefix. The DynamoDB metadata
+ * row stays keyed by userId alone (config:{userId}) — userId is the globally
+ * unique Cognito sub, so it needs no tenant qualifier; only the S3 bytes do.
+ */
+export function s3KeyFor(
+  userId: string,
+  version: string,
+  tenantId: string = DEFAULT_TENANT_ID
+): string {
+  return configKey(tenantId, userId, version);
 }
 
 /**
@@ -90,14 +102,17 @@ export async function mergeScopedBundle(
 }
 
 /** Fetch the current version's zip bytes from S3 (null if none / not found). */
-export async function getCurrentBundleZip(userId: string = DEFAULT_USER_ID): Promise<Buffer | null> {
+export async function getCurrentBundleZip(
+  userId: string = DEFAULT_USER_ID,
+  tenantId: string = DEFAULT_TENANT_ID
+): Promise<Buffer | null> {
   const cfg = await getUserConfig(userId);
   if (!cfg.currentVersion || !ARTIFACT_BUCKET) return null;
   const { S3Client, GetObjectCommand } = await import("@aws-sdk/client-s3");
   const s3 = new S3Client({ region: REGION });
   try {
     const obj = await s3.send(
-      new GetObjectCommand({ Bucket: ARTIFACT_BUCKET, Key: s3KeyFor(userId, cfg.currentVersion) })
+      new GetObjectCommand({ Bucket: ARTIFACT_BUCKET, Key: s3KeyFor(userId, cfg.currentVersion, tenantId) })
     );
     const bytes = await obj.Body!.transformToByteArray();
     return Buffer.from(bytes);

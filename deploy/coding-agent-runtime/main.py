@@ -56,9 +56,19 @@ CLAUDE_MODEL = os.environ.get("ANTHROPIC_MODEL") or os.environ.get(
 TURN_TIMEOUT_S = int(os.environ.get("TURN_TIMEOUT_S", "1500"))
 
 # Per-user coding-CLI config bundle (MCP servers, skills, custom agents, prefs).
-# The app uploads a zip to s3://{ARTIFACT_BUCKET}/ember/configs/{userId}/
-# {version}.zip; we materialize it into the CLI config dirs on session start.
+# The app uploads a zip to s3://{ARTIFACT_BUCKET}/ember/t/{tenantId}/configs/
+# {userId}/{version}.zip; we materialize it into the CLI config dirs on session
+# start. Every artifact key is tenant-scoped (see _tenant_prefix) so a per-tenant
+# runtime role can be locked to its own ember/t/<tenantId>/* subtree (Phase 3) —
+# this mirrors src/lib/ember/s3keys.ts; keep the two layouts in sync.
 ARTIFACT_BUCKET = os.environ.get("ARTIFACT_BUCKET", "")
+# Fallback tenant for no-auth deploys + legacy callers that don't send tenant_id.
+DEFAULT_TENANT_ID = "default"
+
+
+def _tenant_prefix(tenant_id: str | None) -> str:
+    """Per-tenant S3 root: ember/t/<tenantId>. The IAM boundary hangs off this."""
+    return f"ember/t/{tenant_id or DEFAULT_TENANT_ID}"
 CLAUDE_CONFIG_DIR = os.environ.get("CLAUDE_CONFIG_DIR", os.path.join(WORKSPACE_ROOT, ".claude-data"))
 CODEX_HOME = os.environ.get("CODEX_HOME", os.path.join(WORKSPACE_ROOT, ".codex"))
 # Marker so we only materialize a given (user, version) once per warm microVM.
@@ -225,10 +235,12 @@ def _seed_claude_first_run(workdir: str | None = None) -> None:
 # ─── Per-user config bundle ───────────────────────────────────────────────────
 
 
-def _apply_config_bundle(user_id: str | None, version: str | None) -> None:
+def _apply_config_bundle(user_id: str | None, version: str | None,
+                         tenant_id: str | None = None) -> None:
     """Materialize a user's coding-CLI config bundle into the CLI config dirs.
 
-    The bundle is a zip at s3://{ARTIFACT_BUCKET}/ember/configs/{userId}/{version}.zip
+    The bundle is a zip at
+    s3://{ARTIFACT_BUCKET}/ember/t/{tenantId}/configs/{userId}/{version}.zip
     laid out as `claude/...` (→ CLAUDE_CONFIG_DIR) and `codex/...` (→ CODEX_HOME).
     Idempotent per warm microVM via a marker file. The user's files land first;
     run-codex.sh / the launchers then re-assert our Bedrock provider on top, so a
@@ -274,7 +286,7 @@ def _apply_config_bundle(user_id: str | None, version: str | None) -> None:
     if prev.get("files"):
         _remove_applied(prev["files"])
 
-    key = f"ember/configs/{user_id}/{version}.zip"
+    key = f"{_tenant_prefix(tenant_id)}/configs/{user_id}/{version}.zip"
     try:
         s3 = boto3.client("s3", region_name=os.environ.get("AWS_REGION", "us-east-1"))
         obj = s3.get_object(Bucket=ARTIFACT_BUCKET, Key=key)
@@ -321,17 +333,37 @@ def _apply_config_bundle(user_id: str | None, version: str | None) -> None:
 # ─── Subscription credentials ─────────────────────────────────────────────────
 
 
-def _fetch_subscription_cred(user_id: str | None, cli: str) -> dict | None:
-    """Fetch the user's uploaded subscription credential for this CLI from S3.
+# Phase 4: where subscription creds live. "s3" (default) reads the encrypted
+# object; "secretsmanager" reads a per-(tenant,user,cli) secret. Set by the same
+# EMBER_SECRETS_BACKEND the app uses, so both sides agree.
+SECRETS_BACKEND = os.environ.get("EMBER_SECRETS_BACKEND", "s3")
 
+
+def _secret_name(tenant_id: str | None, user_id: str, cli: str) -> str:
+    """Secrets Manager secret name — mirrors src/lib/ember/secrets.ts."""
+    return f"{_tenant_prefix(tenant_id)}/auth/{user_id}/{cli}"
+
+
+def _fetch_subscription_cred(user_id: str | None, cli: str,
+                             tenant_id: str | None = None) -> dict | None:
+    """Fetch the user's uploaded subscription credential for this CLI.
+
+    Reads from the configured backend (S3 object or Secrets Manager secret).
     Returns the parsed JSON ({"token": ...} for claude; the auth.json doc for
     codex) or None if absent/unreadable. Best-effort — a missing credential
     just means the turn can't run in subscription mode (caller surfaces that)."""
-    if not (user_id and ARTIFACT_BUCKET):
+    if not user_id:
         return None
-    key = f"ember/auth/{user_id}/{cli}.json"
+    region = os.environ.get("AWS_REGION", "us-east-1")
     try:
-        s3 = boto3.client("s3", region_name=os.environ.get("AWS_REGION", "us-east-1"))
+        if SECRETS_BACKEND == "secretsmanager":
+            sm = boto3.client("secretsmanager", region_name=region)
+            resp = sm.get_secret_value(SecretId=_secret_name(tenant_id, user_id, cli))
+            return json.loads(resp["SecretString"])
+        if not ARTIFACT_BUCKET:
+            return None
+        key = f"{_tenant_prefix(tenant_id)}/auth/{user_id}/{cli}.json"
+        s3 = boto3.client("s3", region_name=region)
         obj = s3.get_object(Bucket=ARTIFACT_BUCKET, Key=key)
         return json.loads(obj["Body"].read())
     except Exception as exc:  # noqa: BLE001 — missing/forbidden cred is non-fatal
@@ -339,21 +371,31 @@ def _fetch_subscription_cred(user_id: str | None, cli: str) -> dict | None:
         return None
 
 
-def _materialize_claude_token(user_id: str | None) -> bool:
-    """Write the user's Claude subscription token to {CLAUDE_CONFIG_DIR}/.sub-token
-    so the interactive PTY shell (shell-init.sh) launches `claude` on their plan.
-    The headless chat path reads the token straight from S3 instead. Returns True
-    on success; absence of the file signals Bedrock mode to the shell."""
-    cred = _fetch_subscription_cred(user_id, "claude") or {}
+# Phase 4: materialize plaintext creds to a tmpfs (RAM-backed, NON-persistent)
+# dir, never the shared EFS. /dev/shm is tmpfs on Linux; fall back to /tmp. The
+# claude PTY token lands here and shell-init.sh reads it from here — so the secret
+# never touches the durable filesystem other tenants' VMs also mount.
+EPHEMERAL_CREDS_DIR = os.environ.get(
+    "EMBER_EPHEMERAL_CREDS_DIR",
+    "/dev/shm/ember-creds" if os.path.isdir("/dev/shm") else "/tmp/ember-creds",
+)
+_CLAUDE_SUB_TOKEN_PATH = os.path.join(EPHEMERAL_CREDS_DIR, ".sub-token")
+
+
+def _materialize_claude_token(user_id: str | None, tenant_id: str | None = None) -> bool:
+    """Write the user's Claude subscription token to a tmpfs file so the
+    interactive PTY shell (shell-init.sh) launches `claude` on their plan. The
+    headless chat path reads the token from the backend per turn instead. Returns
+    True on success; absence of the file signals Bedrock mode to the shell."""
+    cred = _fetch_subscription_cred(user_id, "claude", tenant_id) or {}
     token = cred.get("token") or cred.get("oauth_token")
     if not token:
         return False
     try:
-        os.makedirs(CLAUDE_CONFIG_DIR, exist_ok=True)
-        path = os.path.join(CLAUDE_CONFIG_DIR, ".sub-token")
-        with open(path, "w") as f:
+        os.makedirs(EPHEMERAL_CREDS_DIR, mode=0o700, exist_ok=True)
+        with open(_CLAUDE_SUB_TOKEN_PATH, "w") as f:
             f.write(token)
-        os.chmod(path, 0o600)
+        os.chmod(_CLAUDE_SUB_TOKEN_PATH, 0o600)
         return True
     except OSError as exc:
         logger.warning("claude_token_write_failed", extra={"error": str(exc)[:200]})
@@ -362,18 +404,21 @@ def _materialize_claude_token(user_id: str | None) -> bool:
 
 def _clear_subscription_creds() -> None:
     """Remove any materialized subscription creds so a Bedrock-mode session on a
-    warm VM doesn't accidentally inherit a prior subscription session's plan."""
-    for p in (os.path.join(CLAUDE_CONFIG_DIR, ".sub-token"), os.path.join(CODEX_HOME, "auth.json")):
+    warm VM doesn't accidentally inherit a prior subscription session's plan.
+    Clears both the tmpfs token and the legacy EFS location (pre-Phase-4 VMs)."""
+    for p in (_CLAUDE_SUB_TOKEN_PATH,
+              os.path.join(CLAUDE_CONFIG_DIR, ".sub-token"),  # legacy
+              os.path.join(CODEX_HOME, "auth.json")):
         try:
             os.remove(p)
         except OSError:
             pass
 
 
-def _materialize_codex_auth(user_id: str | None) -> bool:
+def _materialize_codex_auth(user_id: str | None, tenant_id: str | None = None) -> bool:
     """Write the user's ChatGPT-plan auth.json into CODEX_HOME so `codex exec`
     uses the default OpenAI provider against their plan. Returns True on success."""
-    cred = _fetch_subscription_cred(user_id, "codex")
+    cred = _fetch_subscription_cred(user_id, "codex", tenant_id)
     if not cred:
         return False
     try:
@@ -668,7 +713,8 @@ def _install_resume_transcript(s3_key: str, session_id: str, workdir: str,
         return False
 
 
-def _checkpoint_transcript(session_id: str, workdir: str) -> dict:
+def _checkpoint_transcript(session_id: str, workdir: str,
+                           tenant_id: str | None = None) -> dict:
     """Reverse of install: read the (now-grown) Claude transcript off EFS and
     upload it to S3 so the laptop can pull it back and `claude --resume` locally.
 
@@ -682,7 +728,7 @@ def _checkpoint_transcript(session_id: str, workdir: str) -> dict:
         raise FileNotFoundError(f"no transcript at {src} (session never resumed on this VM?)")
     if not ARTIFACT_BUCKET:
         raise RuntimeError("ARTIFACT_BUCKET not set")
-    key = f"ember/checkpoint/{session_id}/{session_id}.jsonl"
+    key = f"{_tenant_prefix(tenant_id)}/checkpoint/{session_id}/{session_id}.jsonl"
     with open(src, "rb") as f:
         data = f.read()
     s3 = boto3.client("s3", region_name=os.environ.get("AWS_REGION", "us-east-1"))
@@ -700,7 +746,7 @@ def _checkpoint_transcript(session_id: str, workdir: str) -> dict:
 
 
 def _purge_session(session_id: str, conversation_id: str | None = None,
-                   cli: str = "claude") -> dict:
+                   cli: str = "claude", tenant_id: str | None = None) -> dict:
     """Reclaim everything a session left on disk, so deleting it in the UI also
     frees the backend storage it was paying for. Three stores:
 
@@ -768,15 +814,26 @@ def _purge_session(session_id: str, conversation_id: str | None = None,
                            extra={"session": session_id, "cli": cli, "error": str(exc)[:200]})
     # S3: delete every object under the session's resume + checkpoint prefixes.
     # Note the keying differs: the ported transcript + bundle are under the RUNTIME
-    # session id (ember/resume/<sessionId>/), but _checkpoint_transcript writes
-    # checkpoints under the CONVERSATION id (ember/checkpoint/<conversationId>/) —
+    # session id (resume/<sessionId>/), but _checkpoint_transcript writes
+    # checkpoints under the CONVERSATION id (checkpoint/<conversationId>/) —
     # which normally differs from cc-<sessionId>. Purge both forms so a checkpointed
     # session doesn't leak its pulled-home transcript.
+    #
+    # Keys are tenant-scoped (ember/t/<tenantId>/…). We also purge the LEGACY
+    # un-prefixed forms (ember/resume/…, ember/checkpoint/…) so a session ported
+    # before the tenant-prefix change still gets fully reclaimed on delete.
     if ARTIFACT_BUCKET:
         s3 = boto3.client("s3", region_name=os.environ.get("AWS_REGION", "us-east-1"))
-        prefixes = [f"ember/resume/{session_id}/", f"ember/checkpoint/{session_id}/"]
+        tp = _tenant_prefix(tenant_id)
+        prefixes = [
+            f"{tp}/resume/{session_id}/",
+            f"{tp}/checkpoint/{session_id}/",
+            f"ember/resume/{session_id}/",        # legacy (pre tenant-prefix)
+            f"ember/checkpoint/{session_id}/",    # legacy
+        ]
         if conversation_id:
-            prefixes.append(f"ember/checkpoint/{conversation_id}/")
+            prefixes.append(f"{tp}/checkpoint/{conversation_id}/")
+            prefixes.append(f"ember/checkpoint/{conversation_id}/")  # legacy
         for prefix in prefixes:
             try:
                 paginator = s3.get_paginator("list_objects_v2")
@@ -1008,7 +1065,8 @@ def _checkout_branch(workdir: str, branch: str) -> None:
 # ─── CLI runners ──────────────────────────────────────────────────────────────
 
 
-def _claude_env_and_model(config_dir: str, auth_mode: str, user_id: str | None) -> tuple[dict, str | None]:
+def _claude_env_and_model(config_dir: str, auth_mode: str, user_id: str | None,
+                          tenant_id: str | None = None) -> tuple[dict, str | None]:
     """Build the env + model for a Claude turn given the auth mode.
 
     bedrock (default): CLAUDE_CODE_USE_BEDROCK=1, Bedrock model id.
@@ -1018,7 +1076,7 @@ def _claude_env_and_model(config_dir: str, auth_mode: str, user_id: str | None) 
       None means "omit --model" (let the account default win)."""
     base = {**os.environ, "CLAUDE_CONFIG_DIR": config_dir}
     if auth_mode == "subscription":
-        cred = _fetch_subscription_cred(user_id, "claude") or {}
+        cred = _fetch_subscription_cred(user_id, "claude", tenant_id) or {}
         token = cred.get("token") or cred.get("oauth_token")
         if not token:
             raise RuntimeError(
@@ -1033,13 +1091,14 @@ def _claude_env_and_model(config_dir: str, auth_mode: str, user_id: str | None) 
 
 
 def _run_claude(prompt: str, workdir: str, claude_session_id: str | None,
-                auth_mode: str = "bedrock", user_id: str | None = None) -> dict:
+                auth_mode: str = "bedrock", user_id: str | None = None,
+                tenant_id: str | None = None) -> dict:
     """Run one Claude Code turn. Resume the conversation when a prior
     claude_session_id is supplied (same microVM keeps its ~/.claude state)."""
     config_dir = os.environ.get("CLAUDE_CONFIG_DIR", os.path.join(WORKSPACE_ROOT, ".claude-data"))
     os.makedirs(config_dir, exist_ok=True)
 
-    env, model = _claude_env_and_model(config_dir, auth_mode, user_id)
+    env, model = _claude_env_and_model(config_dir, auth_mode, user_id, tenant_id)
     # `claude --print` does NOT auto-load a project .mcp.json (needs interactive
     # approval). _build_claude_args passes --mcp-config explicitly; it's variadic,
     # so the positional prompt must come last (appended here).
@@ -1082,7 +1141,7 @@ def _build_claude_args(config_dir: str, claude_session_id: str | None, stream: b
 
 def _stream_claude(prompt: str, workdir: str, claude_session_id: str | None, repo: str | None = None,
                    auth_mode: str = "bedrock", user_id: str | None = None,
-                   runtime_session_id: str | None = None):
+                   runtime_session_id: str | None = None, tenant_id: str | None = None):
     """Generator yielding SSE lines for a Claude turn as it runs.
 
     Parses claude stream-json line-by-line: assistant text deltas → 'text'
@@ -1096,7 +1155,7 @@ def _stream_claude(prompt: str, workdir: str, claude_session_id: str | None, rep
         return f"data: {json.dumps(obj)}\n\n"
 
     try:
-        env, model = _claude_env_and_model(config_dir, auth_mode, user_id)
+        env, model = _claude_env_and_model(config_dir, auth_mode, user_id, tenant_id)
     except RuntimeError as exc:
         yield sse({"type": "error", "error": str(exc)})
         yield sse({"type": "done", "response": f"⚠ {exc}", "claude_session_id": claude_session_id})
@@ -1161,7 +1220,8 @@ def _stream_claude(prompt: str, workdir: str, claude_session_id: str | None, rep
 
 
 def _run_codex(prompt: str, workdir: str, codex_session_id: str | None,
-               auth_mode: str = "bedrock", user_id: str | None = None) -> dict:
+               auth_mode: str = "bedrock", user_id: str | None = None,
+               tenant_id: str | None = None) -> dict:
     """Run one Codex turn. Default routes through the Mantle launcher (GPT-5.5);
     auth_mode="subscription" uses the user's ChatGPT plan via a materialized
     ~/.codex/auth.json + the default OpenAI provider. Resumes the prior
@@ -1171,7 +1231,7 @@ def _run_codex(prompt: str, workdir: str, codex_session_id: str | None,
     server returns, so the caller's resume handle is CLI-agnostic."""
     env = {**os.environ, "WORKSPACE_DIR": workdir}
     if auth_mode == "subscription":
-        if not _materialize_codex_auth(user_id):
+        if not _materialize_codex_auth(user_id, tenant_id):
             raise RuntimeError(
                 "subscription mode selected but no Codex auth uploaded — "
                 "run the login step (codex login) on your laptop first")
@@ -1280,7 +1340,8 @@ async def invocations(request: Request):
         if not sid:
             return JSONResponse({"error": "purge needs a session id"}, status_code=400)
         return JSONResponse({"purged": True, **_purge_session(
-            sid, payload.get("claude_session_id"), (payload.get("cli") or "claude").lower())})
+            sid, payload.get("claude_session_id"), (payload.get("cli") or "claude").lower(),
+            payload.get("tenant_id"))})
 
     prompt = (payload.get("prompt") or "").strip()
     if not prompt and not warm and not checkpoint and not prepare:
@@ -1290,6 +1351,9 @@ async def invocations(request: Request):
     repo = payload.get("repo")
     claude_session_id = payload.get("claude_session_id")
     user_id = payload.get("user_id")
+    # Tenant (company) — scopes every S3 key this turn touches (config/auth fetch,
+    # checkpoint upload). Absent on legacy/no-auth callers → "default".
+    tenant_id = payload.get("tenant_id")
     # Auth mode: "bedrock" (default) or "subscription" (user's own Pro/ChatGPT plan).
     auth_mode = (payload.get("auth_mode") or "bedrock").lower()
     config_version = payload.get("config_version")
@@ -1329,7 +1393,7 @@ async def invocations(request: Request):
     config_ok = True
     config_err = ""
     try:
-        _apply_config_bundle(user_id, config_version)
+        _apply_config_bundle(user_id, config_version, tenant_id)
         _apply_default_mcp()
         # Pre-answer Claude's first-run prompts (theme picker / trust dialog) so a
         # Terminal session doesn't stall on a TUI prompt that's unanswerable on
@@ -1347,9 +1411,9 @@ async def invocations(request: Request):
     # bedrock mode so a warm VM never inherits a prior subscription session.
     if auth_mode == "subscription":
         if cli == "claude":
-            _materialize_claude_token(user_id)
+            _materialize_claude_token(user_id, tenant_id)
         elif cli == "codex":
-            _materialize_codex_auth(user_id)
+            _materialize_codex_auth(user_id, tenant_id)
     else:
         _clear_subscription_creds()
 
@@ -1449,7 +1513,7 @@ async def invocations(request: Request):
         if not cp_id:
             return JSONResponse({"error": "checkpoint needs a session id"}, status_code=400)
         try:
-            info = _checkpoint_transcript(cp_id, workdir)
+            info = _checkpoint_transcript(cp_id, workdir, tenant_id)
         except FileNotFoundError as exc:
             return JSONResponse({"error": str(exc)}, status_code=404)
         except Exception as exc:  # noqa: BLE001
@@ -1470,15 +1534,15 @@ async def invocations(request: Request):
     # an async/sync generator response as text/event-stream through InvokeAgentRuntime.
     if stream and cli == "claude":
         return StreamingResponse(
-            _stream_claude(prompt, workdir, claude_session_id, repo, auth_mode, user_id, session_id),
+            _stream_claude(prompt, workdir, claude_session_id, repo, auth_mode, user_id, session_id, tenant_id),
             media_type="text/event-stream",
         )
 
     try:
         if cli == "codex":
-            result = _run_codex(prompt, workdir, claude_session_id, auth_mode, user_id)
+            result = _run_codex(prompt, workdir, claude_session_id, auth_mode, user_id, tenant_id)
         elif cli == "claude":
-            result = _run_claude(prompt, workdir, claude_session_id, auth_mode, user_id)
+            result = _run_claude(prompt, workdir, claude_session_id, auth_mode, user_id, tenant_id)
         else:
             return JSONResponse({"error": f"unknown cli '{cli}'"}, status_code=400)
     except subprocess.TimeoutExpired:

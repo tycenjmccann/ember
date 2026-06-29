@@ -9,7 +9,8 @@
  */
 
 import { NextRequest, NextResponse } from "next/server";
-import { getSession, putSession, DEFAULT_USER_ID } from "@/lib/ember/sessions";
+import { getOwnedSession, putSession, DEFAULT_USER_ID } from "@/lib/ember/sessions";
+import { getIdentity } from "@/lib/ember/identity";
 import { invokeCodingTurn, invokeCodingTurnStream, codingRuntimeConfigured } from "@/lib/ember/runtime";
 import { currentConfigVersion } from "@/lib/ember/config-store";
 import { sseData } from "@/lib/sse";
@@ -30,7 +31,8 @@ export async function POST(
     );
   }
 
-  const session = await getSession(params.id);
+  const { tenantId } = getIdentity(request);
+  const session = await getOwnedSession(params.id, tenantId);
   if (!session) {
     return NextResponse.json({ error: "Session not found" }, { status: 404 });
   }
@@ -84,7 +86,7 @@ export async function POST(
     try {
       upstream = await invokeCodingTurnStream({
         sessionId: session.sessionId, prompt, cli: session.cli, repo: session.repo,
-        claudeSessionId: session.claudeSessionId, userId, configVersion, region,
+        claudeSessionId: session.claudeSessionId, userId, tenantId, configVersion, region,
         authMode: session.authMode, ...resumeFields,
       });
     } catch (err) {
@@ -153,7 +155,7 @@ export async function POST(
   try {
     const result = await invokeCodingTurn({
       sessionId: session.sessionId, prompt, cli: session.cli, repo: session.repo,
-      claudeSessionId: session.claudeSessionId, userId, configVersion, region,
+      claudeSessionId: session.claudeSessionId, userId, tenantId, configVersion, region,
       authMode: session.authMode, ...resumeFields,
     });
 

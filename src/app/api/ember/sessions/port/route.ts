@@ -33,7 +33,9 @@ import { NextRequest, NextResponse } from "next/server";
 import { randomUUID } from "crypto";
 import { S3Client, PutObjectCommand } from "@aws-sdk/client-s3";
 import { getSignedUrl } from "@aws-sdk/s3-request-presigner";
-import { putSession, DEFAULT_USER_ID } from "@/lib/ember/sessions";
+import { putSession } from "@/lib/ember/sessions";
+import { getIdentity } from "@/lib/ember/identity";
+import { transcriptKey as buildTranscriptKey, bundleKey as buildBundleKey } from "@/lib/ember/s3keys";
 import type { EmberSession, EmberCli, EmberAuthMode } from "@/lib/ember/types";
 
 export const dynamic = "force-dynamic";
@@ -66,6 +68,7 @@ export async function POST(request: NextRequest) {
     if (!ARTIFACT_BUCKET) {
       return NextResponse.json({ error: "ARTIFACT_BUCKET not configured" }, { status: 503 });
     }
+    const { userId, tenantId } = getIdentity(request);
     const body = await request.json().catch(() => ({}));
     const gitMode: "pushed" | "bundle" | "selfContained" | "none" =
       body.gitMode === "bundle" ? "bundle"
@@ -104,13 +107,15 @@ export async function POST(request: NextRequest) {
     const sessionId = `cc-${randomUUID().replace(/-/g, "")}`;
     const now = new Date().toISOString();
 
-    // Transcript lands in the shared artifact bucket, namespaced per session.
-    const transcriptKey = `ember/resume/${sessionId}/${claudeSessionId}.jsonl`;
-    const bundleKey = wantBundleUpload ? `ember/resume/${sessionId}/work.bundle` : undefined;
+    // Transcript lands in the shared artifact bucket, namespaced per tenant +
+    // session (ember/t/<tenantId>/resume/<sessionId>/…).
+    const transcriptKey = buildTranscriptKey(tenantId, sessionId, claudeSessionId);
+    const bundleKey = wantBundleUpload ? buildBundleKey(tenantId, sessionId) : undefined;
 
     const session: EmberSession = {
       sessionId,
-      userId: DEFAULT_USER_ID,
+      userId,
+      tenantId,
       title,
       cli,
       authMode,

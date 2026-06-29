@@ -16,7 +16,8 @@
 import { NextRequest, NextResponse } from "next/server";
 import { S3Client, GetObjectCommand } from "@aws-sdk/client-s3";
 import { getSignedUrl } from "@aws-sdk/s3-request-presigner";
-import { getSession } from "@/lib/ember/sessions";
+import { getOwnedSession } from "@/lib/ember/sessions";
+import { getIdentity } from "@/lib/ember/identity";
 import { checkpointCodingSession, codingRuntimeConfigured } from "@/lib/ember/runtime";
 
 export const dynamic = "force-dynamic";
@@ -36,7 +37,8 @@ export async function POST(
   if (!ARTIFACT_BUCKET) {
     return NextResponse.json({ error: "ARTIFACT_BUCKET not configured" }, { status: 503 });
   }
-  const session = await getSession(params.id);
+  const { tenantId } = getIdentity(request);
+  const session = await getOwnedSession(params.id, tenantId);
   if (!session) {
     return NextResponse.json({ error: "Session not found" }, { status: 404 });
   }
@@ -60,6 +62,7 @@ export async function POST(
       cli: session.cli,
       repo: session.repo,
       resumeSessionId,
+      tenantId,
       region,
     });
     if (!cp.key) {
