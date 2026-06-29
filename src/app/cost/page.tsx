@@ -127,11 +127,12 @@ export default function CostPage() {
         >
           <div className="text-white/85 text-[13px] font-medium uppercase tracking-wide">Delivers up to</div>
           <div className="text-white text-[56px] font-bold leading-none tabular-nums my-1">
-            {RATES.capacity.concurrentSessions.toLocaleString()}
+            {RATES.capacity.concurrentSessions.toLocaleString()}+
           </div>
           <div className="text-white text-[17px] font-semibold">concurrent coding sessions</div>
           <div className="text-white/85 text-[13px] mt-1.5 leading-snug">
-            Auto-scaling microVMs spin up on demand and cost <strong className="text-white">$0 when idle</strong>.
+            Default AgentCore quota — <strong className="text-white">raises on request</strong>. Auto-scaling
+            microVMs spin up on demand and cost <strong className="text-white">$0 when idle</strong>.
           </div>
         </div>
 
@@ -217,8 +218,9 @@ export default function CostPage() {
           S3 ${RATES.s3.gbMo}/GB-mo · EFS ${RATES.efs.gbMo}/GB-mo ·
           Cognito {RATES.cognito.freeMau.toLocaleString()} MAU free, then ${RATES.cognito.perMau}/MAU.
           Storage assumes ~{RATES.efs.gbPerDev} GB EFS + {RATES.s3.gbPerDev} GB S3 per developer.
-          The {RATES.capacity.concurrentSessions.toLocaleString()}-session ceiling is peak concurrency, not a monthly run-rate —
-          you pay only for active compute. App Runner can be paused outside work hours to cut its floor further.
+          The {RATES.capacity.concurrentSessions.toLocaleString()}+ figure is the default AgentCore concurrent-session
+          quota (raisable via AWS support) — peak concurrency, not a monthly run-rate; you pay only for active
+          compute. App Runner can be paused outside work hours to cut its floor further.
         </p>
       </div>
     </div>
