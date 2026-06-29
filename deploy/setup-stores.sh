@@ -137,6 +137,38 @@ else
     '{"Rules":[{"ApplyServerSideEncryptionByDefault":{"SSEAlgorithm":"AES256"}}]}' >/dev/null
 fi
 
+# ─── 2b. Migrate legacy config/auth artifacts under the tenant prefix ─────────
+# Phase 2 moved every S3 key under ember/t/<tenantId>/… so a per-tenant runtime
+# role can be IAM-scoped to its own subtree. Config bundles + subscription creds
+# are long-lived and recomputed from (tenant,user), so a pre-Phase-2 deploy's
+# objects must move to the "default" tenant or the runtime won't find them.
+# (resume/checkpoint artifacts are session-scoped + 7-day TTL → left in place;
+# the runtime/purge sweeps both old and new layouts.) Idempotent: copies only
+# legacy keys that don't already exist under the new prefix, then deletes them.
+echo "  [migrate] moving legacy configs/auth under ember/t/default/"
+EMBER_BUCKET="$ARTIFACT_BUCKET" AWS_REGION="$AWS_REGION" python3 - <<'PY'
+import boto3, os
+s3 = boto3.client("s3", region_name=os.environ["AWS_REGION"])
+bucket = os.environ["EMBER_BUCKET"]
+moved = 0
+paginator = s3.get_paginator("list_objects_v2")
+for legacy_root in ("ember/configs/", "ember/auth/"):
+    for page in paginator.paginate(Bucket=bucket, Prefix=legacy_root):
+        for obj in page.get("Contents", []):
+            src = obj["Key"]
+            # ember/configs/<u>/<v>.zip → ember/t/default/configs/<u>/<v>.zip
+            dst = "ember/t/default/" + src[len("ember/"):]
+            try:
+                s3.head_object(Bucket=bucket, Key=dst)
+                continue  # already migrated
+            except s3.exceptions.ClientError:
+                pass
+            s3.copy_object(Bucket=bucket, CopySource={"Bucket": bucket, "Key": src}, Key=dst)
+            s3.delete_object(Bucket=bucket, Key=src)
+            moved += 1
+print(f"         migrated {moved} object(s)")
+PY
+
 echo ""
 echo "OK stores ready."
 echo "  export EMBER_TABLE=$EMBER_TABLE"

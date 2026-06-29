@@ -35,6 +35,7 @@ import { S3Client, PutObjectCommand } from "@aws-sdk/client-s3";
 import { getSignedUrl } from "@aws-sdk/s3-request-presigner";
 import { putSession } from "@/lib/ember/sessions";
 import { getIdentity } from "@/lib/ember/identity";
+import { transcriptKey as buildTranscriptKey, bundleKey as buildBundleKey } from "@/lib/ember/s3keys";
 import type { EmberSession, EmberCli, EmberAuthMode } from "@/lib/ember/types";
 
 export const dynamic = "force-dynamic";
@@ -106,9 +107,10 @@ export async function POST(request: NextRequest) {
     const sessionId = `cc-${randomUUID().replace(/-/g, "")}`;
     const now = new Date().toISOString();
 
-    // Transcript lands in the shared artifact bucket, namespaced per session.
-    const transcriptKey = `ember/resume/${sessionId}/${claudeSessionId}.jsonl`;
-    const bundleKey = wantBundleUpload ? `ember/resume/${sessionId}/work.bundle` : undefined;
+    // Transcript lands in the shared artifact bucket, namespaced per tenant +
+    // session (ember/t/<tenantId>/resume/<sessionId>/…).
+    const transcriptKey = buildTranscriptKey(tenantId, sessionId, claudeSessionId);
+    const bundleKey = wantBundleUpload ? buildBundleKey(tenantId, sessionId) : undefined;
 
     const session: EmberSession = {
       sessionId,

@@ -38,7 +38,7 @@ export async function POST(request: NextRequest) {
     return NextResponse.json({ error: "ARTIFACT_BUCKET not configured" }, { status: 503 });
   }
   try {
-    const { userId } = getIdentity(request);
+    const { userId, tenantId } = getIdentity(request);
     const body = await request.json().catch(() => ({}));
     const cli = parseCli(body.cli);
     if (!cli) return NextResponse.json({ error: "cli must be 'claude' or 'codex'" }, { status: 400 });
@@ -76,7 +76,7 @@ export async function POST(request: NextRequest) {
       label = label || "ChatGPT plan";
     }
 
-    const meta = await putCredential(cli, cred, { label, userId });
+    const meta = await putCredential(cli, cred, { label, userId, tenantId });
     return NextResponse.json({ connected: true, cli, meta }, { status: 201 });
   } catch (err) {
     console.error("[ember] auth set error:", err);
@@ -86,10 +86,10 @@ export async function POST(request: NextRequest) {
 
 export async function DELETE(request: NextRequest) {
   try {
-    const { userId } = getIdentity(request);
+    const { userId, tenantId } = getIdentity(request);
     const cli = parseCli(request.nextUrl.searchParams.get("cli"));
     if (!cli) return NextResponse.json({ error: "cli query param required" }, { status: 400 });
-    await deleteCredential(cli, userId);
+    await deleteCredential(cli, userId, tenantId);
     return NextResponse.json({ disconnected: true, cli });
   } catch (err) {
     console.error("[ember] auth delete error:", err);

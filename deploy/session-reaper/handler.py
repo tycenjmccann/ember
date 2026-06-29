@@ -55,7 +55,8 @@ def _stop_session(session_id: str) -> None:
         print(f"[reaper] stop {session_id}: {type(exc).__name__}: {str(exc)[:200]}")
 
 
-def _purge_session(session_id: str, cli: str, claude_session_id: str | None) -> dict:
+def _purge_session(session_id: str, cli: str, claude_session_id: str | None,
+                   tenant_id: str | None) -> dict:
     """Invoke the runtime's purge action on a fresh VM. Raises on a failed invoke so
     the stream redelivers (the reaper retries)."""
     payload = {
@@ -65,6 +66,11 @@ def _purge_session(session_id: str, cli: str, claude_session_id: str | None) -> 
     }
     if claude_session_id:
         payload["claude_session_id"] = claude_session_id
+    # Tenant scopes the S3 keys the runtime purges (ember/t/<tenantId>/…). The
+    # runtime also sweeps the legacy un-prefixed keys, so a row written before the
+    # tenant field existed (tenant_id None → "default") is still fully reclaimed.
+    if tenant_id:
+        payload["tenant_id"] = tenant_id
 
     res = _agentcore.invoke_agent_runtime(
         agentRuntimeArn=RUNTIME_ARN,
@@ -92,10 +98,11 @@ def _reap(image: dict) -> bool:
         return False
     cli = _ddb_str(image.get("cli")) or "claude"
     claude_session_id = _ddb_str(image.get("claudeSessionId"))
+    tenant_id = _ddb_str(image.get("tenantId"))
 
-    print(f"[reaper] reaping {session_id} (cli={cli})")
+    print(f"[reaper] reaping {session_id} (cli={cli}, tenant={tenant_id or 'default'})")
     _stop_session(session_id)
-    result = _purge_session(session_id, cli, claude_session_id)
+    result = _purge_session(session_id, cli, claude_session_id, tenant_id)
     print(f"[reaper] reaped {session_id}: {json.dumps(result)}")
     return True
 

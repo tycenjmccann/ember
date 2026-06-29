@@ -20,6 +20,8 @@
 import { DynamoDBClient } from "@aws-sdk/client-dynamodb";
 import { DynamoDBDocumentClient, GetCommand, PutCommand } from "@aws-sdk/lib-dynamodb";
 import { DEFAULT_USER_ID } from "./sessions";
+import { DEFAULT_TENANT_ID } from "./identity";
+import { authKey } from "./s3keys";
 import type { EmberCli } from "./types";
 
 const REGION = process.env.AWS_REGION || "us-east-1";
@@ -31,7 +33,10 @@ const ddb = DynamoDBDocumentClient.from(new DynamoDBClient({ region: REGION }), 
 });
 
 const keyFor = (userId: string) => `auth:${userId}`;
-const s3KeyFor = (userId: string, cli: EmberCli) => `ember/auth/${userId}/${cli}.json`;
+// S3 key tenant-scoped (ember/t/<tenantId>/auth/…) for the per-tenant IAM
+// boundary; the DynamoDB status row stays keyed by the globally-unique userId.
+const s3KeyFor = (userId: string, cli: EmberCli, tenantId: string) =>
+  authKey(tenantId, userId, cli);
 
 export interface CliAuthMeta {
   connectedAt: string;
@@ -71,16 +76,17 @@ async function saveAuthStatus(userId: string, status: UserAuthStatus): Promise<v
 export async function putCredential(
   cli: EmberCli,
   cred: Record<string, unknown>,
-  opts: { label?: string; userId?: string } = {}
+  opts: { label?: string; userId?: string; tenantId?: string } = {}
 ): Promise<CliAuthMeta> {
   if (!ARTIFACT_BUCKET) throw new Error("ARTIFACT_BUCKET not configured");
   const userId = opts.userId || DEFAULT_USER_ID;
+  const tenantId = opts.tenantId || DEFAULT_TENANT_ID;
   const { S3Client, PutObjectCommand } = await import("@aws-sdk/client-s3");
   const s3 = new S3Client({ region: REGION });
   await s3.send(
     new PutObjectCommand({
       Bucket: ARTIFACT_BUCKET,
-      Key: s3KeyFor(userId, cli),
+      Key: s3KeyFor(userId, cli, tenantId),
       Body: JSON.stringify(cred),
       ContentType: "application/json",
       ServerSideEncryption: "AES256",
@@ -96,13 +102,14 @@ export async function putCredential(
 /** Disconnect a CLI: delete its credential bytes + clear connected status. */
 export async function deleteCredential(
   cli: EmberCli,
-  userId: string = DEFAULT_USER_ID
+  userId: string = DEFAULT_USER_ID,
+  tenantId: string = DEFAULT_TENANT_ID
 ): Promise<void> {
   if (ARTIFACT_BUCKET) {
     const { S3Client, DeleteObjectCommand } = await import("@aws-sdk/client-s3");
     const s3 = new S3Client({ region: REGION });
     await s3
-      .send(new DeleteObjectCommand({ Bucket: ARTIFACT_BUCKET, Key: s3KeyFor(userId, cli) }))
+      .send(new DeleteObjectCommand({ Bucket: ARTIFACT_BUCKET, Key: s3KeyFor(userId, cli, tenantId) }))
       .catch(() => {});
   }
   const status = await getAuthStatus(userId);

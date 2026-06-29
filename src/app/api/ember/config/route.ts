@@ -43,7 +43,7 @@ export async function POST(request: NextRequest) {
   if (!ARTIFACT_BUCKET) {
     return NextResponse.json({ error: "ARTIFACT_BUCKET not configured" }, { status: 503 });
   }
-  const { userId } = getIdentity(request);
+  const { userId, tenantId } = getIdentity(request);
   const form = await request.formData().catch(() => null);
   const file = form?.get("bundle");
   if (!file || !(file instanceof File)) {
@@ -67,7 +67,7 @@ export async function POST(request: NextRequest) {
   // Scoped sync: fold the incoming CLI subtree into the current bundle so the
   // other CLI's config survives. The merged zip becomes the new version.
   if (scope) {
-    const current = await getCurrentBundleZip(userId);
+    const current = await getCurrentBundleZip(userId, tenantId);
     const merged = await mergeScopedBundle(current, bytes, scope);
     bytes = Buffer.from(merged.zip);
   }
@@ -79,7 +79,7 @@ export async function POST(request: NextRequest) {
   await s3.send(
     new PutObjectCommand({
       Bucket: ARTIFACT_BUCKET,
-      Key: s3KeyFor(userId, version),
+      Key: s3KeyFor(userId, version, tenantId),
       Body: bytes,
       ContentType: "application/zip",
     })

@@ -98,6 +98,7 @@ export async function POST(
         sessionId: session.sessionId,
         cli: session.cli,
         userId,
+        tenantId,
         configVersion,
         region,
         authMode: session.authMode,

@@ -49,6 +49,7 @@ export async function POST(
       cloneUrl: session.cloneUrl,
       resumeBundleKey: session.resumeBundleKey,
       userId,
+      tenantId,
       configVersion,
       region,
       authMode: session.authMode,

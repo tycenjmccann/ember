@@ -62,6 +62,7 @@ export async function POST(
       cli: session.cli,
       repo: session.repo,
       resumeSessionId,
+      tenantId,
       region,
     });
     if (!cp.key) {

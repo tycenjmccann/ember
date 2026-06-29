@@ -187,12 +187,17 @@ For a **personal, single-user** deploy behind a private URL, skip Cognito and se
 `EMBER_AUTH_DISABLED=1` — every request resolves to the `"default"` tenant/user,
 exactly as before. The deploy fails closed if you set neither.
 
-> **Phase 1 caveat:** the auth gate closes the control plane (API + data scoping
-> by tenant). It does **not** yet isolate the *compute* layer — coding sessions
-> still share one EFS filesystem and a bucket-wide runtime role, so a tenant's
-> agent code could reach another tenant's files on the runtime. Per-tenant
-> compute/secret/storage isolation is Phases 2–4. Don't expose multi-tenant to
-> mutually-untrusted companies until those land. See [`docs/ENTERPRISE.md`](docs/ENTERPRISE.md).
+> **Isolation status.** Phase 1 closes the control plane (API auth + per-tenant
+> data scoping; sessions list via a tenant-partition GSI, never a table scan).
+> Phase 2 puts **every S3 artifact under a per-tenant prefix** (`ember/t/<tenantId>/…`)
+> — config bundles, subscription creds, transcripts, bundles — so the storage
+> layout is ready to be IAM-fenced. What's **not** yet isolated: the *compute*
+> layer. Coding sessions still share one EFS filesystem and one bucket-wide
+> runtime role, so a tenant's agent code could still reach another tenant's files
+> on the runtime. The per-tenant **runtime role + EFS access point** that fences
+> each tenant to its own `ember/t/<tenantId>/*` subtree is Phase 3; Secrets
+> Manager + offboarding is Phase 4. Don't expose multi-tenant to mutually-untrusted
+> companies until Phase 3 lands. See [`docs/ENTERPRISE.md`](docs/ENTERPRISE.md).
 
 ## License
 

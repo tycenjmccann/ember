@@ -86,7 +86,7 @@ export async function POST(
     try {
       upstream = await invokeCodingTurnStream({
         sessionId: session.sessionId, prompt, cli: session.cli, repo: session.repo,
-        claudeSessionId: session.claudeSessionId, userId, configVersion, region,
+        claudeSessionId: session.claudeSessionId, userId, tenantId, configVersion, region,
         authMode: session.authMode, ...resumeFields,
       });
     } catch (err) {
@@ -155,7 +155,7 @@ export async function POST(
   try {
     const result = await invokeCodingTurn({
       sessionId: session.sessionId, prompt, cli: session.cli, repo: session.repo,
-      claudeSessionId: session.claudeSessionId, userId, configVersion, region,
+      claudeSessionId: session.claudeSessionId, userId, tenantId, configVersion, region,
       authMode: session.authMode, ...resumeFields,
     });
 
