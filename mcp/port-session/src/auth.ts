@@ -25,20 +25,31 @@ import { readFile } from "node:fs/promises";
 import { homedir } from "node:os";
 import { join } from "node:path";
 
-let cached: string | null | undefined; // undefined = not yet resolved
+// Cache briefly, NOT forever: a Cognito id-token rotates (~1h), and the
+// file-based path exists precisely so a refreshed ~/.ember/token is picked up
+// without restarting the MCP. A long-lived cache would keep sending an expired
+// token → 401s until restart. EMBER_TOKEN (env) can't change mid-process, so it
+// short-circuits; the file is re-read once the short TTL lapses.
+let cached: { token: string | null; at: number } | undefined;
+const TOKEN_TTL_MS = 30_000;
 
 async function resolveToken(): Promise<string | null> {
-  if (cached !== undefined) return cached;
   const fromEnv = (process.env.EMBER_TOKEN || "").trim();
-  if (fromEnv) return (cached = fromEnv);
+  if (fromEnv) return fromEnv;
+
+  // Date.now is fine here (local MCP process, not a workflow sandbox).
+  const now = Date.now();
+  if (cached && now - cached.at < TOKEN_TTL_MS) return cached.token;
+
   const path = process.env.EMBER_TOKEN_FILE || join(homedir(), ".ember", "token");
+  let token: string | null;
   try {
-    const t = (await readFile(path, "utf8")).trim();
-    cached = t || null;
+    token = (await readFile(path, "utf8")).trim() || null;
   } catch {
-    cached = null;
+    token = null;
   }
-  return cached;
+  cached = { token, at: now };
+  return token;
 }
 
 /**

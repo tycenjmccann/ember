@@ -90,16 +90,19 @@ SILO=$(aws dynamodb get-item "${R[@]}" --table-name "$EMBER_TABLE" \
 TENANT_RUNTIME_ARN=$(echo "$SILO" | python3 -c "import json,sys; print(json.load(sys.stdin).get('Item',{}).get('runtimeArn',{}).get('S',''))" 2>/dev/null || echo "")
 [[ -z "$TENANT_RUNTIME_ARN" ]] && TENANT_RUNTIME_ARN="${CODING_AGENT_RUNTIME_ARN:-}"
 
+# `|| PURGE_RC=$?` so set -e doesn't abort on the script's intentional exit 2
+# (= "some purges deferred to the reaper").
+PURGE_RC=0
 EMBER_TABLE="$EMBER_TABLE" TENANT_ID="$TENANT_ID" AWS_REGION="$AWS_REGION" \
-RUNTIME_ARN="$TENANT_RUNTIME_ARN" python3 - <<'PY'
-import boto3, json, os
+RUNTIME_ARN="$TENANT_RUNTIME_ARN" python3 - <<'PY' || PURGE_RC=$?
+import boto3, json, os, sys, time
 region = os.environ["AWS_REGION"]
 ddb = boto3.client("dynamodb", region_name=region)
 ac = boto3.client("bedrock-agentcore", region_name=region)
 table = os.environ["EMBER_TABLE"]
 tenant = os.environ["TENANT_ID"]
 runtime_arn = os.environ.get("RUNTIME_ARN") or ""
-count = 0
+done, failed = 0, 0
 kwargs = {"TableName": table, "IndexName": "tenant-index",
           "KeyConditionExpression": "tenantId = :t",
           "ExpressionAttributeValues": {":t": {"S": tenant}}}
@@ -111,6 +114,7 @@ while True:
             continue
         cli = item.get("cli", {}).get("S", "claude")
         conv = item.get("claudeSessionId", {}).get("S")
+        purged = False
         if runtime_arn:
             # Stop the live microVM (best-effort), then invoke purge on a fresh VM
             # that re-mounts EFS — rmtree the workspace + delete S3 artifacts.
@@ -122,21 +126,54 @@ while True:
             if conv:
                 payload["claude_session_id"] = conv
             try:
-                ac.invoke_agent_runtime(
+                r = ac.invoke_agent_runtime(
                     agentRuntimeArn=runtime_arn, runtimeSessionId=sid,
                     payload=json.dumps(payload).encode(), contentType="application/json",
                     accept="application/json")
+                body = r.get("response")
+                raw = body.read() if hasattr(body, "read") else body
+                purged = bool(json.loads(raw).get("purged")) if raw else False
             except Exception as exc:
                 print(f"        WARN purge {sid}: {type(exc).__name__}: {str(exc)[:160]}")
-        # Hard-delete the row (no TTL/reaper dependency — purge already ran).
-        ddb.delete_item(TableName=table, Key={"sessionId": {"S": sid}})
-        count += 1
+        if purged:
+            # Confirmed reclaimed → safe to hard-delete the row.
+            ddb.delete_item(TableName=table, Key={"sessionId": {"S": sid}})
+            done += 1
+        else:
+            # Purge failed / no runtime → DON'T delete. Tombstone + short TTL so the
+            # reaper retries the cleanup. The silo teardown below is then skipped,
+            # leaving the runtime the reaper needs to mount EFS.
+            failed += 1
+            ddb.update_item(
+                TableName=table, Key={"sessionId": {"S": sid}},
+                UpdateExpression="SET deletedAt = :d, #t = :ttl",
+                ExpressionAttributeNames={"#t": "ttl"},
+                ExpressionAttributeValues={
+                    ":d": {"S": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())},
+                    ":ttl": {"N": str(int(time.time()) + 60)}},
+            )
     lek = res.get("LastEvaluatedKey")
     if not lek:
         break
     kwargs["ExclusiveStartKey"] = lek
-print(f"        purged + removed {count} session(s)")
+print(f"        purged + removed {done} session(s); {failed} left for reaper retry")
+# Exit 2 signals "some purges deferred" so the script skips silo teardown.
+sys.exit(2 if failed else 0)
 PY
+# Exit codes: 0 = all sessions confirmed-purged; 2 = some deferred (tombstoned for
+# the reaper, skip teardown); anything else = the purge script itself crashed
+# (throttling, bad creds, import error) BEFORE tombstoning — we must NOT proceed
+# to delete secrets/runtime/registry, or we'd strand workspaces unrecoverably.
+case "$PURGE_RC" in
+  0) PURGE_INCOMPLETE=0 ;;
+  2) PURGE_INCOMPLETE=1
+     echo "        ⚠ some sessions could not be purged inline — keeping the tenant"
+     echo "          runtime + registry so the reaper can retry. Re-run offboard later." ;;
+  *) echo "ERROR: session purge step crashed (exit $PURGE_RC) before tombstoning." >&2
+     echo "       Aborting BEFORE any teardown so nothing is stranded. Fix the cause" >&2
+     echo "       (creds/throttling) and re-run offboard-tenant.sh." >&2
+     exit 1 ;;
+esac
 
 # ─── 3. Secrets + S3 prefix ───────────────────────────────────────────────────
 echo "  [3/5] Deleting Secrets Manager creds + S3 prefix ember/t/$TENANT_ID/"
@@ -153,8 +190,18 @@ aws s3 rm "s3://${ARTIFACT_BUCKET}/ember/t/${TENANT_ID}/" --recursive >/dev/null
 echo "        purged s3://${ARTIFACT_BUCKET}/ember/t/${TENANT_ID}/"
 
 # ─── 4. Compute silo (runtime + role + access point), if any ──────────────────
-# Sessions are already stopped + purged (step 2), so deleting the runtime now
-# strands nothing. Reuse the $SILO read from step 2.
+# Sessions are stopped + CONFIRMED-purged (step 2), so deleting the runtime now
+# strands nothing. If any purge was deferred to the reaper, SKIP teardown — the
+# reaper needs this runtime + registry row to mount the tenant's EFS and finish.
+if [[ "$PURGE_INCOMPLETE" == "1" ]]; then
+  echo "  [4/5] SKIPPED — purges deferred; keeping runtime/role/EFS AP + registry."
+  echo "        Re-run offboard once the reaper drains (sessions disappear)."
+  echo "═══════════════════════════════════════════════════════════════"
+  echo "  Tenant $TENANT_ID PARTIALLY offboarded (users + secrets + S3 removed)."
+  echo "  Compute silo + registry preserved for reaper retry. Re-run to finish."
+  echo "═══════════════════════════════════════════════════════════════"
+  exit 0
+fi
 echo "  [4/5] Tearing down the dedicated compute silo (if provisioned)"
 RUNTIME_ARN="$TENANT_RUNTIME_ARN"
 # (RUNTIME_ARN falls back to the shared runtime when un-siloed; only delete a
