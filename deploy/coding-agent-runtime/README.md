@@ -127,10 +127,15 @@ Claude turns stream token-by-token over SSE. `/invocations` with `stream:true`
 runs `claude --output-format stream-json --include-partial-messages` and the
 server returns a `StreamingResponse` of `data:` frames (`{type:text|done|error}`)
 that AgentCore forwards through `InvokeAgentRuntime` (accept `text/event-stream`).
-The Next.js chat consumes it via the shared SSE reader. See
-[docs/streaming-sse.md](../../docs/streaming-sse.md). Codex stays buffered.
+The Next.js chat consumes it via the shared SSE reader. Codex stays buffered.
+
+## Multi-tenancy
+Turn/warm/prepare/checkpoint/purge payloads carry `tenant_id` + `user_id`; the
+runtime builds tenant-scoped S3 keys (`ember/t/<tenantId>/…`) and reads
+subscription creds from the backend the app wrote them to (`EMBER_SECRETS_BACKEND`,
+materialized to tmpfs). A siloed tenant gets its own runtime via
+`deploy/provision-tenant.sh`; the shared pool runtime serves un-siloed tenants.
 
 ## Known gaps / next
 - **Codex resume:** each Codex turn is independent (no `--resume` wired) — Claude has full resume.
-- **Single-user:** no auth yet. Session records should carry `userId` (hardcode `"default"` now,
-  swap for the Cognito `sub` when app-wide SSO lands).
+- **GitHub auth:** a single shared PAT, not per-tenant short-lived GitHub App tokens.
