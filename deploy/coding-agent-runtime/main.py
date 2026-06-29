@@ -333,18 +333,37 @@ def _apply_config_bundle(user_id: str | None, version: str | None,
 # ─── Subscription credentials ─────────────────────────────────────────────────
 
 
+# Phase 4: where subscription creds live. "s3" (default) reads the encrypted
+# object; "secretsmanager" reads a per-(tenant,user,cli) secret. Set by the same
+# EMBER_SECRETS_BACKEND the app uses, so both sides agree.
+SECRETS_BACKEND = os.environ.get("EMBER_SECRETS_BACKEND", "s3")
+
+
+def _secret_name(tenant_id: str | None, user_id: str, cli: str) -> str:
+    """Secrets Manager secret name — mirrors src/lib/ember/secrets.ts."""
+    return f"{_tenant_prefix(tenant_id)}/auth/{user_id}/{cli}"
+
+
 def _fetch_subscription_cred(user_id: str | None, cli: str,
                              tenant_id: str | None = None) -> dict | None:
-    """Fetch the user's uploaded subscription credential for this CLI from S3.
+    """Fetch the user's uploaded subscription credential for this CLI.
 
+    Reads from the configured backend (S3 object or Secrets Manager secret).
     Returns the parsed JSON ({"token": ...} for claude; the auth.json doc for
     codex) or None if absent/unreadable. Best-effort — a missing credential
     just means the turn can't run in subscription mode (caller surfaces that)."""
-    if not (user_id and ARTIFACT_BUCKET):
+    if not user_id:
         return None
-    key = f"{_tenant_prefix(tenant_id)}/auth/{user_id}/{cli}.json"
+    region = os.environ.get("AWS_REGION", "us-east-1")
     try:
-        s3 = boto3.client("s3", region_name=os.environ.get("AWS_REGION", "us-east-1"))
+        if SECRETS_BACKEND == "secretsmanager":
+            sm = boto3.client("secretsmanager", region_name=region)
+            resp = sm.get_secret_value(SecretId=_secret_name(tenant_id, user_id, cli))
+            return json.loads(resp["SecretString"])
+        if not ARTIFACT_BUCKET:
+            return None
+        key = f"{_tenant_prefix(tenant_id)}/auth/{user_id}/{cli}.json"
+        s3 = boto3.client("s3", region_name=region)
         obj = s3.get_object(Bucket=ARTIFACT_BUCKET, Key=key)
         return json.loads(obj["Body"].read())
     except Exception as exc:  # noqa: BLE001 — missing/forbidden cred is non-fatal
@@ -352,21 +371,31 @@ def _fetch_subscription_cred(user_id: str | None, cli: str,
         return None
 
 
+# Phase 4: materialize plaintext creds to a tmpfs (RAM-backed, NON-persistent)
+# dir, never the shared EFS. /dev/shm is tmpfs on Linux; fall back to /tmp. The
+# claude PTY token lands here and shell-init.sh reads it from here — so the secret
+# never touches the durable filesystem other tenants' VMs also mount.
+EPHEMERAL_CREDS_DIR = os.environ.get(
+    "EMBER_EPHEMERAL_CREDS_DIR",
+    "/dev/shm/ember-creds" if os.path.isdir("/dev/shm") else "/tmp/ember-creds",
+)
+_CLAUDE_SUB_TOKEN_PATH = os.path.join(EPHEMERAL_CREDS_DIR, ".sub-token")
+
+
 def _materialize_claude_token(user_id: str | None, tenant_id: str | None = None) -> bool:
-    """Write the user's Claude subscription token to {CLAUDE_CONFIG_DIR}/.sub-token
-    so the interactive PTY shell (shell-init.sh) launches `claude` on their plan.
-    The headless chat path reads the token straight from S3 instead. Returns True
-    on success; absence of the file signals Bedrock mode to the shell."""
+    """Write the user's Claude subscription token to a tmpfs file so the
+    interactive PTY shell (shell-init.sh) launches `claude` on their plan. The
+    headless chat path reads the token from the backend per turn instead. Returns
+    True on success; absence of the file signals Bedrock mode to the shell."""
     cred = _fetch_subscription_cred(user_id, "claude", tenant_id) or {}
     token = cred.get("token") or cred.get("oauth_token")
     if not token:
         return False
     try:
-        os.makedirs(CLAUDE_CONFIG_DIR, exist_ok=True)
-        path = os.path.join(CLAUDE_CONFIG_DIR, ".sub-token")
-        with open(path, "w") as f:
+        os.makedirs(EPHEMERAL_CREDS_DIR, mode=0o700, exist_ok=True)
+        with open(_CLAUDE_SUB_TOKEN_PATH, "w") as f:
             f.write(token)
-        os.chmod(path, 0o600)
+        os.chmod(_CLAUDE_SUB_TOKEN_PATH, 0o600)
         return True
     except OSError as exc:
         logger.warning("claude_token_write_failed", extra={"error": str(exc)[:200]})
@@ -375,8 +404,11 @@ def _materialize_claude_token(user_id: str | None, tenant_id: str | None = None)
 
 def _clear_subscription_creds() -> None:
     """Remove any materialized subscription creds so a Bedrock-mode session on a
-    warm VM doesn't accidentally inherit a prior subscription session's plan."""
-    for p in (os.path.join(CLAUDE_CONFIG_DIR, ".sub-token"), os.path.join(CODEX_HOME, "auth.json")):
+    warm VM doesn't accidentally inherit a prior subscription session's plan.
+    Clears both the tmpfs token and the legacy EFS location (pre-Phase-4 VMs)."""
+    for p in (_CLAUDE_SUB_TOKEN_PATH,
+              os.path.join(CLAUDE_CONFIG_DIR, ".sub-token"),  # legacy
+              os.path.join(CODEX_HOME, "auth.json")):
         try:
             os.remove(p)
         except OSError:

@@ -126,6 +126,12 @@ PERMS=$(cat <<JSON
       ]
     },
     {
+      "Sid": "SecretsManagerCreds",
+      "Effect": "Allow",
+      "Action": ["secretsmanager:GetSecretValue"],
+      "Resource": "arn:aws:secretsmanager:${AWS_REGION}:${ACCOUNT_ID}:secret:ember/t/*"
+    },
+    {
       "Sid": "VpcEni",
       "Effect": "Allow",
       "Action": [

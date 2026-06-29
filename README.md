@@ -198,10 +198,16 @@ exactly as before. The deploy fails closed if you set neither.
 > runtime automatically; un-provisioned tenants keep sharing the pool runtime
 > unchanged.
 >
+> Phase 4 hardens secrets + offboarding: set `EMBER_SECRETS_BACKEND=secretsmanager`
+> and subscription creds move from S3 to **AWS Secrets Manager** (one secret per
+> tenant/user/CLI, KMS-at-rest, scoped per-tenant), materialized to a **tmpfs**
+> (`/dev/shm`) on the runtime — never the shared EFS. `deploy/offboard-tenant.sh
+> <tenantId> --yes` fully removes a tenant (users, sessions, secrets, S3, and the
+> dedicated silo).
+>
 > So: for **mutually-untrusted companies, provision a silo per tenant** before
 > onboarding them — the shared pool runtime still co-locates un-siloed tenants on
-> one filesystem + role. Per-tenant secret isolation (Secrets Manager) and
-> automated offboarding are Phase 4. See [`docs/ENTERPRISE.md`](docs/ENTERPRISE.md).
+> one filesystem + role. See [`docs/ENTERPRISE.md`](docs/ENTERPRISE.md).
 
 ### Give a tenant its own compute silo (Phase 3)
 
@@ -212,6 +218,17 @@ deploy/provision-tenant.sh acme        # dedicated runtime + EFS AP + fenced rol
 Idempotent and isolated: provisioning one tenant never touches another or the
 shared pool. New sessions for that tenant route to the dedicated runtime within
 ~60s (the resolver caches the mapping).
+
+### Offboard a tenant (Phase 4)
+
+```bash
+deploy/offboard-tenant.sh acme --yes   # remove users, sessions, secrets, S3, silo
+```
+
+Soft-deletes the tenant's sessions (the reaper then reclaims their microVMs +
+storage), deletes its Secrets Manager creds + `ember/t/acme/` S3 prefix, tears
+down its dedicated runtime/role/EFS access point, and removes its registry row.
+Destructive and irreversible — pass `--yes` to skip the interactive confirm.
 
 ## License
 

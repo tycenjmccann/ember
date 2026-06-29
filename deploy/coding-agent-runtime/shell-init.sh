@@ -34,12 +34,21 @@ export PUPPETEER_SKIP_DOWNLOAD="${PUPPETEER_SKIP_DOWNLOAD:-1}"
 export PLAYWRIGHT_BROWSERS_PATH="${PLAYWRIGHT_BROWSERS_PATH:-0}"
 
 # ── Claude Code → Bedrock (default) OR the user's subscription ──
-# The /shell route (prepare step) materializes a subscription token to
-# $CLAUDE_CONFIG_DIR/.sub-token when the session's auth mode is "subscription".
-# If present, use the user's Claude Pro/Max plan; otherwise Bedrock.
+# The /shell route (prepare step) materializes a subscription token when the
+# session's auth mode is "subscription". Phase 4 writes it to a tmpfs dir
+# (EMBER_EPHEMERAL_CREDS_DIR, default /dev/shm/ember-creds) so the secret never
+# lands on the shared EFS; we still read the legacy $CLAUDE_CONFIG_DIR path for a
+# VM materialized before the change. If present, use the user's plan; else Bedrock.
 export CLAUDE_CONFIG_DIR="${CLAUDE_CONFIG_DIR:-$WORKSPACE_ROOT/.claude-data}"
-if [ -f "$CLAUDE_CONFIG_DIR/.sub-token" ]; then
-  export CLAUDE_CODE_OAUTH_TOKEN="$(cat "$CLAUDE_CONFIG_DIR/.sub-token")"
+_EPHEMERAL_CREDS_DIR="${EMBER_EPHEMERAL_CREDS_DIR:-/dev/shm/ember-creds}"
+_SUB_TOKEN_FILE=""
+if [ -f "$_EPHEMERAL_CREDS_DIR/.sub-token" ]; then
+  _SUB_TOKEN_FILE="$_EPHEMERAL_CREDS_DIR/.sub-token"
+elif [ -f "$CLAUDE_CONFIG_DIR/.sub-token" ]; then
+  _SUB_TOKEN_FILE="$CLAUDE_CONFIG_DIR/.sub-token"
+fi
+if [ -n "$_SUB_TOKEN_FILE" ]; then
+  export CLAUDE_CODE_OAUTH_TOKEN="$(cat "$_SUB_TOKEN_FILE")"
   unset CLAUDE_CODE_USE_BEDROCK ANTHROPIC_MODEL
   _CLAUDE_AUTH="your Claude plan"
 else

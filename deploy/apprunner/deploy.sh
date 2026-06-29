@@ -121,6 +121,12 @@ aws iam put-role-policy --role-name "$INSTANCE_ROLE" --policy-name "EmberAppRunn
         \"Resource\": \"*\"
       },
       {
+        \"Sid\": \"SecretsManagerCreds\",
+        \"Effect\": \"Allow\",
+        \"Action\": [\"secretsmanager:CreateSecret\", \"secretsmanager:PutSecretValue\", \"secretsmanager:DeleteSecret\", \"secretsmanager:DescribeSecret\", \"secretsmanager:TagResource\"],
+        \"Resource\": \"arn:aws:secretsmanager:${AWS_REGION}:${ACCOUNT_ID}:secret:ember/t/*\"
+      },
+      {
         \"Sid\": \"STS\",
         \"Effect\": \"Allow\",
         \"Action\": \"sts:GetCallerIdentity\",
@@ -172,7 +178,8 @@ env = json.loads(os.environ.get('EXISTING_ENV') or '{}')
 env.update({'HOSTNAME':'0.0.0.0','PORT':'8080','NODE_ENV':'production'})
 # Overlay only vars actually present in this shell's environment.
 for k in ['AWS_REGION','CODING_AGENT_RUNTIME_ARN','EMBER_TABLE','ARTIFACT_BUCKET','DEPLOYMENT_URL','NEXT_PUBLIC_BRAND_NAME',
-          'COGNITO_USER_POOL_ID','COGNITO_CLIENT_ID','COGNITO_CLIENT_SECRET','COGNITO_DOMAIN','EMBER_AUTH_DISABLED']:
+          'COGNITO_USER_POOL_ID','COGNITO_CLIENT_ID','COGNITO_CLIENT_SECRET','COGNITO_DOMAIN','EMBER_AUTH_DISABLED',
+          'EMBER_SECRETS_BACKEND']:
     v = os.environ.get(k)
     if v: env[k] = v
 print(json.dumps(env))
