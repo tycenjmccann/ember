@@ -68,7 +68,7 @@ flowchart TB
 |---|---|---|
 | Auth | request → identity | Cognito admin-create-only pool; `middleware.ts` verifies the id-token and stamps `tenantId`/`userId` (routes never trust a client header) |
 | Data | DynamoDB | `tenant-index` GSI → `listSessions` Querys one tenant; point reads ownership-checked |
-| Storage | S3 + Secrets Manager | every artifact under `ember/t/<tenantId>/…`; subscription creds in Secrets Manager (KMS), materialized to tmpfs on the runtime |
+| Storage | S3 + Secrets Manager | every artifact under `ember/t/<tenantId>/…`; subscription creds in Secrets Manager (KMS). Claude PTY token → tmpfs; Codex `auth.json` still on EFS (known gap) |
 | Compute | AgentCore runtime + EFS | opt-in silo: dedicated runtime, EFS access point (non-root uid 1000, private root dir), runtime role fenced to the tenant's S3 + secret prefix |
 
 Pooled tenants share one runtime + EFS + role and are isolated only logically —
@@ -81,10 +81,13 @@ Ordered by what unblocks a paid pilot fastest.
 
 ### 1. Authentication + multi-tenancy  *(shipped)*
 Cognito **admin-create-only** user pool (no self-signup), Hosted-UI sign-in, and a
-JWT gate (`src/middleware.ts`) on every route. Each session/config/auth row carries
-`tenantId` (company) + `userId` (`sub`); lists Query the `tenant-index` GSI and point
-reads are ownership-checked. `EMBER_AUTH_DISABLED=1` keeps the personal single-user
-mode; the deploy **fails closed** if neither auth nor that flag is set.
+JWT gate (`src/middleware.ts`) on every route. **Session** rows carry `tenantId`
+(company) + `userId` (`sub`) and are listed via the `tenant-index` GSI; point reads
+are ownership-checked. (`config:{userId}` / `auth:{userId}` metadata rows are keyed
+by the globally-unique userId, not tenant-stamped — tenant-scoped DDB cleanup applies
+to session rows; metadata rows are removed with their user at offboarding.)
+`EMBER_AUTH_DISABLED=1` keeps the personal single-user mode; the deploy **fails
+closed** if neither auth nor that flag is set.
 - **Still open:** SAML/OIDC federation to the customer's IdP (Okta/Entra/Google) —
   today it's a standalone Cognito pool. Cognito supports IdP federation, so this is
   configuration, not new code.
@@ -136,9 +139,12 @@ needs `ec2:CreateSubnet`, `ec2:*NatGateway*`, `ec2:*RouteTable*`, `ec2:AllocateA
 - All artifacts (config bundles, ported transcripts, bundles, checkpoints) live
   under `ember/t/<tenantId>/…` in S3.
 - Subscription tokens move to **AWS Secrets Manager** (`EMBER_SECRETS_BACKEND=secretsmanager`,
-  one secret per tenant/user/CLI, KMS-at-rest), materialized to **tmpfs** (`/dev/shm`)
-  on the runtime — never the shared EFS. Default `s3` backend keeps the prior
-  behavior for personal deploys.
+  one secret per tenant/user/CLI, KMS-at-rest). Default `s3` backend keeps the
+  prior behavior for personal deploys. The **Claude** PTY token is materialized to
+  **tmpfs** (`/dev/shm`), never the shared EFS. **Known gap:** **Codex** subscription
+  mode still writes `auth.json` to `CODEX_HOME` on EFS (the `codex` CLI reads it
+  from there) — until that moves to tmpfs, fence it with a per-tenant EFS access
+  point (the silo does this).
 - A **siloed tenant's runtime role is fenced** to `ember/t/<tenantId>/*` for both
   S3 and its own secret prefix, and its EFS access point forces non-root uid 1000
   on a private root dir — so a session can physically reach only its tenant's bytes.
