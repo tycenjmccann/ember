@@ -13,6 +13,7 @@
  */
 import { execFile } from "node:child_process";
 import { readFile } from "node:fs/promises";
+import { DatabaseSync } from "node:sqlite";
 import { homedir } from "node:os";
 import path from "node:path";
 import { promisify } from "node:util";
@@ -20,6 +21,48 @@ import { promisify } from "node:util";
 const exec = promisify(execFile);
 
 export type Cli = "claude" | "codex" | "kiro";
+
+/** Path to the kiro-cli SQLite store (mirrors cli-adapter.kiroDbPath). */
+function kiroDbPath(): string {
+  if (process.env.KIRO_HOME) return path.join(process.env.KIRO_HOME, "data.sqlite3");
+  if (process.platform === "darwin") {
+    return path.join(homedir(), "Library", "Application Support", "kiro-cli", "data.sqlite3");
+  }
+  const xdg = process.env.XDG_DATA_HOME || path.join(homedir(), ".local", "share");
+  return path.join(xdg, "kiro-cli", "data.sqlite3");
+}
+
+/** Read the IDC/SSO login credential kiro stores in auth_kv (the OAuth token +
+ *  the device-registration client). Both are portable JSON (PKCE refresh token +
+ *  client_id/secret), so a Linux microVM can refresh against IDC headlessly. */
+function readKiroIdcAuth(): { authKv: Record<string, string>; label?: string } | null {
+  let db: DatabaseSync;
+  try {
+    db = new DatabaseSync(kiroDbPath(), { readOnly: true });
+  } catch {
+    return null;
+  }
+  try {
+    const rows = db
+      .prepare(
+        "SELECT key, value FROM auth_kv WHERE key IN ('kirocli:odic:token','kirocli:odic:device-registration')"
+      )
+      .all() as Array<{ key: string; value: string }>;
+    const authKv: Record<string, string> = {};
+    for (const r of rows) authKv[r.key] = r.value;
+    if (!authKv["kirocli:odic:token"]) return null; // no login token → not signed in
+    let label = "Kiro (IDC SSO)";
+    try {
+      const tok = JSON.parse(authKv["kirocli:odic:token"]) as { start_url?: string };
+      if (tok.start_url) label = `Kiro IDC (${tok.start_url})`;
+    } catch {
+      /* label stays generic */
+    }
+    return { authKv, label };
+  } finally {
+    db.close();
+  }
+}
 
 /** Read Claude's subscription OAuth access token from the local machine. */
 async function readClaudeToken(): Promise<{ token: string; label?: string } | null> {
@@ -95,19 +138,25 @@ export async function gatherLoginBody(
     return { cli, token: c.token, label: c.label };
   }
   if (cli === "kiro") {
-    // Kiro is bring-your-own-credential (no Bedrock). Prefer an explicit pasted
-    // access key; else auto-read $KIRO_API_KEY (zero-paste when exported). The
-    // `kiro-cli login` OAuth token is device/keychain-bound → not portable to a
-    // Linux microVM, so we don't use it.
+    // Kiro is bring-your-own-credential (no Bedrock). Two auth paths:
+    //   1. Access key (kiro.dev consumer accounts): explicit paste or $KIRO_API_KEY.
+    //   2. IDC / Identity Center SSO (enterprise): the portable OAuth token +
+    //      device registration kiro stores in its DB — a Linux microVM refreshes
+    //      against IDC with these, no keychain/device binding.
     const key = explicitToken?.trim() || process.env.KIRO_API_KEY?.trim();
-    if (!key) {
-      throw new Error(
-        "No Kiro access key found. Generate one at https://kiro.dev (Account → access keys), " +
-        "then either export KIRO_API_KEY=<key> and retry, or pass it: login_cli({cli:'kiro', token:'<key>'})."
-      );
+    if (key) {
+      const fromEnv = !explicitToken?.trim();
+      return { cli, token: key, label: fromEnv ? "Kiro (access key, $KIRO_API_KEY)" : "Kiro access key" };
     }
-    const fromEnv = !explicitToken?.trim();
-    return { cli, token: key, label: fromEnv ? "Kiro (access key, $KIRO_API_KEY)" : "Kiro access key" };
+    const idc = readKiroIdcAuth();
+    if (idc) {
+      return { cli, authKv: idc.authKv, label: idc.label };
+    }
+    throw new Error(
+      "No Kiro credential found. Either sign in with `kiro-cli login` (IDC / Identity Center) " +
+      "and retry, or — for a kiro.dev consumer account — generate an access key (Account → " +
+      "access keys) and pass it: login_cli({cli:'kiro', token:'<key>'})."
+    );
   }
   const c = await readCodexAuth();
   if (!c) {

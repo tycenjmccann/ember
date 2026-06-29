@@ -1165,10 +1165,10 @@ function AccountSheet({ onClose, onToast }: { onClose: () => void; onToast: (m: 
     },
     {
       cli: "kiro",
-      name: "Kiro access key",
-      how: "Generate an access key at kiro.dev (Account → access keys), then paste it here (or use the login MCP). Kiro has no Bedrock mode — this key is required.",
-      cmd: "# kiro.dev → Account → access keys",
-      placeholder: "Paste your Kiro access key (ksk_…)",
+      name: "Kiro",
+      how: "IDC / Identity Center (enterprise): run `kiro-cli login`, then connect via the login MCP — it ships your SSO token automatically. kiro.dev consumer accounts: paste an access key (Account → access keys). Kiro has no Bedrock mode.",
+      cmd: "/mcp__port-session__login kiro    # or paste a kiro.dev access key below",
+      placeholder: "Paste a kiro.dev access key (ksk_…) — IDC users use the login MCP instead",
     },
   ];
 

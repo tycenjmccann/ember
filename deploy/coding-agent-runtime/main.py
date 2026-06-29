@@ -436,19 +436,23 @@ def _clear_subscription_creds() -> None:
 
 
 def _materialize_kiro_key(user_id: str | None, tenant_id: str | None = None) -> bool:
-    """Write the user's Kiro access key to a tmpfs file so the interactive PTY
-    (shell-init.sh) launches `kiro-cli` on their key. The headless chat path reads
-    the key from the backend per turn instead. Returns True on success."""
+    """Make the user's Kiro credential available to the interactive PTY shell.
+    Access key → tmpfs file (shell-init exports KIRO_API_KEY). IDC SSO → the login
+    rows written into the GLOBAL KIRO_HOME DB so the PTY's `kiro-cli` reads +
+    refreshes them. The headless chat path re-fetches per turn instead. Returns
+    True when a credential was materialized."""
     cred = _fetch_subscription_cred(user_id, "kiro", tenant_id) or {}
     key = cred.get("token") or cred.get("api_key") or cred.get("access_key")
+    auth_kv = cred.get("authKv") or cred.get("auth_kv")
+    # Fail closed: always drop a stale tmpfs key first so a disconnected/IDC
+    # session can't keep exporting an old access key.
+    try:
+        os.remove(_KIRO_KEY_PATH)
+    except OSError:
+        pass
+    if isinstance(auth_kv, dict) and auth_kv.get("kirocli:odic:token"):
+        return _install_kiro_idc_auth(auth_kv, KIRO_HOME)
     if not key:
-        # Fail closed: no key fetched (disconnected / unreadable) → remove any
-        # stale key a prior session left on this warm VM so shell-init.sh / the
-        # turn never silently run on an old credential.
-        try:
-            os.remove(_KIRO_KEY_PATH)
-        except OSError:
-            pass
         return False
     try:
         os.makedirs(EPHEMERAL_CREDS_DIR, mode=0o700, exist_ok=True)
@@ -657,6 +661,7 @@ CREATE TABLE IF NOT EXISTS conversations_v2 (
 );
 CREATE INDEX IF NOT EXISTS idx_conversations_v2_key_updated ON conversations_v2(key, updated_at DESC);
 CREATE INDEX IF NOT EXISTS idx_conversations_v2_updated_at ON conversations_v2(updated_at DESC);
+CREATE TABLE IF NOT EXISTS auth_kv (key TEXT PRIMARY KEY, value TEXT);
 """
 
 
@@ -702,6 +707,34 @@ def _kiro_home_for(session_id: str | None) -> str:
 
 def _kiro_db_path(kiro_home: str | None = None) -> str:
     return os.path.join(kiro_home or KIRO_HOME, "data.sqlite3")
+
+
+def _install_kiro_idc_auth(auth_kv: dict, kiro_home: str | None = None) -> bool:
+    """Write the user's IDC/SSO login rows (kirocli:odic:token + device-
+    registration) into the per-session DB's auth_kv table so kiro refreshes
+    against Identity Center headlessly. These are portable (PKCE refresh token +
+    client_id/secret) — no keychain/device binding. Returns True on success."""
+    if not (auth_kv and isinstance(auth_kv, dict) and auth_kv.get("kirocli:odic:token")):
+        return False
+    db_path = _kiro_db_path(kiro_home)
+    try:
+        os.makedirs(os.path.dirname(db_path), exist_ok=True)
+        conn = sqlite3.connect(db_path)
+        try:
+            conn.executescript(_KIRO_DDL)
+            for k, v in auth_kv.items():
+                if not isinstance(v, str):
+                    v = json.dumps(v)
+                conn.execute(
+                    "INSERT INTO auth_kv(key,value) VALUES(?,?) "
+                    "ON CONFLICT(key) DO UPDATE SET value=excluded.value", (k, v))
+            conn.commit()
+        finally:
+            conn.close()
+        return True
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("kiro_idc_auth_install_failed", extra={"error": str(exc)[:200]})
+        return False
 
 
 def _install_kiro_resume_transcript(s3_key: str, session_id: str, workdir: str,
@@ -1595,9 +1628,11 @@ def _run_codex(prompt: str, workdir: str, codex_session_id: str | None,
 def _run_kiro(prompt: str, workdir: str, kiro_session_id: str | None,
               user_id: str | None = None, tenant_id: str | None = None,
               kiro_home: str | None = None) -> dict:
-    """Run one Kiro turn. Kiro is bring-your-own-key only (no Bedrock): the turn
-    runs on the user's uploaded KIRO_API_KEY access key. Resumes the prior
-    conversation when kiro_session_id (a kiro conversation uuid) is supplied.
+    """Run one Kiro turn. Kiro is bring-your-own-credential (no Bedrock), with two
+    auth paths: a kiro.dev access key (KIRO_API_KEY env) or IDC/Identity Center
+    SSO (the OAuth token + device-registration rows written into the DB's auth_kv,
+    which kiro refreshes against IDC headlessly). Resumes the prior conversation
+    when kiro_session_id (a kiro conversation uuid) is supplied.
 
     kiro_home pins the per-session KIRO_HOME so this turn's SQLite session store
     is isolated from sibling sessions. We surface kiro's conversation_id through
@@ -1606,13 +1641,22 @@ def _run_kiro(prompt: str, workdir: str, kiro_session_id: str | None,
     reading the newest conversations_v2 row for this workdir after the turn."""
     cred = _fetch_subscription_cred(user_id, "kiro", tenant_id) or {}
     api_key = cred.get("token") or cred.get("api_key") or cred.get("access_key")
-    if not api_key:
-        raise RuntimeError(
-            "no Kiro access key uploaded — run the login step on your laptop "
-            "(login_cli kiro). Kiro has no Bedrock fallback.")
+    auth_kv = cred.get("authKv") or cred.get("auth_kv")
     home = kiro_home or KIRO_HOME
     os.makedirs(home, exist_ok=True)
-    env = {**os.environ, "KIRO_HOME": home, "KIRO_API_KEY": api_key}
+    env = {**os.environ, "KIRO_HOME": home}
+    if api_key and not (isinstance(auth_kv, dict) and auth_kv):
+        env["KIRO_API_KEY"] = api_key
+    elif isinstance(auth_kv, dict) and auth_kv.get("kirocli:odic:token"):
+        # IDC SSO: write the login rows into this session's DB so kiro reads +
+        # refreshes them (no KIRO_API_KEY — the two auth modes are exclusive).
+        if not _install_kiro_idc_auth(auth_kv, home):
+            raise RuntimeError("failed to install Kiro IDC credentials into the session store")
+    else:
+        raise RuntimeError(
+            "no Kiro credential uploaded — run the login step on your laptop "
+            "(login_cli kiro): IDC SSO via `kiro-cli login`, or a kiro.dev access "
+            "key. Kiro has no Bedrock fallback.")
 
     args = ["kiro-cli", "chat", "--no-interactive", "--trust-all-tools"]
     if KIRO_MODEL:

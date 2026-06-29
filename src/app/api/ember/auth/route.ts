@@ -46,22 +46,42 @@ export async function POST(request: NextRequest) {
     let cred: Record<string, unknown>;
     let label: string | undefined = typeof body.label === "string" ? body.label : undefined;
 
-    if (cli === "claude" || cli === "kiro") {
-      // Both store a single token string: claude's setup-token / kiro's access key.
+    if (cli === "kiro") {
+      // Kiro has two credential shapes:
+      //   • access key (kiro.dev consumer): { token }
+      //   • IDC / Identity Center SSO (enterprise): { authKv } — the portable
+      //     OAuth token + device-registration rows from kiro's auth_kv table.
+      const token = (body.token || "").trim();
+      let authKv = body.authKv ?? body.auth_kv;
+      if (typeof authKv === "string") {
+        try {
+          authKv = JSON.parse(authKv);
+        } catch {
+          return NextResponse.json({ error: "authKv is not valid JSON" }, { status: 400 });
+        }
+      }
+      if (token) {
+        cred = { token };
+        label = label || "Kiro access key";
+      } else if (authKv && typeof authKv === "object" && (authKv as Record<string, unknown>)["kirocli:odic:token"]) {
+        cred = { authKv } as Record<string, unknown>;
+        label = label || "Kiro (IDC SSO)";
+      } else {
+        return NextResponse.json(
+          { error: "kiro needs either token (access key) or authKv (IDC login from `kiro-cli login`)" },
+          { status: 400 }
+        );
+      }
+    } else if (cli === "claude") {
       const token = (body.token || "").trim();
       if (!token) {
         return NextResponse.json(
-          {
-            error:
-              cli === "claude"
-                ? "token is required (run `claude setup-token` on your laptop)"
-                : "token is required (your Kiro access key from kiro.dev)",
-          },
+          { error: "token is required (run `claude setup-token` on your laptop)" },
           { status: 400 }
         );
       }
       cred = { token };
-      label = label || (cli === "claude" ? "Claude plan" : "Kiro access key");
+      label = label || "Claude plan";
     } else {
       // codex: accept the auth.json as an object, or a JSON string to parse.
       let authJson = body.authJson ?? body.auth_json;
