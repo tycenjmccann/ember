@@ -160,13 +160,20 @@ print(f"        purged + removed {done} session(s); {failed} left for reaper ret
 # Exit 2 signals "some purges deferred" so the script skips silo teardown.
 sys.exit(2 if failed else 0)
 PY
-if [[ "$PURGE_RC" == "2" ]]; then
-  PURGE_INCOMPLETE=1
-  echo "        ⚠ some sessions could not be purged inline — keeping the tenant"
-  echo "          runtime + registry so the reaper can retry. Re-run offboard later."
-else
-  PURGE_INCOMPLETE=0
-fi
+# Exit codes: 0 = all sessions confirmed-purged; 2 = some deferred (tombstoned for
+# the reaper, skip teardown); anything else = the purge script itself crashed
+# (throttling, bad creds, import error) BEFORE tombstoning — we must NOT proceed
+# to delete secrets/runtime/registry, or we'd strand workspaces unrecoverably.
+case "$PURGE_RC" in
+  0) PURGE_INCOMPLETE=0 ;;
+  2) PURGE_INCOMPLETE=1
+     echo "        ⚠ some sessions could not be purged inline — keeping the tenant"
+     echo "          runtime + registry so the reaper can retry. Re-run offboard later." ;;
+  *) echo "ERROR: session purge step crashed (exit $PURGE_RC) before tombstoning." >&2
+     echo "       Aborting BEFORE any teardown so nothing is stranded. Fix the cause" >&2
+     echo "       (creds/throttling) and re-run offboard-tenant.sh." >&2
+     exit 1 ;;
+esac
 
 # ─── 3. Secrets + S3 prefix ───────────────────────────────────────────────────
 echo "  [3/5] Deleting Secrets Manager creds + S3 prefix ember/t/$TENANT_ID/"
