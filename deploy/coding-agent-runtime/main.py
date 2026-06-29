@@ -402,13 +402,22 @@ def _materialize_claude_token(user_id: str | None, tenant_id: str | None = None)
         return False
 
 
+# The codex CLI only reads auth.json from $CODEX_HOME — but CODEX_HOME is on the
+# shared/durable EFS (it also holds config.toml + session history). So we keep the
+# SECRET bytes on tmpfs and expose them to codex via a symlink: $CODEX_HOME/auth.json
+# → tmpfs. The link lives on EFS; the credential bytes never do.
+_CODEX_AUTH_TMPFS = os.path.join(EPHEMERAL_CREDS_DIR, "codex-auth.json")
+_CODEX_AUTH_LINK = os.path.join(CODEX_HOME, "auth.json")
+
+
 def _clear_subscription_creds() -> None:
     """Remove any materialized subscription creds so a Bedrock-mode session on a
     warm VM doesn't accidentally inherit a prior subscription session's plan.
-    Clears both the tmpfs token and the legacy EFS location (pre-Phase-4 VMs)."""
+    Clears the tmpfs secrets, the codex symlink, and legacy EFS locations."""
     for p in (_CLAUDE_SUB_TOKEN_PATH,
-              os.path.join(CLAUDE_CONFIG_DIR, ".sub-token"),  # legacy
-              os.path.join(CODEX_HOME, "auth.json")):
+              _CODEX_AUTH_TMPFS,
+              _CODEX_AUTH_LINK,  # symlink (or pre-fix real file) at $CODEX_HOME/auth.json
+              os.path.join(CLAUDE_CONFIG_DIR, ".sub-token")):  # legacy
         try:
             os.remove(p)
         except OSError:
@@ -416,19 +425,27 @@ def _clear_subscription_creds() -> None:
 
 
 def _materialize_codex_auth(user_id: str | None, tenant_id: str | None = None) -> bool:
-    """Write the user's ChatGPT-plan auth.json into CODEX_HOME so `codex exec`
-    uses the default OpenAI provider against their plan. Returns True on success."""
+    """Materialize the user's ChatGPT-plan auth.json for `codex exec`. The secret
+    bytes are written to tmpfs (never EFS); $CODEX_HOME/auth.json is a symlink to
+    them, which is all the codex CLI needs. Returns True on success."""
     cred = _fetch_subscription_cred(user_id, "codex", tenant_id)
     if not cred:
         return False
     try:
+        os.makedirs(EPHEMERAL_CREDS_DIR, mode=0o700, exist_ok=True)
         os.makedirs(CODEX_HOME, exist_ok=True)
         # The uploaded doc may be the raw auth.json, or wrapped as {"auth_json": {...}}.
         doc = cred.get("auth_json") if isinstance(cred, dict) and "auth_json" in cred else cred
-        with open(os.path.join(CODEX_HOME, "auth.json"), "w") as f:
+        with open(_CODEX_AUTH_TMPFS, "w") as f:
             json.dump(doc, f)
-        os.chmod(os.path.join(CODEX_HOME, "auth.json"), 0o600)
-        logger.info("codex_auth_materialized", extra={"user": user_id})
+        os.chmod(_CODEX_AUTH_TMPFS, 0o600)
+        # Point $CODEX_HOME/auth.json at the tmpfs copy (replace any prior file/link).
+        try:
+            os.remove(_CODEX_AUTH_LINK)
+        except OSError:
+            pass
+        os.symlink(_CODEX_AUTH_TMPFS, _CODEX_AUTH_LINK)
+        logger.info("codex_auth_materialized", extra={"user": user_id, "tmpfs": True})
         return True
     except OSError as exc:
         logger.warning("codex_auth_write_failed", extra={"error": str(exc)[:200]})

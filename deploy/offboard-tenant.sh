@@ -47,10 +47,12 @@ if [[ "$ASSUME_YES" != "1" ]]; then
   [[ "$CONFIRM" == "$TENANT_ID" ]] || { echo "aborted." >&2; exit 1; }
 fi
 
-# ─── 1. Cognito users ─────────────────────────────────────────────────────────
+# ─── 1. Cognito users + their config:/auth: metadata rows ─────────────────────
+# Metadata rows are keyed by the user's `sub` (config:{sub} / auth:{sub}), so we
+# capture each matched user's sub BEFORE deleting the user, then delete those DDB
+# rows too — otherwise they linger after offboarding.
 if [[ -n "$POOL_ID" ]]; then
-  echo "  [1/5] Removing Cognito users in tenant $TENANT_ID"
-  # list-users can't filter on a custom attribute server-side; page + match locally.
+  echo "  [1/5] Removing Cognito users + their metadata rows in tenant $TENANT_ID"
   NEXT=""
   while :; do
     if [[ -n "$NEXT" ]]; then
@@ -58,24 +60,31 @@ if [[ -n "$POOL_ID" ]]; then
     else
       PAGE=$(aws cognito-idp list-users "${R[@]}" --user-pool-id "$POOL_ID" --limit 60 --output json)
     fi
+    # Emit "username<TAB>sub" for users in this tenant.
     echo "$PAGE" | python3 -c "
 import json,sys
 d=json.load(sys.stdin)
 for u in d.get('Users',[]):
     attrs={a['Name']:a.get('Value') for a in u.get('Attributes',[])}
     if attrs.get('custom:tenantId')=='$TENANT_ID':
-        print(u['Username'])
-" | while read -r uname; do
+        print(u['Username'] + '\t' + (attrs.get('sub') or ''))
+" | while IFS=$'\t' read -r uname sub; do
       [[ -z "$uname" ]] && continue
       aws cognito-idp admin-disable-user "${R[@]}" --user-pool-id "$POOL_ID" --username "$uname" >/dev/null 2>&1 || true
       aws cognito-idp admin-delete-user "${R[@]}" --user-pool-id "$POOL_ID" --username "$uname" >/dev/null 2>&1 || true
-      echo "        removed user $uname"
+      if [[ -n "$sub" ]]; then
+        for prefix in config auth; do
+          aws dynamodb delete-item "${R[@]}" --table-name "$EMBER_TABLE" \
+            --key "{\"sessionId\":{\"S\":\"${prefix}:${sub}\"}}" >/dev/null 2>&1 || true
+        done
+      fi
+      echo "        removed user $uname (+ config:/auth: rows)"
     done
     NEXT=$(echo "$PAGE" | python3 -c "import json,sys; print(json.load(sys.stdin).get('PaginationToken',''))")
     [[ -z "$NEXT" ]] && break
   done
 else
-  echo "  [1/5] COGNITO_USER_POOL_ID unset — skipping user removal"
+  echo "  [1/5] COGNITO_USER_POOL_ID unset — skipping user + metadata-row removal"
 fi
 
 # ─── 2. Sessions — purge SYNCHRONOUSLY before any teardown ────────────────────
@@ -200,7 +209,9 @@ if [[ "$PURGE_INCOMPLETE" == "1" ]]; then
   echo "  Tenant $TENANT_ID PARTIALLY offboarded (users + secrets + S3 removed)."
   echo "  Compute silo + registry preserved for reaper retry. Re-run to finish."
   echo "═══════════════════════════════════════════════════════════════"
-  exit 0
+  # Exit 3 (not 0): a CI/automation wrapper must be able to tell a partial
+  # offboard from a complete one, so it can retry rather than assume done.
+  exit 3
 fi
 echo "  [4/5] Tearing down the dedicated compute silo (if provisioned)"
 RUNTIME_ARN="$TENANT_RUNTIME_ARN"
