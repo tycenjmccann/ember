@@ -7,6 +7,7 @@ import { sseData } from "@/lib/sse";
 import { MarkdownRenderer } from "@/components/ember/MarkdownRenderer";
 import { CliBadge, CliMark, CLI_BRAND } from "@/components/ember/CliBrand";
 import VoiceButton from "@/components/ember/VoiceButton";
+import { PullCommandButton } from "@/components/ember/PullCommandButton";
 
 // xterm touches the DOM/window — load only in the browser.
 const ShellTerminal = dynamic(() => import("@/components/ember/ShellTerminal"), { ssr: false });
@@ -542,7 +543,13 @@ export default function EmberPage() {
                   )}
                 </div>
               </div>
-              <div className="ios-segment ml-auto flex-shrink-0">
+              {/* Pull needs a stored claudeSessionId — the checkpoint route 400s
+                  without one (brand-new or terminal-only sessions). Gate on it so
+                  we never hand the user a command that reliably fails. */}
+              {active.cli === "claude" && active.claudeSessionId && (
+                <PullCommandButton sessionId={active.sessionId} className="ml-auto flex-shrink-0" />
+              )}
+              <div className={`ios-segment flex-shrink-0 ${active.cli === "claude" && active.claudeSessionId ? "" : "ml-auto"}`}>
                 <button data-on={view === "chat"} onClick={() => setView("chat")}>
                   <MessageSquare className="w-3.5 h-3.5" /> Chat
                 </button>
