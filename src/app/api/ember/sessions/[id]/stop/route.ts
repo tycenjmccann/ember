@@ -52,7 +52,7 @@ export async function POST(
   const partial: string = (body.partial || "").trim();
 
   try {
-    await stopCodingSession({ sessionId: session.sessionId, region });
+    await stopCodingSession({ sessionId: session.sessionId, tenantId, region });
   } catch (err) {
     console.error("[ember] stop error:", err);
     return NextResponse.json({ stopped: false, error: (err as Error).message }, { status: 200 });

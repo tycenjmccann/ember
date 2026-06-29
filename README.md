@@ -189,15 +189,29 @@ exactly as before. The deploy fails closed if you set neither.
 
 > **Isolation status.** Phase 1 closes the control plane (API auth + per-tenant
 > data scoping; sessions list via a tenant-partition GSI, never a table scan).
-> Phase 2 puts **every S3 artifact under a per-tenant prefix** (`ember/t/<tenantId>/…`)
-> — config bundles, subscription creds, transcripts, bundles — so the storage
-> layout is ready to be IAM-fenced. What's **not** yet isolated: the *compute*
-> layer. Coding sessions still share one EFS filesystem and one bucket-wide
-> runtime role, so a tenant's agent code could still reach another tenant's files
-> on the runtime. The per-tenant **runtime role + EFS access point** that fences
-> each tenant to its own `ember/t/<tenantId>/*` subtree is Phase 3; Secrets
-> Manager + offboarding is Phase 4. Don't expose multi-tenant to mutually-untrusted
-> companies until Phase 3 lands. See [`docs/ENTERPRISE.md`](docs/ENTERPRISE.md).
+> Phase 2 puts **every S3 artifact under a per-tenant prefix** (`ember/t/<tenantId>/…`).
+> Phase 3 adds an **opt-in per-tenant compute silo** — run
+> `deploy/provision-tenant.sh <tenantId>` and that tenant gets its own AgentCore
+> runtime (separate microVMs), its own EFS access point (a private root dir,
+> mounted as non-root uid 1000), and a runtime IAM role whose S3 access is fenced
+> to `ember/t/<tenantId>/*`. The app + reaper route a siloed tenant to its own
+> runtime automatically; un-provisioned tenants keep sharing the pool runtime
+> unchanged.
+>
+> So: for **mutually-untrusted companies, provision a silo per tenant** before
+> onboarding them — the shared pool runtime still co-locates un-siloed tenants on
+> one filesystem + role. Per-tenant secret isolation (Secrets Manager) and
+> automated offboarding are Phase 4. See [`docs/ENTERPRISE.md`](docs/ENTERPRISE.md).
+
+### Give a tenant its own compute silo (Phase 3)
+
+```bash
+deploy/provision-tenant.sh acme        # dedicated runtime + EFS AP + fenced role
+```
+
+Idempotent and isolated: provisioning one tenant never touches another or the
+shared pool. New sessions for that tenant route to the dedicated runtime within
+~60s (the resolver caches the mapping).
 
 ## License
 

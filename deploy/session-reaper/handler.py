@@ -28,10 +28,31 @@ import boto3
 
 REGION = os.environ.get("AWS_REGION", "us-east-1")
 RUNTIME_ARN = os.environ.get("CODING_AGENT_RUNTIME_ARN", "")
+EMBER_TABLE = os.environ.get("EMBER_TABLE", "ember-sessions")
 
 # Both invoke_agent_runtime and stop_runtime_session live on the data-plane
 # client (bedrock-agentcore), not the control plane.
 _agentcore = boto3.client("bedrock-agentcore", region_name=REGION)
+_ddb = boto3.client("dynamodb", region_name=REGION)
+
+
+def _runtime_arn_for(tenant_id: str | None) -> str:
+    """The runtime a tenant's session runs on: its dedicated silo runtime if
+    registered (tenant:{id} row → runtimeArn), else the shared default. A siloed
+    tenant MUST be stopped/purged on its own runtime — the shared one can't see
+    its microVM. Falls back to the env ARN on any lookup miss/error."""
+    if not tenant_id:
+        return RUNTIME_ARN
+    try:
+        res = _ddb.get_item(
+            TableName=EMBER_TABLE,
+            Key={"sessionId": {"S": f"tenant:{tenant_id}"}},
+        )
+        arn = res.get("Item", {}).get("runtimeArn", {}).get("S")
+        return arn or RUNTIME_ARN
+    except Exception as exc:  # noqa: BLE001 — lookup failure → shared runtime
+        print(f"[reaper] tenant runtime lookup {tenant_id}: {type(exc).__name__}: {str(exc)[:160]}")
+        return RUNTIME_ARN
 
 
 def _ddb_str(attr):
@@ -41,14 +62,14 @@ def _ddb_str(attr):
     return None
 
 
-def _stop_session(session_id: str) -> None:
+def _stop_session(session_id: str, runtime_arn: str) -> None:
     """Stop the runtime session — kills the in-flight CLI and frees the microVM.
     Idempotent: a session that already aged out / never started just errors, which
     we swallow."""
     try:
         _agentcore.stop_runtime_session(
             runtimeSessionId=session_id,
-            agentRuntimeArn=RUNTIME_ARN,
+            agentRuntimeArn=runtime_arn,
             qualifier="DEFAULT",
         )
     except Exception as exc:  # noqa: BLE001 — stop is best-effort; purge is the goal
@@ -56,7 +77,7 @@ def _stop_session(session_id: str) -> None:
 
 
 def _purge_session(session_id: str, cli: str, claude_session_id: str | None,
-                   tenant_id: str | None) -> dict:
+                   tenant_id: str | None, runtime_arn: str) -> dict:
     """Invoke the runtime's purge action on a fresh VM. Raises on a failed invoke so
     the stream redelivers (the reaper retries)."""
     payload = {
@@ -73,7 +94,7 @@ def _purge_session(session_id: str, cli: str, claude_session_id: str | None,
         payload["tenant_id"] = tenant_id
 
     res = _agentcore.invoke_agent_runtime(
-        agentRuntimeArn=RUNTIME_ARN,
+        agentRuntimeArn=runtime_arn,
         runtimeSessionId=session_id,
         payload=json.dumps(payload).encode("utf-8"),
         contentType="application/json",
@@ -99,10 +120,11 @@ def _reap(image: dict) -> bool:
     cli = _ddb_str(image.get("cli")) or "claude"
     claude_session_id = _ddb_str(image.get("claudeSessionId"))
     tenant_id = _ddb_str(image.get("tenantId"))
+    runtime_arn = _runtime_arn_for(tenant_id)
 
     print(f"[reaper] reaping {session_id} (cli={cli}, tenant={tenant_id or 'default'})")
-    _stop_session(session_id)
-    result = _purge_session(session_id, cli, claude_session_id, tenant_id)
+    _stop_session(session_id, runtime_arn)
+    result = _purge_session(session_id, cli, claude_session_id, tenant_id, runtime_arn)
     print(f"[reaper] reaped {session_id}: {json.dumps(result)}")
     return True
 

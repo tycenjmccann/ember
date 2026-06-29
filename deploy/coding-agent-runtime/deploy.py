@@ -36,7 +36,10 @@ import boto3
 from botocore.exceptions import ClientError
 
 # AgentCore runtime names must match [a-zA-Z][a-zA-Z0-9_]{0,47} — no hyphens.
-RUNTIME_NAME = "ember_coding_runtime"
+# RUNTIME_NAME overridable so provision-tenant.sh can stand up a per-tenant silo
+# runtime (e.g. ember_coding_rt_acme) reusing this same deploy path; the default
+# is the shared pool runtime.
+RUNTIME_NAME = os.environ.get("RUNTIME_NAME", "ember_coding_runtime")
 # EFS mount — elastic, POSIX, survives cold microVMs. Required for a real code
 # workspace (git + node_modules exceed the ~1 GB sessionStorage quota). Provision
 # the VPC/EFS with setup-coding-efs.sh first (writes efs.config).
@@ -249,7 +252,11 @@ def main() -> None:
 
     wait_until_ready(control, runtime_id)
 
-    arn_file = os.path.join(os.path.dirname(os.path.abspath(__file__)), "coding-runtime-arn.txt")
+    # Per-tenant runtimes write a distinct file so a silo deploy never clobbers
+    # the shared runtime's recorded ARN. RUNTIME_ARN_FILE lets provision-tenant.sh
+    # capture the tenant ARN to register in the tenant:{id} row.
+    arn_file = os.environ.get("RUNTIME_ARN_FILE") or os.path.join(
+        os.path.dirname(os.path.abspath(__file__)), "coding-runtime-arn.txt")
     with open(arn_file, "w") as f:
         f.write(arn + "\n")
 
