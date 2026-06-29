@@ -184,6 +184,10 @@ def main() -> None:
     # GitHub auth for private repo clone/push (launchers configure git from it).
     if gh_pat := os.environ.get("GITHUB_PAT"):
         env_vars["GITHUB_PAT"] = gh_pat
+    # Secrets backend MUST match the app's, or subscription creds written to
+    # Secrets Manager are looked for in S3 (and never found). Propagate it.
+    if backend := os.environ.get("EMBER_SECRETS_BACKEND"):
+        env_vars["EMBER_SECRETS_BACKEND"] = backend
 
     runtime_id = find_runtime(control, RUNTIME_NAME)
 

@@ -78,16 +78,27 @@ else
   echo "  [1/5] COGNITO_USER_POOL_ID unset — skipping user removal"
 fi
 
-# ─── 2. Sessions (soft-delete → reaper purges compute/storage) ────────────────
-echo "  [2/5] Soft-deleting the tenant's sessions (reaper reclaims VMs + artifacts)"
-EMBER_TABLE="$EMBER_TABLE" TENANT_ID="$TENANT_ID" AWS_REGION="$AWS_REGION" python3 - <<'PY'
-import boto3, os, time
-ddb = boto3.client("dynamodb", region_name=os.environ["AWS_REGION"])
+# ─── 2. Sessions — purge SYNCHRONOUSLY before any teardown ────────────────────
+# We must NOT lean on the TTL reaper here: step 4 deletes the tenant's runtime,
+# and the reaper needs that runtime to mount the tenant's EFS for the purge. So
+# stop + purge each session inline NOW (same stop-then-purge the reaper does),
+# THEN hard-delete the row. After this, no session needs the runtime — step 4 is
+# safe. Resolve the tenant's runtime (silo or shared) the same way the app does.
+echo "  [2/5] Stopping + purging the tenant's sessions inline (before teardown)"
+SILO=$(aws dynamodb get-item "${R[@]}" --table-name "$EMBER_TABLE" \
+  --key "{\"sessionId\":{\"S\":\"tenant:${TENANT_ID}\"}}" --output json 2>/dev/null || echo '{}')
+TENANT_RUNTIME_ARN=$(echo "$SILO" | python3 -c "import json,sys; print(json.load(sys.stdin).get('Item',{}).get('runtimeArn',{}).get('S',''))" 2>/dev/null || echo "")
+[[ -z "$TENANT_RUNTIME_ARN" ]] && TENANT_RUNTIME_ARN="${CODING_AGENT_RUNTIME_ARN:-}"
+
+EMBER_TABLE="$EMBER_TABLE" TENANT_ID="$TENANT_ID" AWS_REGION="$AWS_REGION" \
+RUNTIME_ARN="$TENANT_RUNTIME_ARN" python3 - <<'PY'
+import boto3, json, os
+region = os.environ["AWS_REGION"]
+ddb = boto3.client("dynamodb", region_name=region)
+ac = boto3.client("bedrock-agentcore", region_name=region)
 table = os.environ["EMBER_TABLE"]
 tenant = os.environ["TENANT_ID"]
-now = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
-ttl = str(int(time.time()) + 60)
-# Query the tenant-index for this tenant's session rows.
+runtime_arn = os.environ.get("RUNTIME_ARN") or ""
 count = 0
 kwargs = {"TableName": table, "IndexName": "tenant-index",
           "KeyConditionExpression": "tenantId = :t",
@@ -98,20 +109,33 @@ while True:
         sid = item["sessionId"]["S"]
         if sid.startswith(("config:", "auth:", "tenant:")):
             continue
-        if "deletedAt" in item:
-            continue  # already tombstoned
-        ddb.update_item(
-            TableName=table, Key={"sessionId": {"S": sid}},
-            UpdateExpression="SET deletedAt = :d, #t = :ttl",
-            ExpressionAttributeNames={"#t": "ttl"},
-            ExpressionAttributeValues={":d": {"S": now}, ":ttl": {"N": ttl}},
-        )
+        cli = item.get("cli", {}).get("S", "claude")
+        conv = item.get("claudeSessionId", {}).get("S")
+        if runtime_arn:
+            # Stop the live microVM (best-effort), then invoke purge on a fresh VM
+            # that re-mounts EFS — rmtree the workspace + delete S3 artifacts.
+            try:
+                ac.stop_runtime_session(runtimeSessionId=sid, agentRuntimeArn=runtime_arn, qualifier="DEFAULT")
+            except Exception:
+                pass
+            payload = {"purge": True, "session_id": sid, "cli": cli, "tenant_id": tenant}
+            if conv:
+                payload["claude_session_id"] = conv
+            try:
+                ac.invoke_agent_runtime(
+                    agentRuntimeArn=runtime_arn, runtimeSessionId=sid,
+                    payload=json.dumps(payload).encode(), contentType="application/json",
+                    accept="application/json")
+            except Exception as exc:
+                print(f"        WARN purge {sid}: {type(exc).__name__}: {str(exc)[:160]}")
+        # Hard-delete the row (no TTL/reaper dependency — purge already ran).
+        ddb.delete_item(TableName=table, Key={"sessionId": {"S": sid}})
         count += 1
     lek = res.get("LastEvaluatedKey")
     if not lek:
         break
     kwargs["ExclusiveStartKey"] = lek
-print(f"        soft-deleted {count} session(s) — reaper will purge them")
+print(f"        purged + removed {count} session(s)")
 PY
 
 # ─── 3. Secrets + S3 prefix ───────────────────────────────────────────────────
@@ -129,10 +153,14 @@ aws s3 rm "s3://${ARTIFACT_BUCKET}/ember/t/${TENANT_ID}/" --recursive >/dev/null
 echo "        purged s3://${ARTIFACT_BUCKET}/ember/t/${TENANT_ID}/"
 
 # ─── 4. Compute silo (runtime + role + access point), if any ──────────────────
+# Sessions are already stopped + purged (step 2), so deleting the runtime now
+# strands nothing. Reuse the $SILO read from step 2.
 echo "  [4/5] Tearing down the dedicated compute silo (if provisioned)"
-SILO=$(aws dynamodb get-item "${R[@]}" --table-name "$EMBER_TABLE" \
-  --key "{\"sessionId\":{\"S\":\"tenant:${TENANT_ID}\"}}" --output json 2>/dev/null || echo '{}')
-RUNTIME_ARN=$(echo "$SILO" | python3 -c "import json,sys; print(json.load(sys.stdin).get('Item',{}).get('runtimeArn',{}).get('S',''))" 2>/dev/null || echo "")
+RUNTIME_ARN="$TENANT_RUNTIME_ARN"
+# (RUNTIME_ARN falls back to the shared runtime when un-siloed; only delete a
+# runtime that's actually this tenant's dedicated one, i.e. the silo row had it.)
+SILO_RUNTIME=$(echo "$SILO" | python3 -c "import json,sys; print(json.load(sys.stdin).get('Item',{}).get('runtimeArn',{}).get('S',''))" 2>/dev/null || echo "")
+RUNTIME_ARN="$SILO_RUNTIME"
 ROLE_ARN=$(echo "$SILO" | python3 -c "import json,sys; print(json.load(sys.stdin).get('Item',{}).get('runtimeRoleArn',{}).get('S',''))" 2>/dev/null || echo "")
 AP_ARN=$(echo "$SILO" | python3 -c "import json,sys; print(json.load(sys.stdin).get('Item',{}).get('efsAccessPointArn',{}).get('S',''))" 2>/dev/null || echo "")
 
