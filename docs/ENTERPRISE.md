@@ -68,7 +68,7 @@ flowchart TB
 |---|---|---|
 | Auth | request → identity | Cognito admin-create-only pool; `middleware.ts` verifies the id-token and stamps `tenantId`/`userId` (routes never trust a client header) |
 | Data | DynamoDB | `tenant-index` GSI → `listSessions` Querys one tenant; point reads ownership-checked |
-| Storage | S3 + Secrets Manager | every artifact under `ember/t/<tenantId>/…`; subscription creds in Secrets Manager (KMS). Claude PTY token → tmpfs; Codex `auth.json` still on EFS (known gap) |
+| Storage | S3 + Secrets Manager | every artifact under `ember/t/<tenantId>/…`; subscription creds in Secrets Manager (KMS), materialized to **tmpfs** (`/dev/shm`) — Claude token directly, Codex `auth.json` via a tmpfs symlink — never the shared EFS |
 | Compute | AgentCore runtime + EFS | opt-in silo: dedicated runtime, EFS access point (non-root uid 1000, private root dir), runtime role fenced to the tenant's S3 + secret prefix |
 
 Pooled tenants share one runtime + EFS + role and are isolated only logically —
@@ -140,11 +140,10 @@ needs `ec2:CreateSubnet`, `ec2:*NatGateway*`, `ec2:*RouteTable*`, `ec2:AllocateA
   under `ember/t/<tenantId>/…` in S3.
 - Subscription tokens move to **AWS Secrets Manager** (`EMBER_SECRETS_BACKEND=secretsmanager`,
   one secret per tenant/user/CLI, KMS-at-rest). Default `s3` backend keeps the
-  prior behavior for personal deploys. The **Claude** PTY token is materialized to
-  **tmpfs** (`/dev/shm`), never the shared EFS. **Known gap:** **Codex** subscription
-  mode still writes `auth.json` to `CODEX_HOME` on EFS (the `codex` CLI reads it
-  from there) — until that moves to tmpfs, fence it with a per-tenant EFS access
-  point (the silo does this).
+  prior behavior for personal deploys. Both creds are materialized to **tmpfs**
+  (`/dev/shm`), never the shared EFS: the Claude PTY token directly, and the Codex
+  `auth.json` via a tmpfs file that `$CODEX_HOME/auth.json` symlinks to (the `codex`
+  CLI reads through the link; only the symlink lives on EFS).
 - A **siloed tenant's runtime role is fenced** to `ember/t/<tenantId>/*` for both
   S3 and its own secret prefix, and its EFS access point forces non-root uid 1000
   on a private root dir — so a session can physically reach only its tenant's bytes.
