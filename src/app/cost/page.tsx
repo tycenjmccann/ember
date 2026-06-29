@@ -1,39 +1,41 @@
 "use client";
 
 /**
- * /cost — live cost calculator. The whole pitch in one screen: infrastructure is
- * a rounding error, the LLM is ~all of it, and "bring your own plan" makes the LLM
- * term $0 marginal. Rates are the public AWS/Anthropic numbers as of 2026-06; they
- * live in RATES so they're easy to update when prices move.
+ * /cost — what the PLATFORM costs to run. Two separate stories, never multiplied
+ * together:
+ *   1. Capacity (the ceiling): up to 5,000 concurrent coding sessions, unlimited
+ *      developers, auto-scaling microVMs that cost $0 when idle.
+ *   2. Cost (infrastructure only): the monthly AWS bill to host Ember — App
+ *      Runner + AgentCore compute + DynamoDB + S3 + EFS + Cognito. NO LLM /
+ *      token cost. Inference runs on Bedrock out of the box, or on your own
+ *      Claude/Codex plan — billed by that provider, never through Ember.
+ *
+ * Rates are the public AWS numbers (us-east-1, verified 2026-06) in RATES so
+ * they're easy to update when prices move.
  */
 
 import { useMemo, useState } from "react";
 import Link from "next/link";
 import { ChevronLeft } from "lucide-react";
 
-// ─── Rates (USD). Update here when AWS/Anthropic pricing changes. ──────────────
+// ─── Rates (USD, us-east-1). Update here when AWS pricing changes. ─────────────
 const RATES = {
-  // AWS App Runner (web tier), 1 vCPU / 2 GB instance.
-  apprunner: { vcpuHr: 0.064, gbHr: 0.007, vcpu: 1, gb: 2, workdayHrs: 10 },
-  // Amazon Bedrock AgentCore Runtime (the coding microVM). Idle CPU is free, so we
-  // bill CPU at an effective duty factor; memory is billed across the active session.
+  // The architecture's delivered ceiling — concurrent AgentCore microVMs.
+  capacity: { concurrentSessions: 5000 },
+  // AWS App Runner (always-on web/control plane), 1 vCPU / 2 GB. Memory is billed
+  // for the provisioned instance; vCPU only bills while serving requests, so we
+  // apply a request duty factor rather than the whole session window.
+  apprunner: { vcpuHr: 0.064, gbHr: 0.007, vcpu: 1, gb: 2, hoursMo: 730, webDuty: 0.25 },
+  // Bedrock AgentCore Runtime (the coding microVM). Idle CPU is FREE — billed only
+  // during active compute (duty factor); memory billed across the active session.
   agentcore: { vcpuHr: 0.0895, gbHr: 0.00945, vcpu: 1, gb: 2, cpuDuty: 0.5 },
-  // DynamoDB on-demand + S3 for a coding workload — flat pennies.
-  storesMonthly: 2,
-  // LLM, per active session-hour. Token throughput is a heavy-use estimate
-  // (prompt caching typically makes the real input bill lower).
-  llm: {
-    inputMTokPerHr: 1.0,
-    outputMTokPerHr: 0.2,
-    models: {
-      "bedrock-opus": { label: "Bedrock · Claude Opus", inPerM: 15, outPerM: 75 },
-      "bedrock-sonnet": { label: "Bedrock · Claude Sonnet", inPerM: 3, outPerM: 15 },
-      "byo-plan": { label: "Your own plan (Pro/Max or ChatGPT)", inPerM: 0, outPerM: 0 },
-    },
-  },
+  // DynamoDB on-demand (session + metadata rows are tiny).
+  dynamo: { perMWrite: 0.625, perMRead: 0.125, writesPerSession: 20, readsPerSession: 20 },
+  // Per-developer storage footprint.
+  s3: { gbMo: 0.023, gbPerDev: 1 }, // transcripts + artifacts
+  efs: { gbMo: 0.3, gbPerDev: 2 }, // live workspace
+  cognito: { freeMau: 10000, perMau: 0.015 }, // developers = monthly active users
 } as const;
-
-type ModelKey = keyof typeof RATES.llm.models;
 
 const usd = (n: number) =>
   n >= 100 ? `$${Math.round(n).toLocaleString()}` : `$${n.toFixed(n < 10 ? 2 : 1)}`;
@@ -62,38 +64,40 @@ function Field({
 }
 
 export default function CostPage() {
-  const [devs, setDevs] = useState(5);
+  const [devs, setDevs] = useState(100);
   const [sessionsPerDay, setSessionsPerDay] = useState(4);
   const [minutesPerSession, setMinutesPerSession] = useState(20);
   const [workdays, setWorkdays] = useState(22);
-  const [model, setModel] = useState<ModelKey>("byo-plan");
 
   const calc = useMemo(() => {
-    const activeHrs =
-      (devs * sessionsPerDay * minutesPerSession * workdays) / 60;
+    const activeHrs = (devs * sessionsPerDay * minutesPerSession * workdays) / 60;
+    const sessionsMo = devs * sessionsPerDay * workdays;
 
-    // App Runner: memory provisioned across the workday + active vCPU bursts.
+    // App Runner: memory provisioned 24/7 + vCPU only while serving requests.
     const a = RATES.apprunner;
-    const apprunnerMem = a.gb * a.gbHr * a.workdayHrs * workdays;
-    const apprunnerCpu = activeHrs * a.vcpu * a.vcpuHr; // web tier only computes during requests
-    const apprunner = apprunnerMem + apprunnerCpu;
+    const apprunner =
+      a.gb * a.gbHr * a.hoursMo + activeHrs * a.vcpu * a.vcpuHr * a.webDuty;
 
-    // AgentCore: CPU at duty factor (idle is free), memory across active session.
+    // AgentCore: CPU at duty factor (idle free) + memory across the active session.
     const c = RATES.agentcore;
     const agentcore =
       activeHrs * c.vcpu * c.cpuDuty * c.vcpuHr + activeHrs * c.gb * c.gbHr;
 
-    const stores = RATES.storesMonthly;
+    // DynamoDB on-demand — a handful of tiny reads/writes per session.
+    const d = RATES.dynamo;
+    const dynamo =
+      (sessionsMo * d.writesPerSession / 1e6) * d.perMWrite +
+      (sessionsMo * d.readsPerSession / 1e6) * d.perMRead;
+
+    const s3 = devs * RATES.s3.gbPerDev * RATES.s3.gbMo;
+    const efs = devs * RATES.efs.gbPerDev * RATES.efs.gbMo;
+    const cognito = Math.max(0, devs - RATES.cognito.freeMau) * RATES.cognito.perMau;
+
+    const stores = dynamo + s3 + efs + cognito;
     const infra = apprunner + agentcore + stores;
 
-    // LLM
-    const m = RATES.llm.models[model];
-    const llm =
-      activeHrs *
-      (RATES.llm.inputMTokPerHr * m.inPerM + RATES.llm.outputMTokPerHr * m.outPerM);
-
-    return { activeHrs, apprunner, agentcore, stores, infra, llm, total: infra + llm };
-  }, [devs, sessionsPerDay, minutesPerSession, workdays, model]);
+    return { activeHrs, sessionsMo, apprunner, agentcore, dynamo, s3, efs, cognito, stores, infra };
+  }, [devs, sessionsPerDay, minutesPerSession, workdays]);
 
   const row = (label: string, value: number, dim = false) => (
     <div className="flex items-center justify-between py-2.5 px-4">
@@ -116,24 +120,61 @@ export default function CostPage() {
           <ChevronLeft className="w-5 h-5 -ml-1" /> Ember
         </Link>
 
-        <h1 className="text-[28px] font-bold tracking-tight text-[var(--color-text-primary)] mb-1">
-          What it costs
-        </h1>
-        <p className="text-[15px] text-[var(--color-text-secondary)] mb-6 leading-snug">
-          Infrastructure is a rounding error. The model is ~all of it — and{" "}
-          <strong className="text-[var(--color-text-primary)]">$0 marginal</strong> when sessions
-          run on a plan you already pay for.
-        </p>
-
-        {/* Headline total */}
+        {/* ── Capacity hero — the delivered ceiling ───────────────────────── */}
         <div
-          className="ios-sheet rounded-ios-lg p-5 mb-6 text-center"
+          className="ios-sheet rounded-ios-lg p-6 mb-3 text-center"
           style={{ background: "linear-gradient(180deg,#ffb24d 0%,#ff7a1a 45%,#ff4d00 100%)", boxShadow: "0 8px 24px rgba(255,106,0,0.35)" }}
         >
-          <div className="text-white/80 text-[13px] font-medium uppercase tracking-wide">Estimated monthly</div>
-          <div className="text-white text-[44px] font-bold leading-tight tabular-nums">{usd(calc.total)}</div>
-          <div className="text-white/85 text-[13px]">
-            {usd(calc.total / Math.max(devs, 1))}/developer · {Math.round(calc.activeHrs)} active session-hours
+          <div className="text-white/85 text-[13px] font-medium uppercase tracking-wide">Delivers up to</div>
+          <div className="text-white text-[56px] font-bold leading-none tabular-nums my-1">
+            {RATES.capacity.concurrentSessions.toLocaleString()}
+          </div>
+          <div className="text-white text-[17px] font-semibold">concurrent coding sessions</div>
+          <div className="text-white/85 text-[13px] mt-1.5 leading-snug">
+            Auto-scaling microVMs spin up on demand and cost <strong className="text-white">$0 when idle</strong>.
+          </div>
+        </div>
+
+        {/* Capacity facts */}
+        <div className="grid grid-cols-3 gap-2 mb-5">
+          {[
+            ["Developers", "Unlimited"],
+            ["Sessions", "On demand"],
+            ["Storage", "Scales to need"],
+          ].map(([k, v]) => (
+            <div key={k} className="rounded-ios px-3 py-2.5 text-center" style={{ background: "var(--color-bg-tertiary)" }}>
+              <div className="text-[14px] font-semibold text-[var(--color-text-primary)]">{v}</div>
+              <div className="text-[11px] text-[var(--color-text-muted)] uppercase tracking-wide mt-0.5">{k}</div>
+            </div>
+          ))}
+        </div>
+
+        {/* ── Inference: your way ─────────────────────────────────────────── */}
+        <div className="rounded-ios-lg p-4 mb-6" style={{ background: "var(--color-bg-tertiary)" }}>
+          <div className="text-[15px] font-semibold text-[var(--color-text-primary)] mb-1.5">Inference, your way</div>
+          <p className="text-[13px] text-[var(--color-text-secondary)] leading-relaxed">
+            <strong className="text-[var(--color-text-primary)]">Amazon Bedrock out of the box</strong> — Claude,
+            no setup. Or bring your own: <strong className="text-[var(--color-text-primary)]">Claude Code</strong>{" "}
+            (Pro / Max) and <strong className="text-[var(--color-text-primary)]">Codex</strong> (ChatGPT) logins.
+            Inference is billed by your provider — <strong className="text-[var(--ios-green)]">never through Ember</strong>.
+            The numbers below are the <strong className="text-[var(--color-text-primary)]">platform only</strong>.
+          </p>
+        </div>
+
+        <h1 className="text-[28px] font-bold tracking-tight text-[var(--color-text-primary)] mb-1">
+          What the platform costs
+        </h1>
+        <p className="text-[15px] text-[var(--color-text-secondary)] mb-5 leading-snug">
+          The full AWS bill to run Ember — compute, storage, and auth. No models, no
+          tokens. Drag to match your team.
+        </p>
+
+        {/* Headline infra total */}
+        <div className="rounded-ios-lg p-5 mb-6 text-center" style={{ background: "var(--color-bg-tertiary)", border: "0.5px solid var(--ios-separator)" }}>
+          <div className="text-[var(--color-text-muted)] text-[13px] font-medium uppercase tracking-wide">Estimated monthly infrastructure</div>
+          <div className="text-[var(--color-text-primary)] text-[44px] font-bold leading-tight tabular-nums">{usd(calc.infra)}</div>
+          <div className="text-[var(--color-text-secondary)] text-[13px]">
+            {usd(calc.infra / Math.max(devs, 1))}/developer · {calc.sessionsMo.toLocaleString()} sessions/mo
           </div>
         </div>
 
@@ -143,33 +184,6 @@ export default function CostPage() {
           <Field label="Sessions / dev / day" value={sessionsPerDay} onChange={setSessionsPerDay} min={1} max={30} step={1} />
           <Field label="Active minutes / session" value={minutesPerSession} onChange={setMinutesPerSession} min={5} max={120} step={5} suffix=" min" />
           <Field label="Working days / month" value={workdays} onChange={setWorkdays} min={1} max={31} step={1} />
-
-          <div>
-            <label className="text-[15px] text-[var(--color-text-primary)] block mb-2">Model</label>
-            <div className="grid grid-cols-1 gap-2">
-              {(Object.keys(RATES.llm.models) as ModelKey[]).map((k) => {
-                const active = k === model;
-                return (
-                  <button
-                    key={k}
-                    onClick={() => setModel(k)}
-                    className="press text-left rounded-ios px-3.5 py-2.5 text-[15px] transition-colors"
-                    style={{
-                      background: active ? "var(--ios-blue)" : "var(--ios-fill-tertiary)",
-                      color: active ? "#fff" : "var(--color-text-primary)",
-                    }}
-                  >
-                    {RATES.llm.models[k].label}
-                    {k === "byo-plan" && (
-                      <span className={`ml-2 text-[12px] ${active ? "text-white/80" : "text-[var(--ios-green)]"}`}>
-                        $0 marginal
-                      </span>
-                    )}
-                  </button>
-                );
-              })}
-            </div>
-          </div>
         </div>
 
         {/* Breakdown */}
@@ -177,30 +191,34 @@ export default function CostPage() {
           Breakdown
         </div>
         <div className="rounded-ios-lg overflow-hidden mb-2 divide-y" style={{ background: "var(--color-bg-tertiary)", borderColor: "var(--ios-separator)" }}>
-          {row("Infrastructure", calc.infra)}
-          {row("· App Runner (web)", calc.apprunner, true)}
+          {row("Compute", calc.apprunner + calc.agentcore)}
+          {row("· App Runner (always-on web)", calc.apprunner, true)}
           {row("· AgentCore (coding microVMs)", calc.agentcore, true)}
-          {row("· DynamoDB + S3", calc.stores, true)}
         </div>
-        <div className="rounded-ios-lg overflow-hidden mb-4" style={{ background: "var(--color-bg-tertiary)" }}>
-          {row(model === "byo-plan" ? "LLM (your plan)" : "LLM (Bedrock tokens)", calc.llm)}
+        <div className="rounded-ios-lg overflow-hidden mb-4 divide-y" style={{ background: "var(--color-bg-tertiary)", borderColor: "var(--ios-separator)" }}>
+          {row("Storage & auth", calc.stores)}
+          {row("· DynamoDB (sessions)", calc.dynamo, true)}
+          {row("· S3 (transcripts + artifacts)", calc.s3, true)}
+          {row("· EFS (live workspaces)", calc.efs, true)}
+          {row(`· Cognito (${devs.toLocaleString()} users)`, calc.cognito, true)}
         </div>
 
-        {model === "byo-plan" && (
-          <div className="rounded-ios px-4 py-3 mb-4 text-[13px] leading-snug"
-               style={{ background: "var(--ios-fill-tertiary)", color: "var(--color-text-secondary)" }}>
-            <strong className="text-[var(--ios-green)]">Bring your own plan:</strong> sessions run on the
-            Claude Pro/Max or ChatGPT subscription you already pay for. The only cost above is the AWS
-            infrastructure to host it — typically <strong className="text-[var(--color-text-primary)]">{usd(calc.infra)}/mo</strong> for this team.
-          </div>
-        )}
+        <div className="rounded-ios px-4 py-3 mb-4 text-[13px] leading-snug"
+             style={{ background: "var(--ios-fill-tertiary)", color: "var(--color-text-secondary)" }}>
+          <strong className="text-[var(--ios-green)]">Platform only.</strong> This is what you pay AWS to run
+          Ember for this team. Models and tokens are not included — sessions run on Bedrock or on the
+          Claude / Codex plan you already have, billed by that provider.
+        </div>
 
         <p className="text-[12px] text-[var(--color-text-muted)] leading-relaxed px-1">
-          Estimates, not a quote. Rates: App Runner ${RATES.apprunner.vcpuHr}/vCPU-hr + ${RATES.apprunner.gbHr}/GB-hr ·
+          Estimates, not a quote. Rates (us-east-1): App Runner ${RATES.apprunner.vcpuHr}/vCPU-hr + ${RATES.apprunner.gbHr}/GB-hr ·
           AgentCore ${RATES.agentcore.vcpuHr}/vCPU-hr (idle CPU free) + ${RATES.agentcore.gbHr}/GB-hr ·
-          LLM assumes ~{RATES.llm.inputMTokPerHr}M input + {RATES.llm.outputMTokPerHr}M output tokens per active
-          session-hour (prompt caching usually lowers the real input bill). Bedrock Opus ${RATES.llm.models["bedrock-opus"].inPerM}/${RATES.llm.models["bedrock-opus"].outPerM} per
-          M tok in/out. App Runner can be paused outside work hours to cut its floor toward $0.
+          DynamoDB on-demand ${RATES.dynamo.perMWrite}/M writes + ${RATES.dynamo.perMRead}/M reads ·
+          S3 ${RATES.s3.gbMo}/GB-mo · EFS ${RATES.efs.gbMo}/GB-mo ·
+          Cognito {RATES.cognito.freeMau.toLocaleString()} MAU free, then ${RATES.cognito.perMau}/MAU.
+          Storage assumes ~{RATES.efs.gbPerDev} GB EFS + {RATES.s3.gbPerDev} GB S3 per developer.
+          The {RATES.capacity.concurrentSessions.toLocaleString()}-session ceiling is peak concurrency, not a monthly run-rate —
+          you pay only for active compute. App Runner can be paused outside work hours to cut its floor further.
         </p>
       </div>
     </div>
