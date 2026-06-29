@@ -49,7 +49,7 @@ RUN curl -fsSL -o /tmp/otelcol-contrib.deb \
     && rm /tmp/otelcol-contrib.deb
 
 # Codex CLI (Node-based). Pinned for reproducibility.
-ARG CODEX_VERSION=0.137.0
+ARG CODEX_VERSION=0.142.4
 RUN npm install -g @openai/codex@${CODEX_VERSION}
 
 # Non-root runtime user (AgentCore convention) — owns the workspace mount.
