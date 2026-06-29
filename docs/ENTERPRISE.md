@@ -88,9 +88,12 @@ by the globally-unique userId, not tenant-stamped — tenant-scoped DDB cleanup 
 to session rows; metadata rows are removed with their user at offboarding.)
 `EMBER_AUTH_DISABLED=1` keeps the personal single-user mode; the deploy **fails
 closed** if neither auth nor that flag is set.
-- **Still open:** SAML/OIDC federation to the customer's IdP (Okta/Entra/Google) —
-  today it's a standalone Cognito pool. Cognito supports IdP federation, so this is
-  configuration, not new code.
+- **SSO / federation:** SAML & OIDC federation to the customer's IdP
+  (Okta/Entra/Google/Ping/OneLogin/Cloudflare Access) ships via
+  `deploy/cognito/add-idp.sh` + a direct-link `?idp=` param — one command, no
+  redeploy. See [docs/SSO.md](SSO.md). **Still open:** company-wide tenant grouping
+  (a Pre-Token-Generation Lambda stamping `custom:tenantId` per IdP) — optional,
+  since per-user isolation holds without it.
 
 ### 2. Network isolation  *(the core enterprise selling point)*
 
