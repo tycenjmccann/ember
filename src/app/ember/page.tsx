@@ -543,13 +543,14 @@ export default function EmberPage() {
                   )}
                 </div>
               </div>
-              {/* Pull needs a stored claudeSessionId — the checkpoint route 400s
-                  without one (brand-new or terminal-only sessions). Gate on it so
-                  we never hand the user a command that reliably fails. */}
-              {active.cli === "claude" && active.claudeSessionId && (
+              {/* Pull works for claude + codex (both: one movable transcript,
+                  resume by id). Needs a stored resume id — the checkpoint route
+                  400s without one (brand-new / terminal-only sessions) — so gate
+                  on it to never hand the user a command that reliably fails. */}
+              {(active.cli === "claude" || active.cli === "codex") && active.claudeSessionId && (
                 <PullCommandButton sessionId={active.sessionId} className="ml-auto flex-shrink-0" />
               )}
-              <div className={`ios-segment flex-shrink-0 ${active.cli === "claude" && active.claudeSessionId ? "" : "ml-auto"}`}>
+              <div className={`ios-segment flex-shrink-0 ${(active.cli === "claude" || active.cli === "codex") && active.claudeSessionId ? "" : "ml-auto"}`}>
                 <button data-on={view === "chat"} onClick={() => setView("chat")}>
                   <MessageSquare className="w-3.5 h-3.5" /> Chat
                 </button>

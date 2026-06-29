@@ -3,14 +3,15 @@
  *
  * The round trip: after working in the cloud (phone/train), this asks the
  * runtime to upload the session's grown transcript back to S3, then returns a
- * presigned GET URL + the cloud branch + the Claude session id. The local
- * `pull-session` MCP fetches the transcript, drops it into ~/.claude/projects,
- * pulls the branch, and `claude --resume <id>` continues on the laptop.
+ * presigned GET URL + the cloud branch + the resume id. The local `pull-session`
+ * MCP fetches the transcript, drops it where the CLI expects it, pulls the
+ * branch, and resumes locally (`claude --resume <id>` / `codex resume <id>`).
+ * Works for Claude Code and Codex (both: one movable transcript, resume by id).
  *
- * Same session id throughout (the cloud appended to the same .jsonl), so the
+ * Same session id throughout (the cloud appended to the same file), so the
  * laptop just overwrites its stale copy — no merge, no new session.
  *
- * Response: { transcriptUrl, transcriptKey, claudeSessionId, branch, repo, bytes }
+ * Response: { transcriptUrl, transcriptKey, cli, resumeId, branch, repo, bytes }
  */
 
 import { NextRequest, NextResponse } from "next/server";
@@ -42,15 +43,21 @@ export async function POST(
   if (!session) {
     return NextResponse.json({ error: "Session not found" }, { status: 404 });
   }
-  if (session.cli !== "claude") {
-    return NextResponse.json({ error: "checkpoint/pull is claude-only (codex resume differs)" }, { status: 400 });
+  // Claude + Codex both store one movable transcript per session and resume by
+  // id, so pull works for both. (Kiro stores sessions in a SQLite DB → handled
+  // separately when it lands.)
+  if (session.cli !== "claude" && session.cli !== "codex") {
+    return NextResponse.json(
+      { error: `checkpoint/pull is not supported for cli '${session.cli}'` },
+      { status: 400 }
+    );
   }
-  // The conversation's real id is the resume handle (transcript filename). For a
-  // ported session that's claudeSessionId; for a cloud-native one it's the same.
+  // The conversation's real id is the resume handle (claude transcript filename /
+  // codex thread uuid), surfaced through claudeSessionId for both CLIs.
   const resumeSessionId = session.claudeSessionId;
   if (!resumeSessionId) {
     return NextResponse.json(
-      { error: "session has no claudeSessionId yet (no turns run?) — nothing to pull" },
+      { error: "session has no resume id yet (no turns run?) — nothing to pull" },
       { status: 400 }
     );
   }
@@ -79,7 +86,9 @@ export async function POST(
     return NextResponse.json({
       transcriptUrl,
       transcriptKey: cp.key,
-      claudeSessionId: resumeSessionId,
+      cli: session.cli,
+      resumeId: resumeSessionId,
+      claudeSessionId: resumeSessionId, // back-compat alias
       branch: cp.branch || session.branch,
       repo: session.repo,
       bytes: cp.bytes,

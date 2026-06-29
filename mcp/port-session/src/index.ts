@@ -25,11 +25,16 @@ import {
   ListPromptsRequestSchema,
   GetPromptRequestSchema,
 } from "@modelcontextprotocol/sdk/types.js";
-import { readFile } from "node:fs/promises";
 import { z } from "zod";
 import { readState, prepareGitHandoff, pullBranch } from "./git.js";
-import { newestTranscript, sessionIdForTranscript, installLocalTranscript } from "./transcript.js";
-import { gatherBundle, type Cli } from "./config.js";
+import {
+  locateNewestSession,
+  readTranscriptBytes,
+  installLocalTranscript,
+  resumeCommand,
+  type Cli,
+} from "./cli-adapter.js";
+import { gatherBundle } from "./config.js";
 import { gatherLoginBody } from "./login.js";
 import { emberFetch } from "./auth.js";
 import { runCognitoLogin } from "./cognito-login.js";
@@ -98,10 +103,11 @@ const PULL_TOOL = {
   description:
     "Bring a Ember session back to this laptop (the round trip). Asks the " +
     "cloud to checkpoint the session's transcript, pulls the cloud's branch + " +
-    "the grown transcript down, and places it so `claude --resume <id>` continues " +
-    "locally right where the cloud left off. Use when you're back at your desk " +
-    "after working from your phone. Provide the session id (from the deep link) " +
-    "or the Ember session URL.",
+    "the grown transcript down, and places it so the CLI's native resume " +
+    "(`claude --resume <id>` or `codex resume <id>`) continues locally right " +
+    "where the cloud left off. Works for both Claude Code and Codex sessions. " +
+    "Use when you're back at your desk after working from your phone. Provide " +
+    "the session id (from the deep link) or the Ember session URL.",
   inputSchema: {
     type: "object",
     properties: {
@@ -272,7 +278,7 @@ server.setRequestHandler(GetPromptRequestSchema, async (req) => {
             text:
               `Pull my Ember session "${v}" back to this laptop by calling the ` +
               `pull_session_from_cloud tool now. After it returns, show me the ` +
-              `\`claude --resume\` command to continue locally.`,
+              `resume command (\`claude --resume\` / \`codex resume\`) to continue locally.`,
           },
         },
       ],
@@ -316,27 +322,32 @@ async function runPull(rawArgs: unknown) {
   }, 110_000);
   const data = (await res.json().catch(() => ({}))) as {
     transcriptUrl?: string;
+    // resumeId is the CLI-native id; claudeSessionId kept as a back-compat alias.
+    resumeId?: string;
     claudeSessionId?: string;
+    cli?: Cli;
     branch?: string;
     repo?: string;
     bytes?: number;
     error?: string;
   };
   if (!res.ok) throw new Error(data.error || `checkpoint returned ${res.status}`);
-  if (!data.transcriptUrl || !data.claudeSessionId) {
+  const resumeId = data.resumeId || data.claudeSessionId;
+  if (!data.transcriptUrl || !resumeId) {
     throw new Error("checkpoint did not return a transcript URL / session id");
   }
+  const cli: Cli = data.cli === "codex" ? "codex" : "claude";
 
   // 2. download the transcript bytes.
   const dl = await fetch(data.transcriptUrl, { signal: AbortSignal.timeout(60_000) });
   if (!dl.ok) throw new Error(`transcript download failed: ${dl.status}`);
   const bytes = Buffer.from(await dl.arrayBuffer());
 
-  // 3. write it where `claude --resume` will find it. The cloud copy is the
+  // 3. write it where the CLI's resume will find it. The cloud copy is the
   //    canonical latest (same session, grown) so we overwrite; a differing local
   //    copy is backed up to .bak-<stamp> first.
   const stamp = new Date().toISOString().replace(/[^0-9]/g, "").slice(0, 14);
-  const placed = await installLocalTranscript(cwd, data.claudeSessionId, bytes, { stamp });
+  const placed = await installLocalTranscript(cli, cwd, resumeId, bytes, { stamp });
 
   // 4. pull the cloud's branch home so local code matches the transcript.
   let gitNote = "no branch reported";
@@ -359,7 +370,7 @@ async function runPull(rawArgs: unknown) {
     ``,
     `Now exit this session and resume the pulled one:`,
     `  /exit`,
-    `  claude --resume ${data.claudeSessionId}`,
+    `  ${resumeCommand(cli, resumeId)}`,
   ]
     .filter(Boolean)
     .join("\n");
@@ -516,22 +527,25 @@ server.setRequestHandler(CallToolRequestSchema, async (req) => {
       throw new Error("EMBER_URL is not set in the MCP server environment.");
     }
     const args = InputSchema.parse(req.params.arguments ?? {});
-    // Transcript is read from cwd (where Claude Code runs); git ops run in
-    // repoDir if given (handles the launched-from-parent / code-in-subdir split).
+    const cli: Cli = args.cli === "codex" ? "codex" : "claude";
+    // Transcript is read from cwd (where the CLI runs); git ops run in repoDir if
+    // given (handles the launched-from-parent / code-in-subdir split).
     const cwd = args.cwd || process.env.PROJECT_CWD || process.cwd();
     const repoDir = args.repoDir || cwd;
 
-    // 1. locate the live transcript FIRST — it's the only hard requirement.
-    //    Its filename IS the Claude session id we resume natively in the cloud.
-    const file = await newestTranscript(cwd);
-    if (!file) {
-      throw new Error(
-        `No Claude Code transcript found for ${cwd}. Run this from inside a Claude Code session ` +
-        `(or pass cwd=<the dir Claude Code was launched in>).`
-      );
+    // 1. locate the live session FIRST — it's the only hard requirement. Its
+    //    native id (claude filename / codex thread uuid) is what we resume in
+    //    the cloud; the raw transcript ships verbatim.
+    const located = await locateNewestSession(cli, cwd);
+    if (!located) {
+      const where =
+        cli === "codex"
+          ? "Run this from a directory where you've used Codex (~/.codex/sessions has no rollout yet)."
+          : `Run this from inside a Claude Code session (or pass cwd=<the dir it was launched in>).`;
+      throw new Error(`No ${cli} session transcript found for ${cwd}. ${where}`);
     }
-    const claudeSessionId = sessionIdForTranscript(file);
-    const transcript = await readFile(file); // raw .jsonl bytes (verbatim → native --resume)
+    const claudeSessionId = located.sessionId; // CLI-native resume id (field name kept for the API)
+    const transcript = await readTranscriptBytes(located.file); // raw bytes → native resume
 
     // 2. git handoff — best-effort, flexible. The transcript ships regardless;
     //    git just determines whether (and how) the cloud also gets your code.
@@ -559,7 +573,7 @@ server.setRequestHandler(CallToolRequestSchema, async (req) => {
         wantBundleUpload: Boolean(bundleBytes),
         claudeSessionId,
         firstPrompt: args.firstPrompt,
-        cli: args.cli || "claude",
+        cli,
         view: args.view || "chat",
         title: args.title,
       }),
@@ -579,7 +593,7 @@ server.setRequestHandler(CallToolRequestSchema, async (req) => {
     const up = await fetch(data.uploadUrl, {
       method: "PUT",
       headers: { "Content-Type": "application/x-ndjson" },
-      body: transcript,
+      body: new Uint8Array(transcript),
     });
     if (!up.ok) throw new Error(`transcript upload failed: ${up.status} ${up.statusText}`);
 
@@ -664,7 +678,7 @@ server.setRequestHandler(CallToolRequestSchema, async (req) => {
     const summary = [
       `✅ Ported to Ember (native resume).`,
       ``,
-      `Transcript: ${sizeMb} MB uploaded — the cloud agent resumes this exact session (claude --resume).`,
+      `Transcript: ${sizeMb} MB uploaded — the cloud agent resumes this exact session (${resumeCommand(cli, claudeSessionId)}).`,
       ...codeLines,
       ``,
       `Open on any device:`,
