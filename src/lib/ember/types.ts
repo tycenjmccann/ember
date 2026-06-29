@@ -7,7 +7,7 @@
  * the claude_session_id used to resume the CLI's own conversation.
  */
 
-export type EmberCli = "claude" | "codex";
+export type EmberCli = "claude" | "codex" | "kiro";
 
 /**
  * Where the model inference is billed/authenticated:

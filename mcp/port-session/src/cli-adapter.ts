@@ -15,18 +15,25 @@
  *            (the uuid in the filename IS the resume id; the first line is a
  *            `session_meta` record carrying it)
  *            resume: `codex exec resume <id>` (headless) / `codex resume <id>`
+ *   kiro   → ONE ROW per session in a SQLite DB (NOT a file):
+ *            <kiro-data>/data.sqlite3, table conversations_v2
+ *            (key=cwd, conversation_id=uuid, value=conversation JSON).
+ *            resume: `kiro-cli chat --resume-id <uuid>`
  *
- * Both store one movable JSONL per session, so port/pull is a file copy + a
- * native resume-by-id for both — only the path layout and the resume verb differ.
- * (Kiro stores sessions in a SQLite DB, not a file, so it needs a different
- * adapter — added separately.)
+ * claude/codex store one movable JSONL per session, so port/pull is a file copy +
+ * a native resume-by-id. Kiro has no file — its "transcript" is a DB row's `value`
+ * JSON. The four ops below stay the same shape; we just ship/install opaque bytes
+ * (the row value) and rewrite the row's cwd `key` on install so resume scoped to
+ * the active cwd finds it.
  */
 
 import { readdir, readFile, stat, realpath, mkdir, writeFile } from "node:fs/promises";
+import { mkdirSync } from "node:fs";
+import { DatabaseSync } from "node:sqlite";
 import { homedir } from "node:os";
 import path from "node:path";
 
-export type Cli = "claude" | "codex";
+export type Cli = "claude" | "codex" | "kiro";
 
 export interface LocatedSession {
   /** Absolute path to the session's transcript file. */
@@ -70,6 +77,100 @@ async function claudeProjectDir(cwd: string): Promise<string> {
 
 function codexSessionsRoot(): string {
   return path.join(process.env.CODEX_HOME || path.join(homedir(), ".codex"), "sessions");
+}
+
+// ── kiro SQLite store ─────────────────────────────────────────────────────────
+// kiro-cli keeps sessions in a single SQLite DB, table conversations_v2
+// (key=cwd, conversation_id=uuid, value=conversation JSON). KIRO_HOME relocates
+// the data dir; otherwise it's the platform default.
+function kiroDbPath(): string {
+  if (process.env.KIRO_HOME) return path.join(process.env.KIRO_HOME, "data.sqlite3");
+  if (process.platform === "darwin") {
+    return path.join(homedir(), "Library", "Application Support", "kiro-cli", "data.sqlite3");
+  }
+  const xdg = process.env.XDG_DATA_HOME || path.join(homedir(), ".local", "share");
+  return path.join(xdg, "kiro-cli", "data.sqlite3");
+}
+
+// kiro's own DDL, verbatim — used to create the table when we upsert into a DB
+// that kiro hasn't initialized yet (e.g. a fresh per-session KIRO_HOME).
+const KIRO_DDL = `CREATE TABLE IF NOT EXISTS conversations_v2 (
+  key TEXT NOT NULL,
+  conversation_id TEXT NOT NULL,
+  value TEXT NOT NULL,
+  created_at INTEGER NOT NULL,
+  updated_at INTEGER NOT NULL,
+  PRIMARY KEY (key, conversation_id)
+);
+CREATE INDEX IF NOT EXISTS idx_conversations_v2_key_updated ON conversations_v2(key, updated_at DESC);
+CREATE INDEX IF NOT EXISTS idx_conversations_v2_updated_at ON conversations_v2(updated_at DESC);`;
+
+/** Newest conversation row for a cwd → {conversation_id, value} or null. */
+function kiroNewestRow(cwd: string): { id: string; value: string } | null {
+  let db: DatabaseSync;
+  try {
+    db = new DatabaseSync(kiroDbPath(), { readOnly: true });
+  } catch {
+    return null; // no DB yet
+  }
+  try {
+    const row = db
+      .prepare(
+        "SELECT conversation_id AS id, value FROM conversations_v2 WHERE key = ? ORDER BY updated_at DESC LIMIT 1"
+      )
+      .get(cwd) as { id?: string; value?: string } | undefined;
+    if (!row?.id || typeof row.value !== "string") return null;
+    return { id: row.id, value: row.value };
+  } finally {
+    db.close();
+  }
+}
+
+/** The conversation `value` JSON for a specific kiro session id (newest if the
+ *  id somehow appears under multiple cwd keys). */
+function kiroValueById(sessionId: string): string | null {
+  let db: DatabaseSync;
+  try {
+    db = new DatabaseSync(kiroDbPath(), { readOnly: true });
+  } catch {
+    return null;
+  }
+  try {
+    const row = db
+      .prepare(
+        "SELECT value FROM conversations_v2 WHERE conversation_id = ? ORDER BY updated_at DESC LIMIT 1"
+      )
+      .get(sessionId) as { value?: string } | undefined;
+    return typeof row?.value === "string" ? row.value : null;
+  } finally {
+    db.close();
+  }
+}
+
+/** Upsert a pulled conversation row into the local kiro DB, rewriting `key` to
+ *  the local cwd so `kiro-cli chat --resume-id` (scoped to cwd) finds it. */
+function kiroUpsertRow(cwd: string, sessionId: string, value: string): { overwrote: boolean } {
+  const dbPath = kiroDbPath();
+  // DatabaseSync creates the file but NOT missing parent dirs — on a machine that
+  // hasn't run kiro yet (fresh $KIRO_HOME / ~/.local/share/kiro-cli) the dir is
+  // absent, so create it first or the open throws.
+  mkdirSync(path.dirname(dbPath), { recursive: true });
+  const db = new DatabaseSync(dbPath); // creates the file if absent
+  try {
+    db.exec(KIRO_DDL);
+    const existing = db
+      .prepare("SELECT 1 FROM conversations_v2 WHERE key = ? AND conversation_id = ?")
+      .get(cwd, sessionId);
+    const now = Date.now();
+    db.prepare(
+      `INSERT INTO conversations_v2 (key, conversation_id, value, created_at, updated_at)
+       VALUES (?, ?, ?, ?, ?)
+       ON CONFLICT(key, conversation_id) DO UPDATE SET value = excluded.value, updated_at = excluded.updated_at`
+    ).run(cwd, sessionId, value, now, now);
+    return { overwrote: Boolean(existing) };
+  } finally {
+    db.close();
+  }
 }
 
 /** Newest .jsonl under a dir tree (recursive for codex's YYYY/MM/DD nesting). */
@@ -160,6 +261,13 @@ export async function locateNewestSession(cli: Cli, cwd: string): Promise<Locate
     if (!sessionId) return null;
     return { file, sessionId };
   }
+  if (cli === "kiro") {
+    // No file: the row is keyed by the real cwd. `file` is a synthetic ref
+    // (<db>#<id>) for display/logging; the bytes come from the DB, not a read.
+    const row = kiroNewestRow(await resolveReal(cwd));
+    if (!row) return null;
+    return { file: `${kiroDbPath()}#${row.id}`, sessionId: row.id };
+  }
   // claude
   const file = await newestJsonl(await claudeProjectDir(cwd), false);
   if (!file) return null;
@@ -172,8 +280,16 @@ export function sessionIdForClaudeTranscript(file: string): string {
   return path.basename(file).replace(/\.jsonl$/, "");
 }
 
-/** Raw transcript bytes for a located session (shipped verbatim → native resume). */
+/** Raw transcript bytes for a located session (shipped verbatim → native resume).
+ *  For kiro the "file" is the synthetic `<db>#<conversation_id>` ref produced by
+ *  locateNewestSession; the bytes are the row's `value` JSON read from the DB. */
 export async function readTranscriptBytes(file: string): Promise<Buffer> {
+  const m = file.match(/data\.sqlite3#(.+)$/); // kiro synthetic ref
+  if (m) {
+    const value = kiroValueById(m[1]);
+    if (value == null) throw new Error(`kiro conversation ${m[1]} not found in DB`);
+    return Buffer.from(value, "utf8");
+  }
   return readFile(file);
 }
 
@@ -208,6 +324,13 @@ export async function installLocalTranscript(
   data: Buffer | Uint8Array,
   opts: { stamp?: string } = {}
 ): Promise<InstalledTranscript> {
+  // kiro: no file — upsert the conversation row into the local SQLite DB, keyed
+  // by the local (real) cwd so `kiro-cli chat --resume-id` finds it here.
+  if (cli === "kiro") {
+    const value = Buffer.from(data).toString("utf8");
+    const { overwrote } = kiroUpsertRow(await resolveReal(cwd), sessionId, value);
+    return { path: `${kiroDbPath()}#${sessionId}`, overwrote };
+  }
   // codex: if a rollout for this uuid already exists locally, overwrite IT in
   // place (so repeated pulls don't litter the tree with duplicate uuids); else
   // create a fresh timestamped path. claude: the path is deterministic from the id.
@@ -238,5 +361,7 @@ export async function installLocalTranscript(
 
 /** The command the user runs locally to resume a pulled session. */
 export function resumeCommand(cli: Cli, sessionId: string): string {
-  return cli === "codex" ? `codex resume ${sessionId}` : `claude --resume ${sessionId}`;
+  if (cli === "codex") return `codex resume ${sessionId}`;
+  if (cli === "kiro") return `kiro-cli chat --resume-id ${sessionId}`;
+  return `claude --resume ${sessionId}`;
 }

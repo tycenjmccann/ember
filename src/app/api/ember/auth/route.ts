@@ -19,7 +19,7 @@ import type { EmberCli } from "@/lib/ember/types";
 export const dynamic = "force-dynamic";
 
 function parseCli(v: unknown): EmberCli | null {
-  return v === "claude" || v === "codex" ? v : null;
+  return v === "claude" || v === "codex" || v === "kiro" ? v : null;
 }
 
 export async function GET(request: NextRequest) {
@@ -41,21 +41,27 @@ export async function POST(request: NextRequest) {
     const { userId, tenantId } = getIdentity(request);
     const body = await request.json().catch(() => ({}));
     const cli = parseCli(body.cli);
-    if (!cli) return NextResponse.json({ error: "cli must be 'claude' or 'codex'" }, { status: 400 });
+    if (!cli) return NextResponse.json({ error: "cli must be 'claude', 'codex', or 'kiro'" }, { status: 400 });
 
     let cred: Record<string, unknown>;
     let label: string | undefined = typeof body.label === "string" ? body.label : undefined;
 
-    if (cli === "claude") {
+    if (cli === "claude" || cli === "kiro") {
+      // Both store a single token string: claude's setup-token / kiro's access key.
       const token = (body.token || "").trim();
       if (!token) {
         return NextResponse.json(
-          { error: "token is required (run `claude setup-token` on your laptop)" },
+          {
+            error:
+              cli === "claude"
+                ? "token is required (run `claude setup-token` on your laptop)"
+                : "token is required (your Kiro access key from kiro.dev)",
+          },
           { status: 400 }
         );
       }
       cred = { token };
-      label = label || "Claude plan";
+      label = label || (cli === "claude" ? "Claude plan" : "Kiro access key");
     } else {
       // codex: accept the auth.json as an object, or a JSON string to parse.
       let authJson = body.authJson ?? body.auth_json;

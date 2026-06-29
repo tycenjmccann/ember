@@ -41,6 +41,11 @@ import { runCognitoLogin } from "./cognito-login.js";
 
 const EMBER_URL = (process.env.EMBER_URL || "").replace(/\/$/, "");
 
+/** Coerce an untrusted cli value to a supported Cli, defaulting to claude. */
+function coerceCli(v: unknown): Cli {
+  return v === "codex" || v === "kiro" ? v : "claude";
+}
+
 const InputSchema = z.object({
   title: z
     .string()
@@ -54,7 +59,7 @@ const InputSchema = z.object({
     .string()
     .optional()
     .describe("Optional first instruction for the cloud agent on resume, e.g. 'focus on the scroll bug first'."),
-  cli: z.enum(["claude", "codex"]).optional().describe("Which cloud CLI to resume with. Default: claude."),
+  cli: z.enum(["claude", "codex", "kiro"]).optional().describe("Which cloud CLI to resume with. Default: claude."),
   view: z
     .enum(["chat", "terminal"])
     .optional()
@@ -91,7 +96,7 @@ const TOOL = {
       branch: { type: "string", description: "Branch to push to. Defaults to the current branch." },
       firstPrompt: { type: "string", description: "First instruction for the resumed cloud agent (optional)." },
       view: { type: "string", enum: ["chat", "terminal"], description: "Deep-link surface. Default chat; 'terminal' auto-runs claude --resume in a shell." },
-      cli: { type: "string", enum: ["claude", "codex"], description: "Cloud CLI to resume with. Default claude." },
+      cli: { type: "string", enum: ["claude", "codex", "kiro"], description: "Cloud CLI to resume with. Default claude." },
       commitMessage: { type: "string", description: "Commit message for the in-flight snapshot." },
       cwd: { type: "string", description: "Project directory. Defaults to the server cwd." },
     },
@@ -131,7 +136,7 @@ const SYNC_TOOL = {
   inputSchema: {
     type: "object",
     properties: {
-      cli: { type: "string", enum: ["claude", "codex"], description: "Which CLI's config to sync. Required — one at a time." },
+      cli: { type: "string", enum: ["claude", "codex", "kiro"], description: "Which CLI's config to sync. Required — one at a time." },
     },
     required: ["cli"],
   },
@@ -150,7 +155,7 @@ const LOGIN_TOOL = {
   inputSchema: {
     type: "object",
     properties: {
-      cli: { type: "string", enum: ["claude", "codex"], description: "Which CLI's subscription to connect. Required." },
+      cli: { type: "string", enum: ["claude", "codex", "kiro"], description: "Which CLI's subscription to connect. Required." },
       token: { type: "string", description: "Claude only (optional): a token from `claude setup-token` to use instead of the local keychain login." },
     },
     required: ["cli"],
@@ -336,7 +341,7 @@ async function runPull(rawArgs: unknown) {
   if (!data.transcriptUrl || !resumeId) {
     throw new Error("checkpoint did not return a transcript URL / session id");
   }
-  const cli: Cli = data.cli === "codex" ? "codex" : "claude";
+  const cli: Cli = coerceCli(data.cli);
 
   // 2. download the transcript bytes.
   const dl = await fetch(data.transcriptUrl, { signal: AbortSignal.timeout(60_000) });
@@ -377,7 +382,7 @@ async function runPull(rawArgs: unknown) {
   return { content: [{ type: "text", text: summary }] };
 }
 
-const SyncSchema = z.object({ cli: z.enum(["claude", "codex"]) });
+const SyncSchema = z.object({ cli: z.enum(["claude", "codex", "kiro"]) });
 
 async function runSync(rawArgs: unknown) {
   if (!EMBER_URL) throw new Error("EMBER_URL is not set in the MCP server environment.");
@@ -440,12 +445,14 @@ async function runSync(rawArgs: unknown) {
     ``,
     cli === "codex"
       ? `Note: codex/config.toml shipped verbatim — check it for any inline secrets.`
+      : cli === "kiro"
+      ? `Note: kiro config (agents/prompts) shipped — check it for any inline secrets.`
       : `Run \`/mcp__port-session__sync-config codex\` too if you use Codex in the cloud.`
   );
   return { content: [{ type: "text", text: lines.join("\n") }] };
 }
 
-const LoginSchema = z.object({ cli: z.enum(["claude", "codex"]), token: z.string().optional() });
+const LoginSchema = z.object({ cli: z.enum(["claude", "codex", "kiro"]), token: z.string().optional() });
 
 async function runLogin(rawArgs: unknown) {
   if (!EMBER_URL) throw new Error("EMBER_URL is not set in the MCP server environment.");
@@ -463,15 +470,22 @@ async function runLogin(rawArgs: unknown) {
   if (!res.ok) throw new Error(data.error || `auth endpoint returned ${res.status}`);
 
   const label = (body.label as string) || cli;
-  const lines = [
-    `✅ Connected your ${cli === "claude" ? "Claude" : "Codex"} subscription to Ember.`,
-    ``,
-    `Plan: ${label}`,
+  const cliName = cli === "claude" ? "Claude" : cli === "kiro" ? "Kiro" : "Codex";
+  const planNote =
     cli === "claude"
       ? `Cloud Claude turns can now run on your plan (CLAUDE_CODE_OAUTH_TOKEN) instead of Bedrock.`
-      : `Emberx turns can now run on your ChatGPT plan (~/.codex/auth.json) instead of Bedrock Mantle.`,
+      : cli === "kiro"
+      ? `Cloud Kiro turns run on your access key (KIRO_API_KEY) — Kiro has no Bedrock fallback, so this is required.`
+      : `Cloud Codex turns can now run on your ChatGPT plan (~/.codex/auth.json) instead of Bedrock Mantle.`;
+  const lines = [
+    `✅ Connected your ${cliName} ${cli === "kiro" ? "access key" : "subscription"} to Ember.`,
     ``,
-    `When you start a session, pick "My plan" (or set authMode:"subscription"). Bedrock stays the default.`,
+    `Plan: ${label}`,
+    planNote,
+    ``,
+    cli === "kiro"
+      ? `Kiro sessions always run on your key (there's no shared-billing mode).`
+      : `When you start a session, pick "My plan" (or set authMode:"subscription"). Bedrock stays the default.`,
   ];
   return { content: [{ type: "text", text: lines.join("\n") }] };
 }
@@ -527,7 +541,7 @@ server.setRequestHandler(CallToolRequestSchema, async (req) => {
       throw new Error("EMBER_URL is not set in the MCP server environment.");
     }
     const args = InputSchema.parse(req.params.arguments ?? {});
-    const cli: Cli = args.cli === "codex" ? "codex" : "claude";
+    const cli: Cli = coerceCli(args.cli);
     // Transcript is read from cwd (where the CLI runs); git ops run in repoDir if
     // given (handles the launched-from-parent / code-in-subdir split).
     const cwd = args.cwd || process.env.PROJECT_CWD || process.cwd();
@@ -541,6 +555,8 @@ server.setRequestHandler(CallToolRequestSchema, async (req) => {
       const where =
         cli === "codex"
           ? "Run this from a directory where you've used Codex (~/.codex/sessions has no rollout yet)."
+          : cli === "kiro"
+          ? "Run this from a directory where you've used kiro-cli (no conversation row for this cwd yet)."
           : `Run this from inside a Claude Code session (or pass cwd=<the dir it was launched in>).`;
       throw new Error(`No ${cli} session transcript found for ${cwd}. ${where}`);
     }

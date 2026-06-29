@@ -543,14 +543,14 @@ export default function EmberPage() {
                   )}
                 </div>
               </div>
-              {/* Pull works for claude + codex (both: one movable transcript,
-                  resume by id). Needs a stored resume id — the checkpoint route
-                  400s without one (brand-new / terminal-only sessions) — so gate
-                  on it to never hand the user a command that reliably fails. */}
-              {(active.cli === "claude" || active.cli === "codex") && active.claudeSessionId && (
+              {/* Pull works for claude + codex + kiro (all resume by id). Needs a
+                  stored resume id — the checkpoint route 400s without one
+                  (brand-new / terminal-only sessions) — so gate on it to never
+                  hand the user a command that reliably fails. */}
+              {Boolean(active.claudeSessionId) && (
                 <PullCommandButton sessionId={active.sessionId} className="ml-auto flex-shrink-0" />
               )}
-              <div className={`ios-segment flex-shrink-0 ${(active.cli === "claude" || active.cli === "codex") && active.claudeSessionId ? "" : "ml-auto"}`}>
+              <div className={`ios-segment flex-shrink-0 ${active.claudeSessionId ? "" : "ml-auto"}`}>
                 <button data-on={view === "chat"} onClick={() => setView("chat")}>
                   <MessageSquare className="w-3.5 h-3.5" /> Chat
                 </button>
@@ -819,20 +819,30 @@ function NewSessionSheet({
   const [cli, setCli] = useState<EmberCli>("claude");
   const [authMode, setAuthMode] = useState<EmberAuthMode>("bedrock");
   const [repo, setRepo] = useState("");
-  const [connected, setConnected] = useState<{ claude?: boolean; codex?: boolean }>({});
+  const [connected, setConnected] = useState<{ claude?: boolean; codex?: boolean; kiro?: boolean }>({});
 
   useEffect(() => {
     fetch("/api/ember/auth")
       .then((r) => (r.ok ? r.json() : null))
       .then((d) => {
         if (!d?.status) return;
-        setConnected({ claude: Boolean(d.status.claude), codex: Boolean(d.status.codex) });
+        setConnected({
+          claude: Boolean(d.status.claude),
+          codex: Boolean(d.status.codex),
+          kiro: Boolean(d.status.kiro),
+        });
       })
       .catch(() => {});
   }, []);
 
   const planConnected = connected[cli];
-  const planLabel = cli === "claude" ? "Claude Pro / Max" : "ChatGPT plan";
+  const planLabel = cli === "claude" ? "Claude Pro / Max" : cli === "kiro" ? "Kiro access key" : "ChatGPT plan";
+  // Kiro is bring-your-own-key only — no Bedrock/shared-billing path.
+  const kiroSelected = cli === "kiro";
+  // Force subscription auth for kiro (it has no bedrock mode).
+  useEffect(() => {
+    if (kiroSelected && authMode !== "subscription") setAuthMode("subscription");
+  }, [kiroSelected, authMode]);
 
   return (
     <Sheet onClose={onClose} labelledBy="cc-new-title">
@@ -845,29 +855,31 @@ function NewSessionSheet({
 
       <label className="block text-[13px] font-semibold text-[var(--color-text-secondary)] mb-2 ml-1">AGENT</label>
       <div className="ios-segment w-full mb-5 !rounded-[12px]">
-        {(["claude", "codex"] as EmberCli[]).map((c) => (
+        {(["claude", "codex", "kiro"] as EmberCli[]).map((c) => (
           <button key={c} data-on={cli === c} onClick={() => setCli(c)} data-testid={`cc-cli-${c}`} className="flex-1 !py-2.5 !text-[14px]">
             <CliMark cli={c} className="w-4 h-4" />
-            {c === "claude" ? "Claude Code" : "Codex"}
+            {c === "claude" ? "Claude Code" : c === "kiro" ? "Kiro" : "Codex"}
           </button>
         ))}
       </div>
 
       <label className="block text-[13px] font-semibold text-[var(--color-text-secondary)] mb-2 ml-1">RUN ON</label>
       <div className="flex flex-col gap-2 mb-5">
-        <button
-          data-testid="cc-auth-bedrock"
-          onClick={() => setAuthMode("bedrock")}
-          className="press w-full flex items-center gap-3 px-3.5 py-3 rounded-[12px] text-left border-[1.5px] transition-colors"
-          style={{ background: "var(--color-surface-2)", borderColor: authMode === "bedrock" ? "var(--ios-blue)" : "transparent" }}
-        >
-          <Server className="w-[18px] h-[18px] text-[var(--ios-blue)] shrink-0" />
-          <span className="flex-1 min-w-0">
-            <span className="block text-[14px] font-semibold">AWS Bedrock</span>
-            <span className="block text-[11.5px] text-[var(--color-text-muted)]">Always ready · no sign-in</span>
-          </span>
-          {authMode === "bedrock" && <Check className="w-[18px] h-[18px] text-[var(--ios-blue)]" strokeWidth={2.6} />}
-        </button>
+        {!kiroSelected && (
+          <button
+            data-testid="cc-auth-bedrock"
+            onClick={() => setAuthMode("bedrock")}
+            className="press w-full flex items-center gap-3 px-3.5 py-3 rounded-[12px] text-left border-[1.5px] transition-colors"
+            style={{ background: "var(--color-surface-2)", borderColor: authMode === "bedrock" ? "var(--ios-blue)" : "transparent" }}
+          >
+            <Server className="w-[18px] h-[18px] text-[var(--ios-blue)] shrink-0" />
+            <span className="flex-1 min-w-0">
+              <span className="block text-[14px] font-semibold">AWS Bedrock</span>
+              <span className="block text-[11.5px] text-[var(--color-text-muted)]">Always ready · no sign-in</span>
+            </span>
+            {authMode === "bedrock" && <Check className="w-[18px] h-[18px] text-[var(--ios-blue)]" strokeWidth={2.6} />}
+          </button>
+        )}
         <button
           data-testid="cc-auth-subscription"
           onClick={() => (planConnected ? setAuthMode("subscription") : onManageAccount())}
@@ -878,12 +890,23 @@ function NewSessionSheet({
           <span className="flex-1 min-w-0">
             <span className="block text-[14px] font-semibold">My {planLabel}</span>
             <span className="block text-[11.5px] text-[var(--color-text-muted)]">
-              {planConnected ? "Connected · uses your subscription" : "Not connected — tap to sign in"}
+              {planConnected
+                ? kiroSelected
+                  ? "Connected · uses your access key"
+                  : "Connected · uses your subscription"
+                : kiroSelected
+                ? "Required for Kiro — tap to add your key"
+                : "Not connected — tap to sign in"}
             </span>
           </span>
           {authMode === "subscription" && planConnected && <Check className="w-[18px] h-[18px] text-[var(--ios-green)]" strokeWidth={2.6} />}
           {!planConnected && <ChevronDown className="w-[18px] h-[18px] -rotate-90 text-[var(--color-text-muted)]" />}
         </button>
+        {kiroSelected && (
+          <p className="text-[11.5px] text-[var(--color-text-muted)] ml-1 leading-relaxed">
+            Kiro runs on your own access key — there’s no shared-billing (Bedrock) mode.
+          </p>
+        )}
       </div>
 
       <label className="block text-[13px] font-semibold text-[var(--color-text-secondary)] mb-2 ml-1">
@@ -1061,6 +1084,7 @@ function ConfigSheet({ onClose, onToast }: { onClose: () => void; onToast: (m: s
 interface AuthStatus {
   claude?: { connectedAt: string; label?: string };
   codex?: { connectedAt: string; label?: string };
+  kiro?: { connectedAt: string; label?: string };
 }
 
 /* ── Account & sign-in: connect your own Claude/ChatGPT plan ─────────────── */
@@ -1076,12 +1100,12 @@ function AccountSheet({ onClose, onToast }: { onClose: () => void; onToast: (m: 
   }, []);
   useEffect(() => { load(); }, [load]);
 
-  // A Claude OAuth token is one contiguous string; terminals wrap it across
-  // lines, so a paste can inject a newline + space MID-token. Strip ALL
-  // whitespace (not just the ends) so a wrapped paste still connects. Codex
-  // ships JSON, where whitespace is legitimate → only trim the ends there.
+  // Claude OAuth tokens and Kiro access keys are one contiguous string; terminals
+  // wrap them across lines, so a paste can inject a newline + space MID-token.
+  // Strip ALL whitespace (not just the ends) so a wrapped paste still connects.
+  // Codex ships JSON, where whitespace is legitimate → only trim the ends there.
   const sanitize = (cli: EmberCli, raw: string) =>
-    cli === "claude" ? raw.replace(/\s+/g, "") : raw.trim();
+    cli === "codex" ? raw.trim() : raw.replace(/\s+/g, "");
 
   const cleaned = sanitize(open ?? "claude", secret);
   // Surface an obvious malformed-token hint without blocking submit (the token
@@ -1094,7 +1118,8 @@ function AccountSheet({ onClose, onToast }: { onClose: () => void; onToast: (m: 
     if (!val) return;
     setBusy(true);
     try {
-      const body = cli === "claude" ? { cli, token: val } : { cli, authJson: val };
+      // claude + kiro both submit a single token; codex submits the auth.json.
+      const body = cli === "codex" ? { cli, authJson: val } : { cli, token: val };
       const res = await fetch("/api/ember/auth", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
@@ -1102,7 +1127,7 @@ function AccountSheet({ onClose, onToast }: { onClose: () => void; onToast: (m: 
       });
       const d = await res.json();
       if (!res.ok) throw new Error(d.error || "failed");
-      onToast(`${cli === "claude" ? "Claude" : "Codex"} plan connected`);
+      onToast(`${cli === "claude" ? "Claude" : cli === "kiro" ? "Kiro" : "Codex"} ${cli === "kiro" ? "key" : "plan"} connected`);
       setSecret("");
       setOpen(null);
       await load();
@@ -1138,6 +1163,13 @@ function AccountSheet({ onClose, onToast }: { onClose: () => void; onToast: (m: 
       cmd: "cat ~/.codex/auth.json",
       placeholder: "Paste the JSON from ~/.codex/auth.json",
     },
+    {
+      cli: "kiro",
+      name: "Kiro access key",
+      how: "Generate an access key at kiro.dev (Account → access keys), then paste it here (or use the login MCP). Kiro has no Bedrock mode — this key is required.",
+      cmd: "# kiro.dev → Account → access keys",
+      placeholder: "Paste your Kiro access key (ksk_…)",
+    },
   ];
 
   return (
@@ -1161,7 +1193,7 @@ function AccountSheet({ onClose, onToast }: { onClose: () => void; onToast: (m: 
             <div key={r.cli} className="rounded-[14px] p-3.5" style={{ background: "var(--color-surface-2)" }}>
               <div className="flex items-center gap-2.5">
                 <div className="w-9 h-9 rounded-[10px] flex items-center justify-center shrink-0"
-                  style={{ background: r.cli === "claude" ? "rgba(217,119,87,0.16)" : "var(--ios-fill-secondary)" }}>
+                  style={{ background: r.cli === "claude" ? "rgba(217,119,87,0.16)" : r.cli === "kiro" ? "rgba(124,92,255,0.16)" : "var(--ios-fill-secondary)" }}>
                   <CliMark cli={r.cli} className="w-[18px] h-[18px]" />
                 </div>
                 <div className="flex-1 min-w-0">

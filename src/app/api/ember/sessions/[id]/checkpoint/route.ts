@@ -43,10 +43,10 @@ export async function POST(
   if (!session) {
     return NextResponse.json({ error: "Session not found" }, { status: 404 });
   }
-  // Claude + Codex both store one movable transcript per session and resume by
-  // id, so pull works for both. (Kiro stores sessions in a SQLite DB → handled
-  // separately when it lands.)
-  if (session.cli !== "claude" && session.cli !== "codex") {
+  // Claude + Codex store one movable transcript per session; Kiro stores a
+  // SQLite row. All three resume by id, so pull works for all three (the runtime
+  // + MCP adapter handle the per-CLI placement).
+  if (session.cli !== "claude" && session.cli !== "codex" && session.cli !== "kiro") {
     return NextResponse.json(
       { error: `checkpoint/pull is not supported for cli '${session.cli}'` },
       { status: 400 }

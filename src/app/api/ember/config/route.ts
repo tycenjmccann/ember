@@ -56,7 +56,8 @@ export async function POST(request: NextRequest) {
   // scope=claude|codex → merge only that CLI's subtree into the current bundle
   // (syncing one CLI keeps the other's files). Absent → full-replace (legacy).
   const scopeRaw = (form?.get("scope") as string) || "";
-  const scope = scopeRaw === "claude" || scopeRaw === "codex" ? scopeRaw : undefined;
+  const scope =
+    scopeRaw === "claude" || scopeRaw === "codex" || scopeRaw === "kiro" ? scopeRaw : undefined;
   let bytes = Buffer.from(await file.arrayBuffer());
 
   // Cheap zip sanity (PK\x03\x04 magic).

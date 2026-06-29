@@ -89,7 +89,7 @@ export async function POST(request: NextRequest) {
       return NextResponse.json({ error: "claudeSessionId is required (the id of the transcript being ported)" }, { status: 400 });
     }
 
-    const cli: EmberCli = body.cli === "codex" ? "codex" : "claude";
+    const cli: EmberCli = body.cli === "codex" || body.cli === "kiro" ? body.cli : "claude";
     const authMode: EmberAuthMode = body.authMode === "subscription" ? "subscription" : "bedrock";
     // Both bundle (commits-on-top) and selfContained (whole-repo --all) upload a
     // bundle; the runtime tells them apart by gitMode.
@@ -100,7 +100,8 @@ export async function POST(request: NextRequest) {
     const titleBase = repo || parseRepoFromUrl(cloneUrl) || "session";
     const title: string = (body.title?.trim() || `Ported: ${titleBase}`).slice(0, 120);
     // Surface the session opens in (sidebar tap restores it). Terminal only
-    // makes sense for claude (--resume); codex always opens chat.
+    // auto-resumes for claude today (the runtime writes its resume hint); codex
+    // and kiro always open chat.
     const defaultView: "chat" | "terminal" =
       body.view === "terminal" && cli === "claude" ? "terminal" : "chat";
 
