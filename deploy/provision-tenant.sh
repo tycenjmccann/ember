@@ -35,12 +35,16 @@ source "$SCRIPT_DIR/config.sh"
 
 TENANT_ID="${1:-}"
 [[ -z "$TENANT_ID" ]] && { echo "usage: provision-tenant.sh <tenantId>" >&2; exit 1; }
-# Tenant id must be safe in a runtime name ([a-zA-Z0-9_]) and an S3 prefix.
-if ! [[ "$TENANT_ID" =~ ^[a-zA-Z0-9][a-zA-Z0-9_-]{0,40}$ ]]; then
-  echo "ERROR: tenantId must be [a-zA-Z0-9_-], <=41 chars, alnum start." >&2; exit 1
+# Tenant id must be safe verbatim in an AgentCore runtime name ([a-zA-Z0-9_], no
+# hyphens). We do NOT map -→_ : that would collide `acme-prod` and `acme_prod`
+# onto the same runtime name and silo, swapping one tenant's runtime/role/EFS
+# under the other. So forbid hyphens outright — the id maps 1:1 to its runtime.
+if ! [[ "$TENANT_ID" =~ ^[a-zA-Z0-9][a-zA-Z0-9_]{0,40}$ ]]; then
+  echo "ERROR: tenantId must be [a-zA-Z0-9_] (NO hyphens), <=41 chars, alnum start." >&2
+  echo "       (hyphens are rejected to avoid runtime-name collisions between tenants.)" >&2
+  exit 1
 fi
-# Runtime names allow no hyphens; map - → _ for the runtime/role names only.
-SAFE="${TENANT_ID//-/_}"
+SAFE="$TENANT_ID"
 
 EMBER_TABLE="${EMBER_TABLE:-ember-sessions}"
 ARTIFACT_BUCKET="${ARTIFACT_BUCKET:-ember-artifacts-${ACCOUNT_ID}-${AWS_REGION}}"
