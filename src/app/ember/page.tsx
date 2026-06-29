@@ -723,7 +723,7 @@ export default function EmberPage() {
 }
 
 /* ── Bottom sheet shell ───────────────────────────────────────────────── */
-function Sheet({ onClose, children, labelledBy }: { onClose: () => void; children: React.ReactNode; labelledBy: string }) {
+function Sheet({ onClose, children, labelledBy, wide }: { onClose: () => void; children: React.ReactNode; labelledBy: string; wide?: boolean }) {
   return (
     <div
       className="fixed inset-0 z-[200] flex items-end md:items-center justify-center bg-black/40 sheet-backdrop"
@@ -732,7 +732,7 @@ function Sheet({ onClose, children, labelledBy }: { onClose: () => void; childre
       role="presentation"
     >
       <div
-        className="ios-sheet w-full md:max-w-md px-5 pt-3 pb-[max(env(safe-area-inset-bottom),20px)] md:pb-6"
+        className={`ios-sheet w-full ${wide ? "md:max-w-xl" : "md:max-w-md"} px-5 pt-3 pb-[max(env(safe-area-inset-bottom),20px)] md:pb-6`}
         onClick={(e) => e.stopPropagation()}
         role="dialog"
         aria-labelledby={labelledBy}
@@ -1075,8 +1075,21 @@ function AccountSheet({ onClose, onToast }: { onClose: () => void; onToast: (m: 
   }, []);
   useEffect(() => { load(); }, [load]);
 
+  // A Claude OAuth token is one contiguous string; terminals wrap it across
+  // lines, so a paste can inject a newline + space MID-token. Strip ALL
+  // whitespace (not just the ends) so a wrapped paste still connects. Codex
+  // ships JSON, where whitespace is legitimate → only trim the ends there.
+  const sanitize = (cli: EmberCli, raw: string) =>
+    cli === "claude" ? raw.replace(/\s+/g, "") : raw.trim();
+
+  const cleaned = sanitize(open ?? "claude", secret);
+  // Surface an obvious malformed-token hint without blocking submit (the token
+  // format may evolve). Claude tokens start sk-ant- and carry no whitespace.
+  const claudeLooksOff =
+    open === "claude" && cleaned.length > 0 && !cleaned.startsWith("sk-ant-");
+
   const connect = async (cli: EmberCli) => {
-    const val = secret.trim();
+    const val = sanitize(cli, secret);
     if (!val) return;
     setBusy(true);
     try {
@@ -1127,7 +1140,7 @@ function AccountSheet({ onClose, onToast }: { onClose: () => void; onToast: (m: 
   ];
 
   return (
-    <Sheet onClose={onClose} labelledBy="cc-account-title">
+    <Sheet onClose={onClose} labelledBy="cc-account-title" wide>
       <div className="flex items-center justify-between mb-3">
         <h2 id="cc-account-title" className="text-[20px] font-bold tracking-tight">Account &amp; sign-in</h2>
         <button onClick={onClose} className="press-sm w-7 h-7 rounded-full flex items-center justify-center text-[var(--color-text-muted)]" style={{ background: "var(--ios-fill-tertiary)" }} aria-label="Close">
@@ -1188,7 +1201,12 @@ function AccountSheet({ onClose, onToast }: { onClose: () => void; onToast: (m: 
                     className="w-full px-3 py-2.5 rounded-[10px] text-[13px] font-mono outline-none resize-none border-[0.5px] border-[var(--color-border)] focus:border-[var(--ios-blue)] mb-2.5"
                     style={{ background: "var(--color-surface-1)" }}
                   />
-                  <button onClick={() => connect(r.cli)} disabled={busy || !secret.trim()}
+                  {claudeLooksOff && (
+                    <p className="text-[11.5px] text-[var(--ios-orange,#ff9500)] mb-2 leading-relaxed">
+                      That doesn’t look like a Claude token (expected to start with <span className="font-mono">sk-ant-</span>). Paste the full <span className="font-mono">claude setup-token</span> output — line breaks from the terminal are stripped automatically.
+                    </p>
+                  )}
+                  <button onClick={() => connect(r.cli)} disabled={busy || !cleaned}
                     className="press w-full py-2.5 rounded-[12px] text-[14px] font-semibold text-white disabled:opacity-40"
                     style={{ background: "var(--ios-blue)" }}>
                     Save &amp; connect
