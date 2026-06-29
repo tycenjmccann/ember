@@ -37,6 +37,35 @@ def _tenant_prefix(t: str) -> str:
     return f"ember/t/{t}"
 
 
+def _kiro_db_path() -> str:
+    if os.environ.get("KIRO_HOME"):
+        return os.path.join(os.environ["KIRO_HOME"], "data.sqlite3")
+    if sys.platform == "darwin":
+        return os.path.expanduser("~/Library/Application Support/kiro-cli/data.sqlite3")
+    xdg = os.environ.get("XDG_DATA_HOME") or os.path.expanduser("~/.local/share")
+    return os.path.join(xdg, "kiro-cli", "data.sqlite3")
+
+
+def _read_local_idc_auth() -> dict:
+    """Read the IDC/SSO auth_kv rows from the local kiro DB (the token +
+    device-registration kiro wrote on `kiro-cli login`)."""
+    import sqlite3
+    db = _kiro_db_path()
+    if not os.path.isfile(db):
+        sys.exit(f"no kiro DB at {db} — run `kiro-cli login` first, or set KIRO_API_KEY")
+    conn = sqlite3.connect(f"file:{db}?mode=ro", uri=True)
+    try:
+        rows = conn.execute(
+            "SELECT key, value FROM auth_kv WHERE key IN "
+            "('kirocli:odic:token','kirocli:odic:device-registration')").fetchall()
+    finally:
+        conn.close()
+    kv = {k: v for k, v in rows}
+    if "kirocli:odic:token" not in kv:
+        sys.exit("no IDC login token in the kiro DB — run `kiro-cli login` first")
+    return kv
+
+
 def main() -> None:
     arn = os.environ.get("CODING_AGENT_RUNTIME_ARN")
     bucket = os.environ.get("ARTIFACT_BUCKET")
@@ -45,14 +74,23 @@ def main() -> None:
         sys.exit("CODING_AGENT_RUNTIME_ARN not set (run deploy.py, export the ARN)")
     if not bucket:
         sys.exit("ARTIFACT_BUCKET not set (source deploy/config.sh / .env.local)")
-    if not key:
-        sys.exit("KIRO_API_KEY not set — generate one at kiro.dev (Account → access keys)")
+    # key optional: falls back to the local IDC/SSO login (`kiro-cli login`).
+
+    # Build the credential the runtime fetches per turn: an access key if
+    # KIRO_API_KEY is set, else the IDC/SSO rows from the local kiro DB.
+    cred: dict
+    if key:
+        cred = {"token": key}
+        print("  Using access key from $KIRO_API_KEY")
+    else:
+        cred = {"authKv": _read_local_idc_auth()}
+        print("  Using IDC/SSO login from the local kiro DB")
 
     s3 = boto3.client("s3", region_name=REGION)
     cred_key = f"{_tenant_prefix(TENANT)}/auth/{USER}/kiro.json"
-    print(f"  Uploading test Kiro key → s3://{bucket}/{cred_key}")
+    print(f"  Uploading test Kiro credential → s3://{bucket}/{cred_key}")
     s3.put_object(Bucket=bucket, Key=cred_key,
-                  Body=json.dumps({"token": key}).encode(), ContentType="application/json")
+                  Body=json.dumps(cred).encode(), ContentType="application/json")
 
     rt = boto3.client("bedrock-agentcore", region_name=REGION,
                       config=Config(read_timeout=900, retries={"max_attempts": 0}))
