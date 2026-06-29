@@ -47,7 +47,7 @@ function jwks(cfg: CognitoConfig) {
 
 export interface VerifiedClaims {
   userId: string; // Cognito sub
-  tenantId: string; // custom:tenantId (falls back to "default" if unset)
+  tenantId: string; // custom:tenantId, else the user's own sub (per-user tenant)
   email?: string;
   groups: string[]; // cognito:groups — used for the admin gate
 }
@@ -83,7 +83,12 @@ function claimsFrom(p: JWTPayload): VerifiedClaims | null {
     : [];
   return {
     userId: sub,
-    tenantId: (p["custom:tenantId"] as string) || "default",
+    // JIT-provisioned federated (SSO) users have no custom:tenantId. Falling back
+    // to a shared literal would drop every such user into ONE tenant and let them
+    // see each other's sessions — so default to the user's own sub = a per-user
+    // tenant, preserving isolation. Admin-created users keep their stamped tenant;
+    // a Pre-Token Lambda can still stamp custom:tenantId to GROUP a company.
+    tenantId: (p["custom:tenantId"] as string) || sub,
     email: typeof p.email === "string" ? p.email : undefined,
     groups,
   };

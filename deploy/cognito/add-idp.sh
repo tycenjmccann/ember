@@ -38,6 +38,8 @@ POOL_NAME="${COGNITO_POOL_NAME:-ember-users}"
 
 die() { echo "ERROR: $*" >&2; exit 1; }
 
+command -v jq >/dev/null 2>&1 || die "jq is required (brew install jq / apt-get install jq)"
+
 # ── args ──────────────────────────────────────────────────────────────────────
 NAME="${1:-}"; TYPE="${2:-}"; shift 2 2>/dev/null || true
 [[ -n "$NAME" && -n "$TYPE" ]] || die "usage: add-idp.sh <NAME> <saml|oidc|google> [options] (see header)"
@@ -121,23 +123,32 @@ enable_on_client() {
     --max-results 60 --query "UserPoolClients[?ClientName=='${client_name}'].ClientId | [0]" --output text)
   [[ "$client_id" != "None" && -n "$client_id" ]] || { echo "  (skip: client '$client_name' not found)"; return; }
 
-  # Read current providers, add NAME if absent, write the union back. We must
-  # re-send the OAuth flow/scope/callback config or update would blank it.
-  local current
-  current=$(aws cognito-idp describe-user-pool-client --user-pool-id "$POOL_ID" \
-    --client-id "$client_id" --region "$AWS_REGION" \
-    --query 'UserPoolClient.SupportedIdentityProviders' --output text)
-  if echo "$current" | tr '\t' '\n' | grep -qx "$NAME"; then
+  # update-user-pool-client REPLACES the whole client: any field we omit is reset
+  # to its default (OAuth flows off, callbacks/scopes blanked) — which would break
+  # login. So we round-trip the FULL existing config: describe it, add NAME to
+  # SupportedIdentityProviders, strip the read-only fields, and resend it intact
+  # via --cli-input-json. Idempotent — re-adding an existing NAME is a no-op write.
+  local client_json
+  client_json=$(aws cognito-idp describe-user-pool-client --user-pool-id "$POOL_ID" \
+    --client-id "$client_id" --region "$AWS_REGION" --output json)
+
+  if echo "$client_json" | jq -e --arg n "$NAME" \
+       '.UserPoolClient.SupportedIdentityProviders // [] | index($n)' >/dev/null; then
     echo "  $client_name: already has '$NAME'"
     return
   fi
-  # shellcheck disable=SC2206
-  local providers=($current $NAME)
-  echo "  $client_name: enabling [${providers[*]}]"
-  # shellcheck disable=SC2068
-  aws cognito-idp update-user-pool-client --user-pool-id "$POOL_ID" \
-    --client-id "$client_id" --region "$AWS_REGION" \
-    --supported-identity-providers ${providers[@]} >/dev/null
+
+  local input
+  # Drop server-managed/read-only fields update doesn't accept; ensure COGNITO
+  # stays present alongside the new provider; keep everything else verbatim.
+  input=$(echo "$client_json" | jq --arg n "$NAME" '
+    .UserPoolClient
+    | .SupportedIdentityProviders = ((.SupportedIdentityProviders // ["COGNITO"]) + [$n] | unique)
+    | del(.ClientSecret, .CreationDate, .LastModifiedDate)
+  ')
+  echo "  $client_name: enabling [$(echo "$input" | jq -r '.SupportedIdentityProviders | join(", ")')]"
+  aws cognito-idp update-user-pool-client --region "$AWS_REGION" \
+    --cli-input-json "$input" >/dev/null
 }
 
 enable_on_client "ember-web"
