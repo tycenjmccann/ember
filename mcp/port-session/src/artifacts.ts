@@ -178,10 +178,18 @@ export async function detectArtifacts(opts: DetectOptions): Promise<DetectResult
     // 3. don't double-ship what's already staged under .ember/artifacts/.
     if (abs === artifactsDir || abs.startsWith(artifactsDir + path.sep)) continue;
 
-    // 4. never ship git-tracked files — code travels in the bundle.
+    // 4. must live within cwd. A transcript records ABSOLUTE paths (claude logs
+    //    them for Read), so a file the session merely read outside the project —
+    //    /etc/passwd, ~/.aws/credentials — would otherwise resolve to a `..`-rel
+    //    candidate. Those aren't deliverables; drop them so neither their bytes
+    //    NOR their path/size ever leave the laptop (defense in depth — the server
+    //    re-validates rels too, but detection shouldn't surface them at all).
+    const rel = path.relative(cwd, abs);
+    if (rel.startsWith("..") || path.isAbsolute(rel)) continue;
+
+    // 5. never ship git-tracked files — code travels in the bundle.
     if (await isGitTracked(repoDir, abs)) continue;
 
-    const rel = path.relative(cwd, abs);
     const cand: ArtifactCandidate = {
       rel,
       abs,

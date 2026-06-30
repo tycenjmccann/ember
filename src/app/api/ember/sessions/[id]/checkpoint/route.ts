@@ -90,11 +90,24 @@ export async function POST(
     // each into the laptop's .ember/artifacts/.
     let artifacts: { rel: string; url: string; bytes: number }[] | undefined;
     if (cp.artifactPrefix && (cp.artifactCount ?? 0) > 0) {
-      const listed = await s3.send(
-        new ListObjectsV2Command({ Bucket: ARTIFACT_BUCKET, Prefix: cp.artifactPrefix })
-      );
+      // Page through the prefix — the runtime caps at 200 files, but a single
+      // ListObjectsV2 returns max 1000, so loop on the continuation token rather
+      // than silently truncating if that cap is ever raised.
+      const objects: { Key?: string; Size?: number }[] = [];
+      let token: string | undefined;
+      do {
+        const listed = await s3.send(
+          new ListObjectsV2Command({
+            Bucket: ARTIFACT_BUCKET,
+            Prefix: cp.artifactPrefix,
+            ContinuationToken: token,
+          })
+        );
+        for (const o of listed.Contents || []) objects.push(o);
+        token = listed.IsTruncated ? listed.NextContinuationToken : undefined;
+      } while (token);
       artifacts = await Promise.all(
-        (listed.Contents || [])
+        objects
           .filter((o) => o.Key && !o.Key.endsWith("/"))
           .map(async (o) => ({
             rel: o.Key!.slice(cp.artifactPrefix!.length),
