@@ -129,17 +129,18 @@ export default function ShellTerminal({
             if (ws?.readyState === WebSocket.OPEN) ws.send(encodeHeartbeat());
           }, 30_000);
 
-          // Ported session: the SERVER launches `claude --resume` from shell-init
-          // (once per fresh shell), so the conversation is already live in the TUI
-          // when we attach — the browser no longer types the resume command (which
-          // used to land as leftover text in the running TUI on every reopen).
+          // Ported session: the SERVER launches the CLI's resume (claude --resume /
+          // kiro-cli chat --resume-id) from shell-init (once per fresh shell), so the
+          // conversation is already live in the TUI when we attach — the browser no
+          // longer types the resume command (which used to land as leftover text in
+          // the running TUI on every reopen).
           //
           // We only type the first-prompt SEED, and only once: it's the initial
           // nudge for a freshly ported session. Wait for the resumed TUI to open,
           // fill the composer, then send Return as a separate keystroke (Ink reads
           // a trailing \n in the same write as a literal newline, not submit).
           //
-          // GATE on resumeReady: the seed is meant for the resumed Claude TUI. If
+          // GATE on resumeReady: the seed is meant for the resumed CLI's TUI. If
           // the warm timed out / failed, the server wrote no resume hint and the
           // PTY is at a bare shell — firing the seed there would run it as a shell
           // command and consume it. Only send when the server confirms resume; an
