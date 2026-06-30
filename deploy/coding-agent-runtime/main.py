@@ -791,7 +791,8 @@ RESUME_HINT_NAME = ".resume-launch.sh"
 
 
 def _write_resume_launch_hint(workdir: str, resume_sid: str, runtime_session_id: str | None,
-                              cli: str = "claude", kiro_home: str | None = None) -> bool:
+                              cli: str = "claude", kiro_home: str | None = None,
+                              codex_home: str | None = None) -> bool:
     """Write the hint the interactive shell reads on launch to
     `cd <workdir> && <cli> --resume <resume_sid>` itself — so the browser never
     types the resume command into an already-running TUI on reattach.
@@ -802,11 +803,12 @@ def _write_resume_launch_hint(workdir: str, resume_sid: str, runtime_session_id:
     They differ, so the durable copy MUST be keyed by the runtime id or restore
     would miss it on a recycled VM.
 
-    For kiro we also carry EMBER_KIRO_HOME (the per-session _kiro_home_for dir):
-    the PTY shell otherwise only sees the deploy-default KIRO_HOME and would read
-    a different — shared, cross-session — SQLite store than the chat path wrote.
-    shell-init exports KIRO_HOME/XDG_DATA_HOME from it so the Terminal sees the
-    same conversation row this session created.
+    For kiro/codex we also carry the per-session home (EMBER_KIRO_HOME /
+    EMBER_CODEX_HOME, the _kiro_home_for / _codex_home_for dir): the PTY shell
+    otherwise only sees the deploy-default home and would read a different —
+    shared, cross-session — session store than the chat path wrote. shell-init
+    exports the home from it so the Terminal resumes the same conversation this
+    session created.
 
     Writes both the private /tmp copy (what shell-init reads) and a durable copy
     in the per-session EFS dir (survives a VM recycle; restored to /tmp by
@@ -819,6 +821,8 @@ def _write_resume_launch_hint(workdir: str, resume_sid: str, runtime_session_id:
     )
     if cli == "kiro" and kiro_home:
         body += f"EMBER_KIRO_HOME={shlex.quote(kiro_home)}\n"
+    if cli == "codex" and codex_home:
+        body += f"EMBER_CODEX_HOME={shlex.quote(codex_home)}\n"
     ok = False
     try:
         with open(RESUME_HINT_PATH, "w") as f:
@@ -841,22 +845,24 @@ def _write_resume_launch_hint(workdir: str, resume_sid: str, runtime_session_id:
     return ok
 
 
-def _write_kiro_home_hint(session_id: str | None, kiro_home: str) -> bool:
-    """Pin the PTY to this session's per-session KIRO_HOME when there's nothing to
-    resume yet (a kiro Terminal opened before any headless turn). Writes ONLY
-    EMBER_KIRO_HOME — no EMBER_RESUME_SID — so shell-init isolates the data dir but
-    doesn't auto-exec a resume. Without this the first Terminal turn would land in
-    the shared deploy-default KIRO_HOME (a cross-session EFS DB). Mirrors
-    _write_resume_launch_hint's dual write: private /tmp + durable per-session EFS
-    (restored to /tmp by _restore_resume_launch_hint on a recycled VM)."""
-    body = f"EMBER_RESUME_CLI=kiro\nEMBER_KIRO_HOME={shlex.quote(kiro_home)}\n"
+def _write_home_hint(session_id: str | None, cli: str, home: str) -> bool:
+    """Pin the PTY to this session's per-session home (KIRO_HOME / CODEX_HOME) when
+    there's nothing to resume yet (a Terminal opened before any headless turn).
+    Writes ONLY the home var — no EMBER_RESUME_SID — so shell-init isolates the
+    session store but doesn't auto-exec a resume. Without this the first Terminal
+    turn would land in the shared deploy-default home (a cross-session EFS store).
+    Mirrors _write_resume_launch_hint's dual write: private /tmp + durable
+    per-session EFS (restored to /tmp by _restore_resume_launch_hint on a
+    recycled VM)."""
+    home_var = "EMBER_KIRO_HOME" if cli == "kiro" else "EMBER_CODEX_HOME"
+    body = f"EMBER_RESUME_CLI={shlex.quote(cli)}\n{home_var}={shlex.quote(home)}\n"
     ok = False
     try:
         with open(RESUME_HINT_PATH, "w") as f:
             f.write(body)
         ok = True
     except OSError as exc:
-        logger.warning("kiro_home_hint_failed", extra={"error": str(exc)[:200]})
+        logger.warning("home_hint_failed", extra={"cli": cli, "error": str(exc)[:200]})
     if session_id:
         try:
             sdir = _session_dir(session_id)
@@ -864,7 +870,7 @@ def _write_kiro_home_hint(session_id: str | None, kiro_home: str) -> bool:
             with open(os.path.join(sdir, RESUME_HINT_NAME), "w") as f:
                 f.write(body)
         except OSError as exc:
-            logger.warning("kiro_home_hint_persist_failed", extra={"error": str(exc)[:200]})
+            logger.warning("home_hint_persist_failed", extra={"cli": cli, "error": str(exc)[:200]})
     return ok
 
 
@@ -1841,7 +1847,9 @@ async def invocations(request: Request):
         # home now (no resume id needed) so even that first Terminal turn is
         # isolated. Don't clobber a richer hint already on disk (one with a SID).
         if cli == "kiro" and kiro_home and not os.path.exists(RESUME_HINT_PATH):
-            _write_kiro_home_hint(session_id, kiro_home)
+            _write_home_hint(session_id, "kiro", kiro_home)
+        elif cli == "codex" and codex_home and not os.path.exists(RESUME_HINT_PATH):
+            _write_home_hint(session_id, "codex", codex_home)
         # resume_ready: a (restored or prior) /tmp hint means the Terminal will
         # auto-resume this non-ported conversation.
         resume_ready = os.path.exists(RESUME_HINT_PATH)
@@ -1931,6 +1939,9 @@ async def invocations(request: Request):
         elif cli == "kiro" and claude_session_id:
             resume_ready = _write_resume_launch_hint(
                 workdir, claude_session_id, session_id, cli="kiro", kiro_home=kiro_home)
+        elif cli == "codex" and claude_session_id:
+            resume_ready = _write_resume_launch_hint(
+                workdir, claude_session_id, session_id, cli="codex", codex_home=codex_home)
     except ValueError as ve:  # bad repo field — caller error, not a 500
         return JSONResponse({"error": str(ve)}, status_code=400)
     except Exception as exc:  # noqa: BLE001
@@ -1996,6 +2007,9 @@ async def invocations(request: Request):
     elif cli == "kiro" and result.get("claude_session_id"):
         _write_resume_launch_hint(
             workdir, result["claude_session_id"], session_id, cli="kiro", kiro_home=kiro_home)
+    elif cli == "codex" and result.get("claude_session_id"):
+        _write_resume_launch_hint(
+            workdir, result["claude_session_id"], session_id, cli="codex", codex_home=codex_home)
 
     result.update({"cli": cli, "workspace": workdir})
     logger.info("turn_done", extra={"cli": cli, "chars": len(result.get("response") or "")})

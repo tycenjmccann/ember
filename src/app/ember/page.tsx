@@ -550,21 +550,38 @@ export default function EmberPage() {
               {Boolean(active.claudeSessionId) && (
                 <PullCommandButton sessionId={active.sessionId} className="ml-auto flex-shrink-0" />
               )}
-              <div className={`ios-segment flex-shrink-0 ${active.claudeSessionId ? "" : "ml-auto"}`}>
-                <button data-on={view === "chat"} onClick={() => setView("chat")}>
-                  <MessageSquare className="w-3.5 h-3.5" /> Chat
-                </button>
-                <button data-on={view === "terminal"} onClick={() => setView("terminal")} title="Live terminal into the session microVM">
-                  <TerminalSquare className="w-3.5 h-3.5" /> Terminal
-                </button>
-              </div>
+              {/* A terminal-ported session lives in the PTY: its real conversation
+                  runs in the resumed TUI, which never flows back into the chat
+                  turns[]. Showing Chat would render only the original port's stale
+                  replay — so lock it disabled (visible for orientation, with a
+                  tooltip) and keep the user on the terminal it was ported into. */}
+              {(() => {
+                const terminalOnly = active.defaultView === "terminal";
+                return (
+                  <div className={`ios-segment flex-shrink-0 ${active.claudeSessionId ? "" : "ml-auto"}`}>
+                    <button
+                      data-on={view === "chat"}
+                      onClick={() => !terminalOnly && setView("chat")}
+                      disabled={terminalOnly}
+                      aria-disabled={terminalOnly}
+                      className={terminalOnly ? "opacity-40 cursor-not-allowed" : ""}
+                      title={terminalOnly ? "This is a terminal session — its conversation runs in the live terminal" : undefined}
+                    >
+                      <MessageSquare className="w-3.5 h-3.5" /> Chat
+                    </button>
+                    <button data-on={view === "terminal"} onClick={() => setView("terminal")} title="Live terminal into the session microVM">
+                      <TerminalSquare className="w-3.5 h-3.5" /> Terminal
+                    </button>
+                  </div>
+                );
+              })()}
             </div>
 
             {view === "terminal" ? (
               <div className="flex-1 min-h-0">
                 <ShellTerminal
                   sessionId={active.sessionId}
-                  resumeFirstPrompt={active.cli === "claude" || active.cli === "kiro" ? active.pendingSeed || undefined : undefined}
+                  resumeFirstPrompt={active.pendingSeed || undefined}
                   onSeedConsumed={() => {
                     setActive((s) => (s ? { ...s, pendingSeed: undefined } : s));
                     fetch(`/api/ember/sessions/${active.sessionId}`, {
