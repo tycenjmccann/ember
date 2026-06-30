@@ -1,12 +1,13 @@
 /**
  * GET    /api/ember/auth          → which CLIs are connected to a plan
  * POST   /api/ember/auth          → store a subscription credential
- *          { cli, token }                       (claude — from `claude setup-token`)
+ *          { cli, token }                       (claude — from `claude setup-token`; kiro — access key)
  *          { cli, authJson, label? }             (codex  — the ~/.codex/auth.json)
- * DELETE /api/ember/auth?cli=claude|codex  → disconnect a CLI
+ * DELETE /api/ember/auth?cli=claude|codex|kiro  → disconnect a CLI
  *
- * Subscription mode lets a session run on the user's OWN plan (Claude Pro/Max or
- * a ChatGPT plan) instead of AWS Bedrock. The credential bytes live in S3 and are
+ * Subscription mode lets a session run on the user's OWN plan (Claude Pro/Max, a
+ * ChatGPT plan, or a Kiro access key) instead of AWS Bedrock. The credential
+ * bytes live in S3 and are
  * fetched by the runtime per session; this API only ever reports presence +
  * metadata, never the secret material. Single-user today (userId "default").
  */

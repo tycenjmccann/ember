@@ -2,14 +2,14 @@
  * GET  /api/ember/config   → list config-bundle versions + which is current
  * POST /api/ember/config   → upload a bundle (zip) → S3, register version.
  *                                 multipart: bundle (zip), label?, scope?
- *                                 scope=claude|codex → MERGE that CLI's subtree
- *                                 into the current bundle (keeps the other CLI's
+ *                                 scope=claude|codex|kiro → MERGE that CLI's subtree
+ *                                 into the current bundle (keeps the other CLIs'
  *                                 files); absent → full-replace. The port-session
  *                                 MCP's sync_cli_config uses scope.
  * PUT  /api/ember/config   → set the current version  { version }
  *
- * A bundle is the user's Claude Code / Codex setup (MCP servers, skills, custom
- * agents, prefs) zipped as `claude/...` + `codex/...`. The runtime materializes
+ * A bundle is the user's Claude Code / Codex / Kiro setup (MCP servers, skills,
+ * custom agents, prefs) zipped as `claude/...` + `codex/...` + `kiro/...`. The runtime materializes
  * the current version into the CLI config dirs on each turn. Single-user today.
  */
 

@@ -68,8 +68,9 @@ export interface EmberSession {
   // the whole repo as `bundle --all` (gitMode="selfContained").
   resumeBundleKey?: string;
   // Which surface this session opens in (sidebar tap restores it). Set at port
-  // time; defaults to chat. A ported terminal session auto-runs `claude --resume`
-  // in the PTY instead of firing the chat seed.
+  // time; defaults to chat. A ported terminal session auto-runs the CLI's resume
+  // (claude + kiro; codex has no PTY resume hint yet) in the PTY instead of
+  // firing the chat seed.
   defaultView?: "chat" | "terminal";
   // Soft-delete tombstone (ISO timestamp). DELETE sets this and returns at once —
   // the row is hidden from the list immediately, but kept as the retry handle for

@@ -4,7 +4,7 @@
 
 ### Keep your session warm.
 
-**The open-source coding agent — Claude Code + Codex — that runs inside _your own_ AWS account.**
+**The open-source coding agent — Claude Code + Codex + Kiro — that runs inside _your own_ AWS account.**
 
 [![License: MIT](https://img.shields.io/badge/License-MIT-ff6a00.svg)](LICENSE)
 [![Runs in your AWS](https://img.shields.io/badge/runs%20in-your%20AWS-ff6a00.svg)](#the-wedge)
@@ -35,16 +35,16 @@ Claude Code on the web runs on Anthropic-managed infrastructure). Ember is the o
 self-hosted alternative: **same capability — your code, your keys, your bill, your model.
 Nothing leaves your account.**
 
-- **Bring your own plan** — run on the Claude Pro/Max or ChatGPT plan you *already pay for*.
+- **Bring your own plan** — run on the Claude Pro/Max, ChatGPT, or Kiro plan you *already pay for*.
   **$0 marginal LLM cost.**
 - **Or Amazon Bedrock** — pay-per-token, fully in-VPC, nothing leaves your account. Built
-  for compliance.
-- **Model-agnostic** — Claude *and* Codex, switchable per session.
+  for compliance. (Claude + Codex; Kiro is bring-your-own-key only.)
+- **Model-agnostic** — Claude, Codex, *and* Kiro, switchable per session.
 - **Resumable everywhere** — persistent EFS workspace per session; warm / idle / cold
   warmth dots; deep links to any device.
 
 ```
-laptop (Claude Code / Codex)  ──port──▶  ember  ──pull──▶  laptop
+laptop (Claude Code / Codex / Kiro)  ──port──▶  ember  ──pull──▶  laptop
                                          (AgentCore micro-VM, your account)
 ```
 
@@ -59,7 +59,7 @@ npm install
 
 `install.sh` is idempotent and stands up everything end to end — DynamoDB + S3, the IAM
 execution role, VPC private subnets with a NAT gateway for runtime egress + an EFS workspace,
-the AgentCore coding runtime (Claude Code + Codex), and a public App Runner URL. It prints
+the AgentCore coding runtime (Claude Code + Codex + Kiro), and a public App Runner URL. It prints
 the live URL at the end.
 
 > **Account guard.** Set `EXPECTED_ACCOUNT_ID` in `.env.local` and the deploy refuses to
@@ -135,23 +135,23 @@ AWS_PROFILE=<your-profile> npm run dev          # http://localhost:3000
 | `src/lib/ember/` | Runtime client, DynamoDB session store, S3 config/auth/secrets stores, tenant silo registry, request identity, shell wire protocol. |
 | `src/middleware.ts` | The auth gate — verifies the Cognito JWT and stamps `tenantId`/`userId` on every request. |
 | `deploy/` | `install.sh` building blocks: stores, IAM role, VPC/EFS, runtime, App Runner; `provision-tenant.sh` / `offboard-tenant.sh` for per-tenant silos; `cognito/` setup + admin-user CLI. |
-| `deploy/coding-agent-runtime/` | The AgentCore runtime image + deploy (Claude Code + Codex, EFS workspace, OTel). |
+| `deploy/coding-agent-runtime/` | The AgentCore runtime image + deploy (Claude Code + Codex + Kiro, EFS workspace, OTel). |
 | `mcp/port-session/` | Local stdio MCP server — `port`, `pull`, `sync-config`, `login` tools. |
 | `docs/ENTERPRISE.md` | Multi-tenant architecture + the VPC/SSO/audit hardening path for company-wide rollout. |
 
 ## Features
 
-- **Chat** with a cloud coding agent — Claude Code (streamed) or Codex (buffered).
+- **Chat** with a cloud coding agent — Claude Code (streamed), Codex (buffered), or Kiro (buffered).
 - **Live terminal** — xterm.js over a presigned `wss://` straight to the session
   microVM. The browser talks to AgentCore directly; the server only signs the URL.
 - **Resumable sessions** — each maps to a warm microVM + persistent EFS workspace;
   warmth dots (warm/idle/cold) in the sidebar.
-- **Bring your own plan** — connect a Claude Pro/Max or ChatGPT login and cloud
+- **Bring your own plan** — connect a Claude Pro/Max, ChatGPT, or Kiro login and cloud
   sessions run on it instead of Bedrock. Set it in-app or via the MCP `login` tool.
 - **Port to cloud / pull home** — hand a live laptop session to the cloud
-  (commit+push, ship the raw transcript, native `claude --resume`), then bring the
-  grown session back.
-- **CLI config sync** — mirror your local Claude/Codex setup (CLAUDE.md, skills,
+  (commit+push, ship the raw transcript/conversation, native `claude --resume` /
+  `codex resume` / `kiro-cli chat --resume-id`), then bring the grown session back.
+- **CLI config sync** — mirror your local Claude/Codex/Kiro setup (CLAUDE.md, skills,
   agents, MCP servers) so cloud sessions are a clone of your laptop.
 - **Deep links** — `/ember?session=<id>[&view=terminal]` opens a ported
   session on any device. Dark/light theme, mobile-first iOS-native UI.

@@ -564,7 +564,7 @@ export default function EmberPage() {
               <div className="flex-1 min-h-0">
                 <ShellTerminal
                   sessionId={active.sessionId}
-                  resumeFirstPrompt={active.cli === "claude" ? active.pendingSeed || undefined : undefined}
+                  resumeFirstPrompt={active.cli === "claude" || active.cli === "kiro" ? active.pendingSeed || undefined : undefined}
                   onSeedConsumed={() => {
                     setActive((s) => (s ? { ...s, pendingSeed: undefined } : s));
                     fetch(`/api/ember/sessions/${active.sessionId}`, {
@@ -1007,9 +1007,10 @@ function ConfigSheet({ onClose, onToast }: { onClose: () => void; onToast: (m: s
         </button>
       </div>
       <p className="text-[13px] text-[var(--color-text-secondary)] mb-5 leading-relaxed">
-        Upload a zip of your Claude Code / Codex setup so every session launches with it.
-        Layout: <span className="font-mono">claude/</span> (settings, .mcp.json, skills/, agents/) and{" "}
-        <span className="font-mono">codex/</span> (config.toml, AGENTS.md). Your Bedrock model access is always preserved.
+        Upload a zip of your Claude Code / Codex / Kiro setup so every session launches with it.
+        Layout: <span className="font-mono">claude/</span> (settings, .mcp.json, skills/, agents/),{" "}
+        <span className="font-mono">codex/</span> (config.toml, AGENTS.md), and{" "}
+        <span className="font-mono">kiro/</span> (agents, prompts, global_context.json). Your Bedrock model access is always preserved.
       </p>
 
       <input
