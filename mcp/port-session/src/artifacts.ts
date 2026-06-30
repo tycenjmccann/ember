@@ -19,7 +19,7 @@
  */
 import { execFile } from "node:child_process";
 import { promisify } from "node:util";
-import { stat, mkdir, copyFile } from "node:fs/promises";
+import { stat, mkdir, copyFile, readFile, appendFile } from "node:fs/promises";
 import { createReadStream } from "node:fs";
 import { Readable } from "node:stream";
 import path from "node:path";
@@ -76,15 +76,38 @@ function classify(rel: string): ArtifactKind {
   return EXT_KIND[path.extname(rel).toLowerCase()] || "other";
 }
 
-/** Harvest every file_path / notebook_path a tool call referenced.
- *  Structured claude/jsonl parse for tool attribution + a regex sweep that
- *  catches codex/kiro shapes the structured parse misses. Union, deduped. */
+// Only tools that PRODUCE a file make something worth carrying. A Read/Glob/Grep
+// merely names a path the session looked at — including secrets a coding agent
+// reads constantly (.env, a PEM, ~/.aws/credentials). Harvesting those would
+// presign them an upload. Restrict the structured (claude) harvest to writers.
+const PRODUCER_TOOLS = new Set([
+  "Write", "Edit", "MultiEdit", "NotebookEdit", // claude
+  "fs_write", "create_file", "str_replace", "apply_patch", // kiro / codex shapes
+]);
+
+// Secret denylist — defense in depth for the regex-fallback CLIs (codex/kiro)
+// where we can't attribute the harvesting tool, and for the case where an agent
+// writes then re-reads a secret. Matches unambiguous credential files only, so a
+// real deliverable isn't caught. `.key` is intentionally absent (Keynote uses it).
+const SECRET_EXTS = new Set([".pem", ".p12", ".pfx", ".keystore", ".jks", ".asc", ".gpg"]);
+const SECRET_NAME_RE = /(^\.env($|\.)|(^|\.)npmrc$|(^|\.)netrc$|(^|\/)id_(rsa|ed25519|ecdsa|dsa)$|(^|\.)pgpass$|(^|\/)credentials$|secrets?(\.|$)|\.secret$)/i;
+function isSecretPath(rel: string): boolean {
+  const base = path.basename(rel).toLowerCase();
+  if (SECRET_EXTS.has(path.extname(base))) return true;
+  return SECRET_NAME_RE.test(base) || SECRET_NAME_RE.test(rel);
+}
+
+/** Harvest every file_path / notebook_path a PRODUCER tool call referenced.
+ *  Structured claude/jsonl parse for tool attribution (writers only) + a regex
+ *  sweep that catches codex/kiro shapes the structured parse misses. The regex
+ *  pass can't attribute a tool, so secret-path filtering (see isSecretPath) is
+ *  what protects it from read-only credential files. Union, deduped. */
 function harvestPaths(transcript: Buffer): Map<string, string> {
   const byPath = new Map<string, string>(); // raw path → tool (first seen wins)
   const text = transcript.toString("utf8");
 
   // Structured pass: claude .jsonl — one record per line, tool_use blocks live
-  // in message.content[]. Gives us the real tool name for attribution.
+  // in message.content[]. Gives us the real tool name → drop non-producers.
   for (const line of text.split("\n")) {
     if (!line.includes("tool_use")) continue;
     let rec: any;
@@ -97,16 +120,19 @@ function harvestPaths(transcript: Buffer): Map<string, string> {
     if (!Array.isArray(content)) continue;
     for (const b of content) {
       if (b?.type !== "tool_use" || !b.input) continue;
+      const name = String(b.name || "");
+      if (!PRODUCER_TOOLS.has(name)) continue; // a Read/Glob/Grep is not a deliverable
       const p = b.input.file_path || b.input.notebook_path;
       if (typeof p === "string" && p) {
-        if (!byPath.has(p)) byPath.set(p, String(b.name || "unknown"));
+        if (!byPath.has(p)) byPath.set(p, name);
       }
     }
   }
 
   // Regex fallback: any `"file_path":"…"` / `"notebook_path":"…"` in the raw
   // bytes (codex serializes tool args as a JSON string, kiro as one value blob —
-  // both still contain these keys). Tool name is unknown here.
+  // both still contain these keys). No tool attribution here, so the secret
+  // denylist (applied in detectArtifacts) is the guard for read-only secrets.
   const re = /"(?:file_path|notebook_path)"\s*:\s*"((?:[^"\\]|\\.)*)"/g;
   let m: RegExpExecArray | null;
   while ((m = re.exec(text)) !== null) {
@@ -187,7 +213,13 @@ export async function detectArtifacts(opts: DetectOptions): Promise<DetectResult
     const rel = path.relative(cwd, abs);
     if (rel.startsWith("..") || path.isAbsolute(rel)) continue;
 
-    // 5. never ship git-tracked files — code travels in the bundle.
+    // 5. never ship a credential file. A producer-only harvest already drops
+    //    Read-logged secrets for claude, but the codex/kiro regex pass can't
+    //    attribute a tool, and an agent can write-then-read a secret — so match
+    //    unambiguous credential names/extensions and skip them regardless.
+    if (isSecretPath(rel)) continue;
+
+    // 6. never ship git-tracked files — code travels in the bundle.
     if (await isGitTracked(repoDir, abs)) continue;
 
     const cand: ArtifactCandidate = {
@@ -259,9 +291,38 @@ export async function uploadArtifact(url: string, abs: string, bytes: number): P
   if (!res.ok) throw new Error(`${res.status} ${res.statusText}`);
 }
 
+/** Make sure `.ember/` is git-ignored in `repoDir` BEFORE anything is staged
+ *  there. We write `.git/info/exclude` (local, not the tracked `.gitignore`) so
+ *  we never dirty a committed file. Without this, staging into `.ember/artifacts`
+ *  leaves the tree dirty, and pull's `pullBranch` refuses to check out / fast
+ *  forward against a non-empty `git status --porcelain` — the cloud code would
+ *  never come home. Idempotent + best-effort. */
+export async function ensureEmberExcluded(repoDir: string): Promise<void> {
+  try {
+    const { stdout } = await exec("git", ["rev-parse", "--git-path", "info/exclude"], { cwd: repoDir });
+    const excludeFile = path.resolve(repoDir, stdout.trim());
+    let body = "";
+    try {
+      body = await readFile(excludeFile, "utf8");
+    } catch {
+      /* file may not exist yet — append creates it */
+    }
+    const hasRule = body
+      .split("\n")
+      .some((l) => l.trim().replace(/\/$/, "") === ".ember" || l.trim() === "/.ember");
+    if (hasRule) return;
+    const prefix = body.length && !body.endsWith("\n") ? "\n" : "";
+    await mkdir(path.dirname(excludeFile), { recursive: true });
+    await appendFile(excludeFile, `${prefix}# Ember session staging (not tracked)\n.ember/\n`);
+  } catch {
+    /* not a git repo / git missing — staging just risks a dirty tree, non-fatal */
+  }
+}
+
 /** Copy a shipped artifact into the local `.ember/artifacts/<rel>` staging dir so
  *  the pull round trip stays symmetric (the cloud lands files in the same place).
- *  Best-effort: a copy failure must not fail the port. */
+ *  Call ensureEmberExcluded(repoDir) once before staging so the copy can't dirty
+ *  the tree. Best-effort: a copy failure must not fail the port. */
 export async function stageArtifactLocally(cwd: string, rel: string, abs: string): Promise<void> {
   const dest = path.join(cwd, ".ember", "artifacts", rel);
   if (path.resolve(dest) === path.resolve(abs)) return; // already there

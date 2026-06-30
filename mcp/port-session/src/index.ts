@@ -36,7 +36,7 @@ import {
 } from "./cli-adapter.js";
 import { gatherBundle } from "./config.js";
 import { gatherLoginBody } from "./login.js";
-import { detectArtifacts, uploadArtifact, stageArtifactLocally, downloadArtifact, fmtBytes } from "./artifacts.js";
+import { detectArtifacts, uploadArtifact, stageArtifactLocally, downloadArtifact, ensureEmberExcluded, fmtBytes } from "./artifacts.js";
 import { emberFetch } from "./auth.js";
 import { runCognitoLogin } from "./cognito-login.js";
 
@@ -363,6 +363,10 @@ async function runPull(rawArgs: unknown) {
   const placed = await installLocalTranscript(cli, cwd, resumeId, bytes, { stamp });
 
   // 4. pull the cloud's branch home so local code matches the transcript.
+  //    Exclude .ember/ first: a prior port staged artifacts there, and pullBranch
+  //    refuses a non-empty `git status --porcelain` — without this the staged
+  //    copies would block the very checkout that brings the cloud code home.
+  await ensureEmberExcluded(cwd);
   let gitNote = "no branch reported";
   if (data.branch) {
     try {
@@ -693,6 +697,9 @@ server.setRequestHandler(CallToolRequestSchema, async (req) => {
     const uploadedArtifacts: string[] = [];
     const failedArtifacts: { rel: string; error: string }[] = [];
     if (detected && data.artifactUploads?.length) {
+      // Exclude .ember/ locally BEFORE staging so the staged copies can't leave
+      // the tree dirty (which would block pull's checkout of the cloud code).
+      await ensureEmberExcluded(repoDir);
       const byRel = new Map(detected.candidates.map((c) => [c.rel, c]));
       await Promise.all(
         data.artifactUploads.map(async (u) => {

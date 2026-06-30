@@ -1179,6 +1179,22 @@ _ARTIFACT_TOTAL_CAP = int(os.environ.get("EMBER_ARTIFACT_TOTAL_CAP_MB", "2048"))
 _ARTIFACT_COUNT_CAP = int(os.environ.get("EMBER_ARTIFACT_COUNT_CAP", "200"))
 _PATH_KEY_RE = re.compile(r'"(?:file_path|notebook_path)"\s*:\s*"((?:[^"\\]|\\.)*)"')
 
+# Credential files a turn may have read/written — never ship them home. Mirror of
+# the MCP's isSecretPath (artifacts.ts). `.key` omitted (Keynote uses it).
+_SECRET_EXTS = {".pem", ".p12", ".pfx", ".keystore", ".jks", ".asc", ".gpg"}
+_SECRET_NAME_RE = re.compile(
+    r"(^\.env($|\.)|(^|\.)npmrc$|(^|\.)netrc$|(^|/)id_(rsa|ed25519|ecdsa|dsa)$"
+    r"|(^|\.)pgpass$|(^|/)credentials$|secrets?(\.|$)|\.secret$)",
+    re.IGNORECASE,
+)
+
+
+def _is_secret_path(rel: str) -> bool:
+    base = os.path.basename(rel).lower()
+    if os.path.splitext(base)[1] in _SECRET_EXTS:
+        return True
+    return bool(_SECRET_NAME_RE.search(base) or _SECRET_NAME_RE.search(rel))
+
 
 def _git_tracked(repo_dir: str, abs_path: str) -> bool:
     try:
@@ -1242,6 +1258,8 @@ def _detect_cloud_artifacts(transcript_text: bytes, workdir: str) -> list[dict]:
             rel = os.path.relpath(abs_path, real_artifacts)
         else:
             rel = os.path.relpath(abs_path, real_wd)
+        if _is_secret_path(rel):  # never carry a credential file back to the laptop
+            continue
         out.append({"rel": rel, "abs": abs_path, "bytes": size})
 
     out.sort(key=lambda c: c["bytes"])  # smallest-first so caps keep the most files
