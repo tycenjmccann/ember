@@ -14,6 +14,7 @@ import {
   encodeResize,
   encodeHeartbeat,
 } from "@/lib/ember/shell-protocol";
+import { KindlingLoader } from "@/components/ember/KindlingLoader";
 
 type Status = "connecting" | "connected" | "closed" | "error";
 
@@ -286,30 +287,42 @@ export default function ShellTerminal({
     <div className="flex flex-col h-full">
       <div className="flex items-center gap-2 px-4 py-1.5 text-[11px] border-b border-[var(--color-border)] bg-[var(--color-bg-secondary)]">
         <span
-          className={`w-2 h-2 rounded-full ${
+          className={
             status === "connected"
-              ? "bg-green-400"
+              ? "warmth-dot warmth-dot--warm"
               : status === "connecting"
-              ? "bg-amber-400 animate-pulse"
-              : "bg-[var(--color-text-muted)]"
-          }`}
+              ? "warmth-dot warmth-dot--idle"
+              : "warmth-dot warmth-dot--cold"
+          }
         />
         <span className="text-[var(--color-text-muted)]">
           {status === "connected"
-            ? "live terminal — attached to the session microVM"
+            ? "live session — warm and ready"
             : status === "connecting"
-            ? "connecting…"
+            ? "warming up…"
             : err || "disconnected"}
         </span>
       </div>
       {/* Touch scrolling is wired on the inner .xterm-viewport (see effect)
           so finger-scroll pans the terminal, not the page. Tap anywhere to focus
           the TUI and raise the soft keyboard on mobile. */}
-      <div
-        ref={hostRef}
-        onClick={() => termRef.current?.focus()}
-        className="flex-1 min-h-0 p-2 bg-[#0b0f17] overscroll-contain"
-      />
+      <div className="relative flex-1 min-h-0">
+        <div
+          ref={hostRef}
+          onClick={() => termRef.current?.focus()}
+          className="absolute inset-0 p-2 bg-[#0b0f17] overscroll-contain"
+        />
+        {status !== "connected" && (
+          // Kindling overlay: the cold-start (clone + microVM warm) is 10–50s;
+          // fades out the instant the shell attaches.
+          <div className="absolute inset-0 flex items-center justify-center bg-[#0b0f17] pointer-events-none">
+            <KindlingLoader
+              lit={false}
+              phases={["provisioning microVM", "cloning repository", "warming workspace", "resuming session"]}
+            />
+          </div>
+        )}
+      </div>
       {/* Key accessory bar — styled to read as an extension of the soft keyboard:
           it sits flush above it (keyboard-gray fill, raised key-caps with the
           subtle bottom shadow iOS keys have). It supplies the keys a phone

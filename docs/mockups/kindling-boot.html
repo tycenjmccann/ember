@@ -1,0 +1,343 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>Ember · Kindling boot-sequence mockup</title>
+<style>
+  /* ── Real Ember tokens (dark / "the night") — from globals.css ── */
+  :root {
+    --ember-300:#ff9d4d; --ember-400:#ff7a1a; --ember-500:#ff6a00; --ember-700:#cc4a00;
+    --coal: radial-gradient(circle,#ffd089 0%,#ff7a1a 38%,#ff4d00 70%,#7a2c00 100%);
+    --bloom: 0 0 24px rgba(255,106,0,.4);
+    --btn-glow: 0 2px 16px rgba(255,106,0,.35);
+    --surface-0:#000; --surface-1:#0e0d0c; --surface-2:#1a1816; --surface-3:#2a2724; --surface-4:#3a3531;
+    --text-primary:#f5efe8; --text-secondary:rgba(201,194,187,.66); --text-muted:rgba(138,128,121,.7);
+    --border:rgba(58,53,49,.85); --ios-blue:#ff6a00; --ash:#8a8079;
+  }
+  * { box-sizing:border-box; }
+  body { margin:0; background:var(--surface-0); color:var(--text-primary);
+    font-family:-apple-system,"SF Pro Text",system-ui,sans-serif; -webkit-font-smoothing:antialiased; padding:28px 20px 60px; }
+  h1 { font-size:20px; font-weight:700; letter-spacing:-.01em; margin:0 0 4px; }
+  .sub { color:var(--text-muted); font-size:13px; margin:0 0 22px; max-width:720px; line-height:1.5; }
+  .controls { margin:0 0 26px; display:flex; gap:10px; align-items:center; flex-wrap:wrap; }
+  button.replay { background:var(--ios-blue); color:#1a0f00; border:0; font-weight:650; padding:9px 16px;
+    border-radius:11px; font-size:14px; cursor:pointer; box-shadow:var(--btn-glow); transition:transform .12s,box-shadow .12s; }
+  button.replay:active { transform:scale(.96); box-shadow:0 0 22px rgba(255,106,0,.7); }
+  .speed { color:var(--text-muted); font-size:12px; }
+  .speed label { cursor:pointer; padding:4px 8px; border-radius:8px; }
+  .speed input { accent-color:var(--ios-blue); }
+
+  .grid { display:grid; grid-template-columns:300px 1fr 1fr; gap:20px; max-width:1240px; align-items:start; }
+  @media (max-width:1080px){ .grid{ grid-template-columns:1fr 1fr; } .sidebar-col{ grid-column:1/-1; max-width:340px; } }
+  @media (max-width:720px){ .grid{ grid-template-columns:1fr; } }
+  .panel-label { font-size:12px; text-transform:uppercase; letter-spacing:.08em; color:var(--text-muted); margin:0 0 9px; font-weight:600; }
+
+  /* ── device frame (shared, lower contrast: both bodies share one warm near-black) ── */
+  .device { background:var(--surface-1); border:1px solid var(--border); border-radius:20px; overflow:hidden; box-shadow:0 18px 50px rgba(0,0,0,.55); }
+  .nav { display:flex; align-items:center; gap:9px; padding:13px 15px; border-bottom:1px solid var(--border); background:rgba(20,18,16,.7); backdrop-filter:blur(20px); }
+  .nav .title { font-size:15px; font-weight:650; }
+  .seg { display:inline-flex; background:var(--surface-3); border-radius:9px; padding:2px; margin-left:auto; }
+  .seg b { font-size:12px; font-weight:600; padding:4px 11px; border-radius:7px; color:var(--text-secondary); }
+  .seg b.on { background:var(--surface-1); color:var(--text-primary); }
+
+  /* ════════ KINDLING — coal pile that heats up ════════ */
+  .kindling { display:flex; flex-direction:column; align-items:center; justify-content:center; gap:18px; padding:34px 16px; }
+  .coal-wrap { position:relative; width:84px; height:62px; display:grid; place-items:center; }
+  .coal { width:64px; height:44px; display:block; }
+  .coal svg { width:100%; height:100%; overflow:visible; }
+  .coal { filter:brightness(calc(.74 + var(--heat,0)*.36)) saturate(calc(.82 + var(--heat,0)*.3))
+                  drop-shadow(0 0 calc(var(--heat,0)*16px) rgba(255,106,0, calc(var(--heat,0)*.8))); }
+  .coal.lit { animation:pileBreathe 2.6s ease-in-out infinite; }
+  @keyframes pileBreathe {
+    0%,100% { filter:brightness(1.05) saturate(1.05) drop-shadow(0 0 7px rgba(255,106,0,.55)); transform:scale(1); }
+    50%     { filter:brightness(1.15) saturate(1.12) drop-shadow(0 0 12px rgba(255,106,0,.8)); transform:scale(1.03); }
+  }
+  /* rising sparks */
+  .spark { position:absolute; bottom:30px; width:3px; height:3px; border-radius:50%; background:var(--ember-300); opacity:0; }
+  .spark.s1{ left:32px; animation:rise 1.9s ease-out .8s infinite; }
+  .spark.s2{ left:46px; animation:rise 2.3s ease-out 1.4s infinite; --drift:-8px; }
+  .spark.s3{ left:26px; animation:rise 2.1s ease-out 2.0s infinite; }
+  .spark.s4{ left:50px; animation:rise 2.4s ease-out 2.6s infinite; --drift:-5px; }
+  @keyframes rise { 0%{opacity:0;transform:translateY(0) scale(1);} 15%{opacity:.9;} 100%{opacity:0;transform:translateY(-36px) translateX(var(--drift,6px)) scale(.4);} }
+
+  .phases { list-style:none; margin:0; padding:0; font-family:ui-monospace,"SF Mono",monospace; font-size:12.5px; line-height:1.9; min-width:210px; }
+  .phases li { color:var(--text-muted); opacity:.35; transition:opacity .4s,color .4s; display:flex; gap:9px; }
+  .phases li .mark { width:13px; display:inline-block; color:var(--ember-400); }
+  .phases li .mark::after { content:"·"; }
+  .phases li.active { opacity:1; color:var(--text-secondary); }
+  .phases li.active .mark::after { content:"›"; }
+  .phases li.done { opacity:.8; color:var(--text-secondary); }
+  .phases li.done .mark::after { content:"✓"; color:var(--ember-500); }
+  .ready-line { font-family:ui-monospace,monospace; font-size:13px; color:var(--ember-400); opacity:0; transition:opacity .5s; font-weight:600; }
+  .ready-line.show { opacity:1; }
+
+  /* ── terminal body (now warm near-black, matches chat → low contrast) ── */
+  .term-body { background:var(--surface-0); min-height:300px; position:relative; display:grid; place-items:center; }
+  .term-statusbar { position:absolute; top:0; left:0; right:0; display:flex; align-items:center; gap:8px; padding:8px 13px;
+    font-size:12px; color:var(--text-muted); font-family:ui-monospace,monospace; border-bottom:1px solid rgba(255,255,255,.05); background:rgba(0,0,0,.3); }
+  .term-prompt { position:absolute; bottom:0; left:0; right:0; padding:11px 14px; font-family:ui-monospace,monospace; font-size:13px;
+    color:var(--text-secondary); opacity:0; transition:opacity .4s; border-top:1px solid rgba(255,255,255,.05); }
+  .term-prompt.show { opacity:1; }
+  .term-prompt .cursor { display:inline-block; width:7px; height:15px; background:var(--ember-400); vertical-align:-2px; margin-left:2px; animation:blink 1.1s step-end infinite; }
+  @keyframes blink { 50%{opacity:0;} }
+  .typed { color:var(--ember-300); }
+
+  /* ── chat body (less fill: agent bubble is outline not solid) ── */
+  .chat-body { background:var(--surface-0); min-height:300px; padding:16px 14px; display:flex; flex-direction:column; gap:12px; }
+  .bubble-user { align-self:flex-end; max-width:75%; background:var(--ios-blue); color:#1a0f00; padding:9px 13px; border-radius:19px; border-bottom-right-radius:6px; font-size:14px; }
+  .bubble-agent { align-self:flex-start; max-width:84%; background:transparent; border:1px solid var(--border); color:var(--text-primary);
+    padding:12px 14px; border-radius:19px; border-bottom-left-radius:6px; font-size:14px; }
+  .agent-head { display:flex; align-items:center; gap:9px; margin-bottom:9px; }
+  .agent-head .name { font-size:12px; font-weight:650; color:var(--text-secondary); }
+  .mini-coal { width:28px; height:19px; display:inline-block; vertical-align:middle; }
+  .mini-coal svg { width:100%; height:100%; overflow:visible; }
+  .mini-coal { filter:brightness(calc(.74 + var(--heat,0)*.36)) saturate(calc(.82 + var(--heat,0)*.3))
+                  drop-shadow(0 0 calc(var(--heat,0)*8px) rgba(255,106,0, calc(var(--heat,0)*.8))); }
+  .mini-coal.lit { animation:pileBreathe 2.6s ease-in-out infinite; }
+  .chat-phases { list-style:none; margin:0; padding:0; font-size:13px; line-height:1.95; }
+  .chat-phases li { color:var(--text-muted); opacity:.35; transition:opacity .4s,color .4s; }
+  .chat-phases li.active { opacity:1; color:var(--text-secondary); }
+  .chat-phases li.done { opacity:.6; color:var(--text-muted); }
+  .chat-phases li.active::before { content:"▸ "; color:var(--ember-400); }
+  .chat-phases li.done::before { content:"✓ "; color:var(--ember-500); }
+  .chat-answer { opacity:0; transition:opacity .5s; }
+  .chat-answer.show { opacity:1; }
+
+  /* ════════ SESSIONS SIDEBAR ════════ */
+  .side-head { padding:14px 16px 10px; display:flex; align-items:center; justify-content:space-between; }
+  .side-head h2 { font-size:22px; font-weight:700; letter-spacing:-.01em; margin:0; }
+  .plus { width:30px; height:30px; border-radius:50%; background:var(--surface-3); color:var(--ios-blue); border:0; font-size:18px; cursor:pointer; display:grid; place-items:center; }
+  .search { margin:0 12px 6px; }
+  .search input { width:100%; padding:8px 13px; border-radius:11px; font-size:14px; outline:none; color:var(--text-primary);
+    background:var(--surface-2); border:.5px solid var(--border); }
+  .search input::placeholder { color:var(--text-muted); }
+  .slist { padding:6px 8px 12px; }
+  .srow { display:flex; gap:11px; align-items:center; padding:10px 10px; border-radius:13px; cursor:pointer; transition:background .15s; }
+  .srow:hover { background:var(--surface-2); }
+  .srow.active { background:var(--surface-2); }
+  .srow .avatar { width:38px; height:38px; border-radius:11px; background:var(--surface-3); display:grid; place-items:center; flex-shrink:0; position:relative; }
+  .srow .avatar svg { width:19px; height:19px; }
+  .srow .body { min-width:0; flex:1; }
+  .srow .row1 { display:flex; align-items:center; gap:7px; }
+  .srow .stitle { font-size:14.5px; font-weight:600; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
+  .srow .time { font-size:11.5px; color:var(--text-muted); margin-left:auto; flex-shrink:0; }
+  .srow .repo { font-size:12px; color:var(--text-muted); font-family:ui-monospace,monospace; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; margin-top:1px; }
+
+  /* warmth dots — the 3 states (kept as dots per your call) */
+  .dot { width:10px; height:10px; border-radius:50%; display:inline-block; flex-shrink:0; }
+  .dot--warm { background:var(--coal); box-shadow:0 0 8px rgba(255,106,0,.85),0 0 16px rgba(255,106,0,.45); animation:warmthBreathe 2.6s ease-in-out infinite; }
+  .dot--idle { background:var(--ember-300); opacity:.7; }
+  .dot--cold { background:var(--ash); }
+  @keyframes warmthBreathe {
+    0%,100% { transform:scale(1); filter:brightness(1.05); box-shadow:0 0 8px rgba(255,106,0,.7),0 0 14px rgba(255,106,0,.35); }
+    50%     { transform:scale(1.18); filter:brightness(1.3); box-shadow:0 0 12px rgba(255,106,0,1),0 0 22px rgba(255,106,0,.6); }
+  }
+
+  .note { max-width:1240px; margin:30px 0 0; padding:16px 18px; background:var(--surface-1); border:1px solid var(--border);
+    border-radius:14px; font-size:13px; color:var(--text-secondary); line-height:1.7; }
+  .note b { color:var(--text-primary); }
+  .note code { font-family:ui-monospace,monospace; background:var(--surface-3); padding:1px 6px; border-radius:5px; font-size:12px; color:var(--ember-300); }
+  .ref { display:flex; gap:22px; align-items:center; margin-top:14px; flex-wrap:wrap; }
+  .ref .item { display:flex; align-items:center; gap:8px; font-size:12px; color:var(--text-muted); }
+</style>
+</head>
+<body>
+  <h1>🔥 Kindling boot-sequence + warmth states</h1>
+  <p class="sub">Cold-start wait reimagined: the surface's own icon (chat bubble / terminal) glows to life as the microVM warms. Lower-contrast panels. Sidebar shows the warmth dots that mark each session warm / idle / cold. Loops automatically.</p>
+
+  <div class="controls">
+    <button class="replay" onclick="runAll()">↻ Replay</button>
+    <span class="speed">
+      <label><input type="radio" name="spd" value="1" checked onchange="setSpeed(1)"> real-time</label>
+      <label><input type="radio" name="spd" value="0.5" onchange="setSpeed(0.5)"> 2× faster</label>
+    </span>
+  </div>
+
+  <div class="grid">
+    <!-- ══════ SESSIONS SIDEBAR ══════ -->
+    <div class="sidebar-col">
+      <p class="panel-label">Sessions sidebar</p>
+      <div class="device">
+        <div class="side-head"><h2>Your sessions</h2><button class="plus">+</button></div>
+        <div class="search"><input placeholder="Search sessions" /></div>
+        <div class="slist">
+          <div class="srow active">
+            <div class="avatar"><span class="dot--warm dot" style="position:absolute;top:-3px;right:-3px;"></span><svg viewBox="0 0 24 24" fill="none"><path d="M21 11.5a8.38 8.38 0 0 1-8.5 8.5 8.5 8.5 0 0 1-3.8-.9L3 21l1.9-5.7A8.5 8.5 0 1 1 21 11.5Z" stroke="var(--ember-500)" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></svg></div>
+            <div class="body"><div class="row1"><span class="stitle">Ember Kiro Updates</span><span class="time">now</span></div><div class="repo">tycenjmccann/ember</div></div>
+          </div>
+          <div class="srow">
+            <div class="avatar"><span class="dot--idle dot" style="position:absolute;top:-3px;right:-3px;"></span><svg viewBox="0 0 24 24" fill="none"><path d="m4 17 6-5-6-5M12 19h8" stroke="var(--ember-400)" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></svg></div>
+            <div class="body"><div class="row1"><span class="stitle">Artifacts portability PR</span><span class="time">2h</span></div><div class="repo">tycenjmccann/ember</div></div>
+          </div>
+          <div class="srow">
+            <div class="avatar"><span class="dot--idle dot" style="position:absolute;top:-3px;right:-3px;"></span><svg viewBox="0 0 24 24" fill="none"><path d="M21 11.5a8.38 8.38 0 0 1-8.5 8.5 8.5 8.5 0 0 1-3.8-.9L3 21l1.9-5.7A8.5 8.5 0 1 1 21 11.5Z" stroke="var(--ember-400)" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></svg></div>
+            <div class="body"><div class="row1"><span class="stitle">Cognito refresh-token flow</span><span class="time">5h</span></div><div class="repo">tycenjmccann/ember</div></div>
+          </div>
+          <div class="srow">
+            <div class="avatar"><span class="dot--cold dot" style="position:absolute;top:-3px;right:-3px;"></span><svg viewBox="0 0 24 24" fill="none"><path d="m4 17 6-5-6-5M12 19h8" stroke="var(--text-muted)" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></svg></div>
+            <div class="body"><div class="row1"><span class="stitle">Marketing site redesign</span><span class="time">yesterday</span></div><div class="repo">ember-private</div></div>
+          </div>
+          <div class="srow">
+            <div class="avatar"><span class="dot--cold dot" style="position:absolute;top:-3px;right:-3px;"></span><svg viewBox="0 0 24 24" fill="none"><path d="M21 11.5a8.38 8.38 0 0 1-8.5 8.5 8.5 8.5 0 0 1-3.8-.9L3 21l1.9-5.7A8.5 8.5 0 1 1 21 11.5Z" stroke="var(--text-muted)" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></svg></div>
+            <div class="body"><div class="row1"><span class="stitle">Sidebar search + sort</span><span class="time">2d</span></div><div class="repo">tycenjmccann/ember</div></div>
+          </div>
+        </div>
+      </div>
+      <div class="ref">
+        <div class="item"><span class="dot dot--warm"></span> warm</div>
+        <div class="item"><span class="dot dot--idle"></span> idle</div>
+        <div class="item"><span class="dot dot--cold"></span> cold</div>
+      </div>
+    </div>
+
+    <!-- ══════ TERMINAL ══════ -->
+    <div>
+      <p class="panel-label">Terminal view — connecting</p>
+      <div class="device">
+        <div class="nav"><span class="title">Ember Kiro Updates</span><span class="seg"><b>Chat</b><b class="on">Terminal</b></span></div>
+        <div class="term-body">
+          <div class="term-statusbar"><span id="t-dot" class="dot dot--cold"></span><span id="t-status">warming up…</span></div>
+          <div class="kindling">
+            <div class="coal-wrap">
+              <span class="coal" id="term-coal"></span>
+              <span class="spark s1"></span><span class="spark s2"></span><span class="spark s3"></span><span class="spark s4"></span>
+            </div>
+            <ul class="phases" id="term-phases">
+              <li><span class="mark"></span>provisioning microVM</li>
+              <li><span class="mark"></span>cloning repository</li>
+              <li><span class="mark"></span>warming workspace</li>
+              <li><span class="mark"></span>resuming session</li>
+            </ul>
+            <div class="ready-line" id="term-ready">● live session — warm and ready</div>
+          </div>
+          <div class="term-prompt" id="term-promptline"><span class="typed" id="term-typed"></span><span class="cursor"></span></div>
+        </div>
+      </div>
+    </div>
+
+    <!-- ══════ CHAT ══════ -->
+    <div>
+      <p class="panel-label">Chat view — first turn (cold)</p>
+      <div class="device">
+        <div class="nav"><span class="title">Ember Kiro Updates</span><span class="seg"><b class="on">Chat</b><b>Terminal</b></span></div>
+        <div class="chat-body">
+          <div class="bubble-user">resume where we left off</div>
+          <div class="bubble-agent">
+            <div class="agent-head"><span class="mini-coal" id="chat-coal"></span><span class="name" id="chat-name">Ember is warming up…</span></div>
+            <ul class="chat-phases" id="chat-phases">
+              <li>cloning your repo</li>
+              <li>installing config &amp; skills</li>
+              <li>warming Claude</li>
+              <li>resuming session</li>
+            </ul>
+            <div class="chat-answer" id="chat-answer">Back on <code>feat/artifact-portability</code>. Last we left off, the merge had 4 conflicts pending — want me to walk them?</div>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <div class="note">
+    <b>What you're seeing.</b> The loading hero is now the surface's <b>own icon as a glowing ember outline</b> — a chat bubble in chat, a <code>&gt;_</code> terminal glyph in terminal — dim at first, brightening through the warm-up phases, then settling into a gentle breathe when live. Panels share one warm near-black background (low contrast); the chat agent bubble is an <b>outline</b>, not a solid fill. The sidebar keeps simple <b>dots</b> for the three session states — warm (breathing coal), idle, cold. Every value is a real token from <code>globals.css</code>.
+  </div>
+
+<script>
+  // Coal-pile SVG: big coal in back, 3 small coals across the front touching +
+  // overlapping it. Two heat gradients (small/big) climb independently.
+  const COAL_SVG = `
+  <svg viewBox="0 0 64 44" fill="none" xmlns="http://www.w3.org/2000/svg" preserveAspectRatio="xMidYMax meet">
+    <defs>
+      <linearGradient id="heatSmall" x1="0" y1="44" x2="0" y2="6" gradientUnits="userSpaceOnUse">
+        <stop offset="0" stop-color="#ffc46a"/><stop offset="0.22" stop-color="#ff7a1a"/>
+        <stop offset="0.42" stop-color="#e65100"/><stop offset="0.6" stop-color="#5a2200"/><stop offset="0.82" stop-color="#241813"/>
+      </linearGradient>
+      <linearGradient id="heatBig" x1="0" y1="44" x2="0" y2="6" gradientUnits="userSpaceOnUse">
+        <stop offset="0" stop-color="#ffc46a"/><stop offset="0.22" stop-color="#ff7a1a"/>
+        <stop offset="0.42" stop-color="#e65100"/><stop offset="0.6" stop-color="#5a2200"/><stop offset="0.82" stop-color="#241813"/>
+      </linearGradient>
+    </defs>
+    <path class="lump lump-lg" d="M18 36 Q13 18 27 13 Q42 9 49 22 Q54 34 44 40 Q31 45 23 42 Q18 40 18 36 Z"/>
+    <path class="lump" d="M6 40 Q3 31 13 30 Q21 29 23 36 Q24 43 15 44 Q8 44 6 40 Z"/>
+    <path class="lump" d="M21 41 Q19 33 29 32 Q38 32 39 39 Q39 45 29 45 Q23 45 21 41 Z"/>
+    <path class="lump" d="M37 40 Q36 32 46 31 Q55 31 56 38 Q56 44 47 44 Q40 44 37 40 Z"/>
+  </svg>`;
+  const BASE = [0, .22, .42, .6, .82];
+  function applyBand(grad, f){ if(!grad) return;
+    [...grad.children].forEach((s,i)=> s.setAttribute('offset', Math.min(.9, BASE[i] + f*(0.17 - i*0.022)).toFixed(3))); }
+  function paintCoal(el){
+    el.innerHTML = COAL_SVG;
+    const u = Math.floor(performance.now()*1000%1e7)+'-'+(el.id||'');
+    const gS = el.querySelector('#heatSmall'), gB = el.querySelector('#heatBig');
+    gS.id='heatSmall-'+u; gB.id='heatBig-'+u;
+    el.querySelectorAll('.lump').forEach(p=>{
+      const big=p.classList.contains('lump-lg');
+      p.setAttribute('fill',`url(#${big?gB.id:gS.id})`);
+      p.setAttribute('stroke','#1a0f0a'); p.setAttribute('stroke-width', big?'1.4':'1.1'); p.setAttribute('stroke-linejoin','round');
+    });
+    el._gS=gS; el._gB=gB;
+  }
+  ['term-coal','chat-coal'].forEach(id=>paintCoal(document.getElementById(id)));
+
+  let MULT = 1;
+  function setSpeed(m){ MULT=m; runAll(); }
+  const T = (ms)=> ms*MULT;
+  const timers = []; const rafs = [];
+  function after(ms, fn){ timers.push(setTimeout(fn, T(ms))); }
+  function clearAll(){ timers.forEach(clearTimeout); timers.length=0; rafs.forEach(cancelAnimationFrame); rafs.length=0; }
+
+  // smalls catch first (medium floor), big lags (low floor); both climb to full.
+  const SMALL_FLOOR=0.42, BIG_FLOOR=0.18, PEAK=1.05;
+  function heatVar(el,f){ el.style.setProperty('--heat',(f*PEAK).toFixed(3)); }
+  function heatUp(el, dur){
+    const start = performance.now();
+    function frame(now){
+      let t = Math.min(1, (now-start)/(dur*MULT));
+      const e = t<.5 ? 2*t*t : 1-Math.pow(-2*t+2,2)/2;
+      applyBand(el._gS, SMALL_FLOOR + e*(1-SMALL_FLOOR));
+      applyBand(el._gB, BIG_FLOOR  + e*(1.1-BIG_FLOOR));
+      heatVar(el, e);
+      if (t<1) rafs.push(requestAnimationFrame(frame));
+    }
+    rafs.push(requestAnimationFrame(frame));
+  }
+  function setLit(el){ applyBand(el._gS,1); applyBand(el._gB,1.1); heatVar(el,1); }
+  function coolDown(el){ applyBand(el._gS,SMALL_FLOOR); applyBand(el._gB,BIG_FLOOR); heatVar(el,0); }
+
+  function runTerminal(){
+    const coal=document.getElementById('term-coal'), phases=[...document.querySelectorAll('#term-phases li')];
+    const status=document.getElementById('t-status'), dot=document.getElementById('t-dot');
+    const ready=document.getElementById('term-ready'), promptLine=document.getElementById('term-promptline'), typed=document.getElementById('term-typed');
+    coal.className='coal'; coolDown(coal); void coal.offsetWidth; heatUp(coal,4200);
+    phases.forEach(p=>p.className=''); ready.classList.remove('show'); promptLine.classList.remove('show'); typed.textContent='';
+    dot.className='dot dot--cold'; status.textContent='warming up…';
+    const labels=['provisioning microVM…','cloning repository…','warming workspace…','resuming session…'];
+    [0,1,2,3].forEach(i=> after(150+i*1000, ()=>{ phases.forEach((p,j)=>{ if(j<i)p.className='done'; }); phases[i].className='active'; status.textContent=labels[i]; }));
+    after(4250, ()=>{
+      phases.forEach(p=>p.className='done'); setLit(coal); coal.className='coal lit';
+      status.textContent='live session — warm and ready'; dot.className='dot dot--warm'; ready.classList.add('show');
+    });
+    after(4700, ()=>{
+      promptLine.classList.add('show'); const cmd='$ claude --resume cc-9f9e9a…'; let k=0;
+      const iv=setInterval(()=>{ typed.textContent=cmd.slice(0,++k); if(k>=cmd.length)clearInterval(iv); }, T(45)); timers.push(iv);
+    });
+  }
+
+  function runChat(){
+    const coal=document.getElementById('chat-coal'), phases=[...document.querySelectorAll('#chat-phases li')];
+    const name=document.getElementById('chat-name'), answer=document.getElementById('chat-answer');
+    coal.className='mini-coal'; coolDown(coal); void coal.offsetWidth; heatUp(coal,4200);
+    phases.forEach(p=>{p.className=''; p.style.display='';}); answer.classList.remove('show'); name.textContent='Ember is warming up…';
+    const labels=['cloning your repo…','installing config & skills…','warming Claude…','resuming session…'];
+    [0,1,2,3].forEach(i=> after(150+i*1000, ()=>{ phases.forEach((p,j)=>{ if(j<i)p.className='done'; }); phases[i].className='active'; name.textContent=labels[i]; }));
+    after(4250, ()=>{
+      phases.forEach(p=>p.className='done'); setLit(coal); coal.className='mini-coal lit';
+      after(250, ()=>{ phases.forEach(p=>p.style.display='none'); name.textContent='Ember'; answer.classList.add('show'); });
+    });
+  }
+
+  function runAll(){ clearAll(); runTerminal(); runChat(); after(8500, runAll); }
+  runAll();
+</script>
+</body>
+</html>

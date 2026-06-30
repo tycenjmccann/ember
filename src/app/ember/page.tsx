@@ -8,6 +8,7 @@ import { MarkdownRenderer } from "@/components/ember/MarkdownRenderer";
 import { CliBadge, CliMark, CLI_BRAND } from "@/components/ember/CliBrand";
 import VoiceButton from "@/components/ember/VoiceButton";
 import { PullCommandButton } from "@/components/ember/PullCommandButton";
+import { KindlingLoader } from "@/components/ember/KindlingLoader";
 
 // xterm touches the DOM/window — load only in the browser.
 const ShellTerminal = dynamic(() => import("@/components/ember/ShellTerminal"), { ssr: false });
@@ -634,7 +635,15 @@ export default function EmberPage() {
               )}
               {sending && (
                 <div className="msg-in self-start bubble-agent px-4 py-3 mt-1.5">
-                  <div className="typing"><span /><span /><span /></div>
+                  {active.turns.length <= 1 ? (
+                    // Cold first turn: clone+warm can take 10–50s → kindling.
+                    <span className="flex items-center gap-2.5">
+                      <KindlingLoader size="inline" />
+                      <span className="text-[13px] text-[var(--color-text-secondary)]">warming the workspace…</span>
+                    </span>
+                  ) : (
+                    <div className="typing"><span /><span /><span /></div>
+                  )}
                 </div>
               )}
               <div ref={streamEnd} />
