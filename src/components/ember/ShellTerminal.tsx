@@ -312,9 +312,11 @@ export default function ShellTerminal({
           onClick={() => termRef.current?.focus()}
           className="absolute inset-0 p-2 bg-[#0b0f17] overscroll-contain"
         />
-        {status !== "connected" && (
+        {status === "connecting" && (
           // Kindling overlay: the cold-start (clone + microVM warm) is 10–50s;
-          // fades out the instant the shell attaches.
+          // fades out the instant the shell attaches. Only during `connecting` —
+          // an `error`/`closed` socket must show the disconnect text underneath,
+          // not a warming pile that implies progress on a dead session.
           <div className="absolute inset-0 flex items-center justify-center bg-[#0b0f17] pointer-events-none">
             <KindlingLoader
               lit={false}
