@@ -123,6 +123,9 @@ fi
 # session is kiro. KIRO_HOME points at the per-session SQLite store. Secret never
 # lands on the shared EFS.
 export KIRO_HOME="${KIRO_HOME:-$WORKSPACE_ROOT/.kiro-data}"
+# Kiro's SQLite session store follows $XDG_DATA_HOME/kiro-cli/, not $KIRO_HOME —
+# pin XDG_DATA_HOME so a resumed PTY reads the same DB the chat path wrote.
+export XDG_DATA_HOME="$KIRO_HOME"
 mkdir -p "$KIRO_HOME" 2>/dev/null || true
 if [ -f "$_EPHEMERAL_CREDS_DIR/.kiro-api-key" ]; then
   export KIRO_API_KEY="$(cat "$_EPHEMERAL_CREDS_DIR/.kiro-api-key")"

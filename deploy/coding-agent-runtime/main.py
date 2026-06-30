@@ -701,7 +701,11 @@ def _kiro_home_for(session_id: str | None) -> str:
 
 
 def _kiro_db_path(kiro_home: str | None = None) -> str:
-    return os.path.join(kiro_home or KIRO_HOME, "data.sqlite3")
+    # Kiro stores its SQLite under $XDG_DATA_HOME/kiro-cli/ (NOT $KIRO_HOME). We
+    # point XDG_DATA_HOME at the per-session home (see _run_kiro), so the DB lands
+    # in <home>/kiro-cli/data.sqlite3 — match that here so install/discovery/
+    # checkpoint all read the same file kiro actually wrote.
+    return os.path.join(kiro_home or KIRO_HOME, "kiro-cli", "data.sqlite3")
 
 
 def _install_kiro_resume_transcript(s3_key: str, session_id: str, workdir: str,
@@ -1612,7 +1616,9 @@ def _run_kiro(prompt: str, workdir: str, kiro_session_id: str | None,
             "(login_cli kiro). Kiro has no Bedrock fallback.")
     home = kiro_home or KIRO_HOME
     os.makedirs(home, exist_ok=True)
-    env = {**os.environ, "KIRO_HOME": home, "KIRO_API_KEY": api_key}
+    # Kiro's session DB follows $XDG_DATA_HOME/kiro-cli/, not $KIRO_HOME — pin both
+    # so the per-session store is isolated AND lands where _kiro_db_path looks.
+    env = {**os.environ, "KIRO_HOME": home, "XDG_DATA_HOME": home, "KIRO_API_KEY": api_key}
 
     args = ["kiro-cli", "chat", "--no-interactive", "--trust-all-tools"]
     if KIRO_MODEL:
