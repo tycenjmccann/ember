@@ -841,6 +841,33 @@ def _write_resume_launch_hint(workdir: str, resume_sid: str, runtime_session_id:
     return ok
 
 
+def _write_kiro_home_hint(session_id: str | None, kiro_home: str) -> bool:
+    """Pin the PTY to this session's per-session KIRO_HOME when there's nothing to
+    resume yet (a kiro Terminal opened before any headless turn). Writes ONLY
+    EMBER_KIRO_HOME — no EMBER_RESUME_SID — so shell-init isolates the data dir but
+    doesn't auto-exec a resume. Without this the first Terminal turn would land in
+    the shared deploy-default KIRO_HOME (a cross-session EFS DB). Mirrors
+    _write_resume_launch_hint's dual write: private /tmp + durable per-session EFS
+    (restored to /tmp by _restore_resume_launch_hint on a recycled VM)."""
+    body = f"EMBER_RESUME_CLI=kiro\nEMBER_KIRO_HOME={shlex.quote(kiro_home)}\n"
+    ok = False
+    try:
+        with open(RESUME_HINT_PATH, "w") as f:
+            f.write(body)
+        ok = True
+    except OSError as exc:
+        logger.warning("kiro_home_hint_failed", extra={"error": str(exc)[:200]})
+    if session_id:
+        try:
+            sdir = _session_dir(session_id)
+            os.makedirs(sdir, exist_ok=True)
+            with open(os.path.join(sdir, RESUME_HINT_NAME), "w") as f:
+                f.write(body)
+        except OSError as exc:
+            logger.warning("kiro_home_hint_persist_failed", extra={"error": str(exc)[:200]})
+    return ok
+
+
 def _restore_resume_launch_hint(session_id: str | None) -> None:
     """Repopulate the private /tmp hint from the durable per-session EFS copy if
     /tmp is missing (a recycled microVM). Lets a non-ported session resume in the
@@ -1807,6 +1834,14 @@ async def invocations(request: Request):
     # success/failure but always 200 so the /shell best-effort caller never errors
     # (a stale-mount VM will be replaced; the next turn retries).
     if prepare:
+        # A kiro session opened straight in Terminal (no headless turn / ported
+        # transcript yet) returns here before any _write_resume_launch_hint call,
+        # so the PTY would fall back to the shared deploy-default KIRO_HOME and put
+        # its FIRST conversation into a cross-session EFS DB. Pin the per-session
+        # home now (no resume id needed) so even that first Terminal turn is
+        # isolated. Don't clobber a richer hint already on disk (one with a SID).
+        if cli == "kiro" and kiro_home and not os.path.exists(RESUME_HINT_PATH):
+            _write_kiro_home_hint(session_id, kiro_home)
         # resume_ready: a (restored or prior) /tmp hint means the Terminal will
         # auto-resume this non-ported conversation.
         resume_ready = os.path.exists(RESUME_HINT_PATH)
