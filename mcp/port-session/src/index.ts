@@ -63,7 +63,7 @@ const InputSchema = z.object({
   view: z
     .enum(["chat", "terminal"])
     .optional()
-    .describe("Which surface the deep link opens. Default chat (mobile-friendly). 'terminal' auto-runs the CLI's resume in a live shell."),
+    .describe("Which surface the deep link opens. Default chat (mobile-friendly). 'terminal' auto-runs the CLI's resume in a live shell (claude + kiro; codex always opens chat)."),
   commitMessage: z.string().optional().describe("Commit message for the in-flight snapshot."),
   cwd: z.string().optional().describe("Project directory. Defaults to the server's cwd."),
   repoDir: z

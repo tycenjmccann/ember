@@ -112,7 +112,7 @@ all unset — calls go through unauthenticated, as before.
 | `title` | `Ported: <repo>` | Session name shown in the sidebar. |
 | `branch` | current branch | Branch to push the in-flight work to (and check out in the cloud). |
 | `firstPrompt` | a default nudge | First instruction to the resumed agent. |
-| `view` | `chat` | Surface the session opens in. `terminal` auto-runs the CLI's resume (`claude --resume` / `codex resume` / `kiro-cli chat --resume-id`) in a live PTY; persisted to the session so a sidebar tap reopens it the same way. |
+| `view` | `chat` | Surface the session opens in. `terminal` auto-runs the CLI's resume in a live PTY (`claude --resume` / `kiro-cli chat --resume-id`; codex has no PTY resume hint yet → opens chat); persisted to the session so a sidebar tap reopens it the same way. |
 | `cli` | `claude` | Cloud CLI to resume with (`claude`, `codex`, or `kiro`). |
 | `commitMessage` | auto | Message for the in-flight snapshot commit. |
 | `cwd` | server cwd | Where the transcript is read (the dir Claude Code launched in). |
