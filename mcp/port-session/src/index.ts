@@ -441,6 +441,15 @@ async function runSync(rawArgs: unknown) {
     }
   }
 
+  if (g.pruned.count) {
+    const prunedMb = (g.pruned.bytes / 1024 / 1024).toFixed(0);
+    lines.push(
+      ``,
+      `Pruned ${g.pruned.count} rebuildable files (${prunedMb} MB) — venvs, node_modules, ` +
+        `build/render output. These are recreated cloud-side from declared deps; ` +
+        `the skill itself (SKILL.md + scripts + referenced assets) ships.`
+    );
+  }
   if (g.skipped.length) lines.push(``, `Not present locally (skipped): ${g.skipped.join(", ")}`);
   lines.push(
     ``,

@@ -48,6 +48,7 @@ export interface GatherResult {
   droppedServers: string[]; // servers excluded from the shipped config (unsupported)
   skipped: string[]; // sources that weren't found locally
   classified: ClassifiedServer[]; // every MCP server, with its cloud verdict
+  pruned: { count: number; bytes: number }; // rebuildable files skipped (venvs, renders, build output)
 }
 
 const SECRET_RE = /(token|secret|key|pat|password|passwd|api[-_]?key|access|bearer)/i;
@@ -193,12 +194,26 @@ function classifyCodexServers(toml: string): ClassifiedServer[] {
   return out;
 }
 
-/** Recursively add a directory's files to the zip under a bundle prefix. */
+// Rebuildable / platform-locked dirs that accumulate INSIDE a skill or config dir
+// but are not part of it: a macOS Python venv won't run on the Linux microVM, a
+// node_modules / build output / generated render is recreated from declared deps.
+// Anthropic's own skills doc uses this same ignore set, and excluding them keeps a
+// 940 MB skills tree (mostly one venv + render output) down to its real content.
+const PRUNE_DIRS = new Set([
+  ".venv", "venv", "node_modules", "__pycache__", ".git",
+  "dist", "build", ".next", ".turbo", ".mypy_cache", ".pytest_cache",
+  "renders", ".gradle", "target",
+]);
+
+/** Recursively add a directory's files to the zip under a bundle prefix, skipping
+ *  rebuildable/platform-locked subdirs (PRUNE_DIRS). Files dropped this way are
+ *  reported via `skipped` so the sync output shows what was pruned and why. */
 async function addDir(
   zip: JSZip,
   absDir: string,
   bundlePrefix: string,
-  out: string[]
+  out: string[],
+  pruned?: { count: number; bytes: number }
 ): Promise<boolean> {
   let entries: string[];
   try {
@@ -208,6 +223,17 @@ async function addDir(
   }
   let added = false;
   for (const rel of entries) {
+    const segs = rel.split(path.sep);
+    if (segs.some((s) => PRUNE_DIRS.has(s))) {
+      // Tally the prune (best-effort) but don't ship it.
+      if (pruned) {
+        try {
+          const st = await stat(path.join(absDir, rel));
+          if (st.isFile()) { pruned.count++; pruned.bytes += st.size; }
+        } catch { /* gone — ignore */ }
+      }
+      continue;
+    }
     const abs = path.join(absDir, rel);
     let st;
     try {
@@ -216,7 +242,7 @@ async function addDir(
       continue;
     }
     if (!st.isFile()) continue;
-    const bundlePath = path.posix.join(bundlePrefix, rel.split(path.sep).join("/"));
+    const bundlePath = path.posix.join(bundlePrefix, segs.join("/"));
     zip.file(bundlePath, await readFile(abs));
     out.push(bundlePath);
     added = true;
@@ -276,7 +302,10 @@ async function sanitizeClaudeMcp(res: GatherResult): Promise<Record<string, unkn
 }
 
 function emptyResult(): GatherResult {
-  return { zip: Buffer.alloc(0), files: [], redactedEnv: [], droppedServers: [], skipped: [], classified: [] };
+  return {
+    zip: Buffer.alloc(0), files: [], redactedEnv: [], droppedServers: [],
+    skipped: [], classified: [], pruned: { count: 0, bytes: 0 },
+  };
 }
 
 async function gatherClaude(): Promise<GatherResult> {
@@ -287,7 +316,7 @@ async function gatherClaude(): Promise<GatherResult> {
   if (!(await addFile(zip, path.join(root, "CLAUDE.md"), "claude/CLAUDE.md", res.files)))
     res.skipped.push("~/.claude/CLAUDE.md");
   for (const dir of ["agents", "skills", "commands", "output-styles"]) {
-    if (!(await addDir(zip, path.join(root, dir), `claude/${dir}`, res.files)))
+    if (!(await addDir(zip, path.join(root, dir), `claude/${dir}`, res.files, res.pruned)))
       res.skipped.push(`~/.claude/${dir}/`);
   }
   const mcp = await sanitizeClaudeMcp(res);
@@ -327,8 +356,16 @@ async function gatherCodex(): Promise<GatherResult> {
   }
   if (!(await addFile(zip, path.join(root, "AGENTS.md"), "codex/AGENTS.md", res.files)))
     res.skipped.push("~/.codex/AGENTS.md");
-  if (!(await addDir(zip, path.join(root, "prompts"), "codex/prompts", res.files)))
+  if (!(await addDir(zip, path.join(root, "prompts"), "codex/prompts", res.files, res.pruned)))
     res.skipped.push("~/.codex/prompts/");
+
+  // Codex Skills (agentskills.io standard) live in the SHARED user-scope dir
+  // ~/.agents/skills/, NOT under ~/.codex. Ship them under the codex/ subtree so
+  // the scoped merge keeps them with codex; the runtime routes codex/skills/* to
+  // the cloud CLI's ~/.agents/skills/. (~/.codex/skills/.system holds only the
+  // built-in skills, so we don't ship that.)
+  if (!(await addDir(zip, path.join(HOME, ".agents", "skills"), "codex/skills", res.files, res.pruned)))
+    res.skipped.push("~/.agents/skills/");
 
   res.zip = await zip.generateAsync({ type: "nodebuffer" });
   return res;
@@ -337,18 +374,14 @@ async function gatherCodex(): Promise<GatherResult> {
 async function gatherKiro(): Promise<GatherResult> {
   const zip = new JSZip();
   const res = emptyResult();
-  // Kiro (Amazon Q successor) keeps user config under ~/.aws/amazonq: custom
-  // agents, prompts, and a global context file. (V3 may also read ~/.kiro; we
-  // ship the populated ~/.aws/amazonq tree.) Shipped under the `kiro/` prefix.
-  const root = path.join(HOME, ".aws", "amazonq");
-
-  for (const dir of ["agents", "cli-agents", "prompts"]) {
-    if (!(await addDir(zip, path.join(root, dir), `kiro/${dir}`, res.files)))
-      res.skipped.push(`~/.aws/amazonq/${dir}/`);
-  }
-  for (const file of ["global_context.json", "AGENTS.md"]) {
-    if (!(await addFile(zip, path.join(root, file), `kiro/${file}`, res.files)))
-      res.skipped.push(`~/.aws/amazonq/${file}`);
+  // Kiro CLI keeps its user config under ~/.kiro: Skills (agentskills.io
+  // standard, ~/.kiro/skills/<name>/SKILL.md), custom agents, saved prompts, and
+  // steering files. Shipped under the `kiro/` subtree; the runtime routes each
+  // back to ~/.kiro/<dir> on the cloud side.
+  const kiroRoot = path.join(HOME, ".kiro");
+  for (const dir of ["skills", "agents", "prompts", "steering"]) {
+    if (!(await addDir(zip, path.join(kiroRoot, dir), `kiro/${dir}`, res.files, res.pruned)))
+      res.skipped.push(`~/.kiro/${dir}/`);
   }
 
   res.zip = await zip.generateAsync({ type: "nodebuffer" });
