@@ -83,6 +83,18 @@ fi
 
 # ── Codex → Bedrock Mantle (default) OR the user's ChatGPT plan ──
 export BEDROCK_MANTLE_REGION="${BEDROCK_MANTLE_REGION:-us-east-2}"
+# The chat path isolates each Ember session under its own CODEX_HOME
+# (_codex_home_for) so resumed rollouts can't collide; the PTY otherwise only
+# sees the deploy-default and would resume from a different — shared — rollout
+# tree than the headless turn wrote. The resume hint carries this session's
+# per-session home as EMBER_CODEX_HOME; prefer it so `codex resume` in the
+# Terminal continues the same conversation the chat created.
+_resume_hint="/tmp/.resume-launch.sh"
+if [ -f "$_resume_hint" ]; then
+  # shellcheck disable=SC1090
+  . "$_resume_hint"
+  [ -n "${EMBER_CODEX_HOME:-}" ] && CODEX_HOME="$EMBER_CODEX_HOME"
+fi
 export CODEX_HOME="${CODEX_HOME:-$WORKSPACE_ROOT/.codex}"
 mkdir -p "$CODEX_HOME" 2>/dev/null || true
 

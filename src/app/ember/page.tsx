@@ -581,7 +581,7 @@ export default function EmberPage() {
               <div className="flex-1 min-h-0">
                 <ShellTerminal
                   sessionId={active.sessionId}
-                  resumeFirstPrompt={active.cli === "claude" || active.cli === "kiro" ? active.pendingSeed || undefined : undefined}
+                  resumeFirstPrompt={active.pendingSeed || undefined}
                   onSeedConsumed={() => {
                     setActive((s) => (s ? { ...s, pendingSeed: undefined } : s));
                     fetch(`/api/ember/sessions/${active.sessionId}`, {

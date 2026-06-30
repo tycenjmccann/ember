@@ -99,11 +99,11 @@ export async function POST(request: NextRequest) {
     const firstPrompt: string | undefined = body.firstPrompt?.trim() || undefined;
     const titleBase = repo || parseRepoFromUrl(cloneUrl) || "session";
     const title: string = (body.title?.trim() || `Ported: ${titleBase}`).slice(0, 120);
-    // Surface the session opens in (sidebar tap restores it). Terminal auto-resume
-    // works for the CLIs whose runtime writes a PTY resume hint — claude and kiro
-    // today. Codex has no resume-hint path yet, so it always opens chat.
+    // Surface the session opens in (sidebar tap restores it). All three CLIs write
+    // a PTY resume hint (claude --resume / codex resume / kiro-cli chat
+    // --resume-id), so a terminal port auto-resumes the conversation for each.
     const defaultView: "chat" | "terminal" =
-      body.view === "terminal" && (cli === "claude" || cli === "kiro") ? "terminal" : "chat";
+      body.view === "terminal" ? "terminal" : "chat";
 
     const sessionId = `cc-${randomUUID().replace(/-/g, "")}`;
     const now = new Date().toISOString();
