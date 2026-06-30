@@ -1,8 +1,8 @@
 /**
  * Ember — per-user CLI config bundle store.
  *
- * A "config bundle" is the user's dialed-in Claude Code / Codex setup
- * (MCP servers, skills, custom agents, prefs) zipped as `claude/...` + `codex/...`.
+ * A "config bundle" is the user's dialed-in Claude Code / Codex / Kiro setup
+ * (MCP servers, skills, custom agents, prefs) zipped as `claude/...` + `codex/...` + `kiro/...`.
  * Uploaded once, reused on every session: the runtime fetches the *current*
  * version from S3 and materializes it into the CLI config dirs at turn start.
  *

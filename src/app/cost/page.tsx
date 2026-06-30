@@ -8,7 +8,7 @@
  *   2. Cost (infrastructure only): the monthly AWS bill to host Ember — App
  *      Runner + AgentCore compute + DynamoDB + S3 + EFS + Cognito. NO LLM /
  *      token cost. Inference runs on Bedrock out of the box, or on your own
- *      Claude/Codex plan — billed by that provider, never through Ember.
+ *      Claude/Codex/Kiro plan — billed by that provider, never through Ember.
  *
  * Rates are the public AWS numbers (us-east-1, verified 2026-06) in RATES so
  * they're easy to update when prices move.
@@ -168,7 +168,7 @@ export default function CostPage() {
         <p className="text-[15px] text-[var(--color-text-secondary)] mb-5 leading-snug">
           The AWS bill to host Ember — compute, storage, and auth. Model inference is
           separate: on Bedrock it’s billed per token to your AWS account; on your own
-          Claude/Codex plan it’s $0 here. Drag to match your team.
+          Claude/Codex/Kiro plan it’s $0 here. Drag to match your team.
         </p>
 
         {/* Headline infra total */}
@@ -209,7 +209,7 @@ export default function CostPage() {
              style={{ background: "var(--ios-fill-tertiary)", color: "var(--color-text-secondary)" }}>
           <strong className="text-[var(--ios-green)]">Platform only.</strong> This is what you pay AWS to host
           Ember for this team. Inference is separate and not included: Bedrock bills per token to your AWS
-          account, while a connected Claude / Codex plan is billed by that provider (often already paid for).
+          account, while a connected Claude / Codex / Kiro plan is billed by that provider (often already paid for).
         </div>
 
         <p className="text-[12px] text-[var(--color-text-muted)] leading-relaxed px-1">

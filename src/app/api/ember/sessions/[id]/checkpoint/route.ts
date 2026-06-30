@@ -5,8 +5,9 @@
  * runtime to upload the session's grown transcript back to S3, then returns a
  * presigned GET URL + the cloud branch + the resume id. The local `pull-session`
  * MCP fetches the transcript, drops it where the CLI expects it, pulls the
- * branch, and resumes locally (`claude --resume <id>` / `codex resume <id>`).
- * Works for Claude Code and Codex (both: one movable transcript, resume by id).
+ * branch, and resumes locally (`claude --resume <id>` / `codex resume <id>` /
+ * `kiro-cli chat --resume-id <id>`). Works for Claude Code, Codex, and Kiro
+ * (claude/codex: one movable transcript; kiro: a SQLite conversation row).
  *
  * Same session id throughout (the cloud appended to the same file), so the
  * laptop just overwrites its stale copy — no merge, no new session.

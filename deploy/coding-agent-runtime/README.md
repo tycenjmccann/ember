@@ -1,4 +1,4 @@
-# Coding Agent Runtime (resumable Claude Code + Codex)
+# Coding Agent Runtime (resumable Claude Code + Codex + Kiro)
 
 A dedicated Amazon Bedrock AgentCore Runtime that hosts coding CLIs server-side
 with a **persistent per-repo workspace** (`/mnt/workspace`) and **OTel →
@@ -44,7 +44,7 @@ resume = same runtimeSessionId  → same warm microVM + /mnt/workspace
 |---|---|
 | `main.py` | Resumable `/invocations` FastAPI server + `/ping` health (HealthyBusy while a CLI runs) |
 | `run-codex.sh` | Codex launcher — routes GPT-5.5 through Bedrock Mantle (no OpenAI key) |
-| `Dockerfile` | ARM64 image: git, Node/npx, **uv/uvx**, pip, **headless chromium**, Claude Code, Codex, otelcol-contrib. Carries the MCP launchers (not specific servers) so a user's synced servers self-install |
+| `Dockerfile` | ARM64 image: git, Node/npx, **uv/uvx**, pip, **headless chromium**, Claude Code, Codex, Kiro, otelcol-contrib. Carries the MCP launchers (not specific servers) so a user's synced servers self-install |
 | `otel-collector-config.yaml` | SigV4 OTLP → CloudWatch `aws/spans` |
 | `setup-coding-runtime-role.sh` | IAM execution role (Bedrock + Mantle + ECR + observability) |
 | `build-and-push.sh` | Build/push ARM64 image to ECR (account/region from `config.sh`) |
@@ -90,7 +90,7 @@ python3 deploy/coding-agent-runtime/invoke.py --cli codex --repo owner/name "...
 |---|---|---|
 | `prompt` | yes* | The task / message for this turn (*not required when `warm` or `checkpoint`) |
 | `repo` | no | `owner/name` or clone URL. Cloned on first turn; recovered from the session map on resume |
-| `cli` | no | `claude` (default) or `codex` |
+| `cli` | no | `claude` (default), `codex`, or `kiro` |
 | `claude_session_id` | no | From a prior turn's response → resumes that Claude Code conversation |
 | `session_id` | no | runtimeSessionId — isolates this session's checkout under `/mnt/efs/sessions/<id>` |
 | `stream` | no | `true` → SSE token stream (claude only) |

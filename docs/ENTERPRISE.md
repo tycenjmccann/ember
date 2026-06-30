@@ -1,6 +1,6 @@
 # Ember for the enterprise
 
-The wedge in one sentence: **Claude Code / Codex on the web, running inside your
+The wedge in one sentence: **Claude Code / Codex / Kiro on the web, running inside your
 own AWS account** — your code, your credentials, your audit logs, your model
 choice. This doc covers the multi-tenant architecture that ships today and the
 remaining gap list to a full company-wide rollout, plus why that posture matters
@@ -12,7 +12,7 @@ right now.
 |---|---|---|---|
 | Claude Code on the web | Anthropic-managed cloud | Claude only | Yes |
 | OpenAI Codex + Ona/Gitpod (acq. Jun 2026) | OpenAI-managed cloud | OpenAI only | Yes |
-| **Ember (this)** | **Your AWS account** | **Claude *and* Codex *and* Bedrock** | **No** |
+| **Ember (this)** | **Your AWS account** | **Claude, Codex, Kiro *and* Bedrock** | **No** |
 
 The incumbents validated the category and then locked it to their cloud + their
 model. The unmet enterprise ask — *"can the agent run in our VPC, on our bill, on

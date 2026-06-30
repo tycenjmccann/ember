@@ -63,7 +63,7 @@ const InputSchema = z.object({
   view: z
     .enum(["chat", "terminal"])
     .optional()
-    .describe("Which surface the deep link opens. Default chat (mobile-friendly). 'terminal' auto-runs `claude --resume` in a live shell."),
+    .describe("Which surface the deep link opens. Default chat (mobile-friendly). 'terminal' auto-runs the CLI's resume in a live shell."),
   commitMessage: z.string().optional().describe("Commit message for the in-flight snapshot."),
   cwd: z.string().optional().describe("Project directory. Defaults to the server's cwd."),
   repoDir: z
@@ -109,8 +109,9 @@ const PULL_TOOL = {
     "Bring a Ember session back to this laptop (the round trip). Asks the " +
     "cloud to checkpoint the session's transcript, pulls the cloud's branch + " +
     "the grown transcript down, and places it so the CLI's native resume " +
-    "(`claude --resume <id>` or `codex resume <id>`) continues locally right " +
-    "where the cloud left off. Works for both Claude Code and Codex sessions. " +
+    "(`claude --resume <id>`, `codex resume <id>`, or `kiro-cli chat --resume-id <id>`) " +
+    "continues locally right where the cloud left off. Works for Claude Code, " +
+    "Codex, and Kiro sessions. " +
     "Use when you're back at your desk after working from your phone. Provide " +
     "the session id (from the deep link) or the Ember session URL.",
   inputSchema: {
@@ -129,8 +130,8 @@ const SYNC_TOOL = {
     "One-time setup: mirror this laptop's coding-CLI configuration to Ember " +
     "so cloud sessions are a clone of your local setup (CLAUDE.md / AGENTS.md, " +
     "skills, custom agents, MCP servers). Run once per CLI — `cli:\"claude\"` " +
-    "uploads your Claude Code config, `cli:\"codex\"` your Codex config; run twice " +
-    "for both. Not part of porting — config is reused by every future session. " +
+    "uploads your Claude Code config, `cli:\"codex\"` your Codex config, " +
+    "`cli:\"kiro\"` your Kiro config. Not part of porting — config is reused by every future session. " +
     "Local-only MCP servers (absolute-path commands) are dropped (they can't run " +
     "in the cloud) and secret env values are redacted before upload.",
   inputSchema: {

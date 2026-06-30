@@ -1007,9 +1007,10 @@ function ConfigSheet({ onClose, onToast }: { onClose: () => void; onToast: (m: s
         </button>
       </div>
       <p className="text-[13px] text-[var(--color-text-secondary)] mb-5 leading-relaxed">
-        Upload a zip of your Claude Code / Codex setup so every session launches with it.
-        Layout: <span className="font-mono">claude/</span> (settings, .mcp.json, skills/, agents/) and{" "}
-        <span className="font-mono">codex/</span> (config.toml, AGENTS.md). Your Bedrock model access is always preserved.
+        Upload a zip of your Claude Code / Codex / Kiro setup so every session launches with it.
+        Layout: <span className="font-mono">claude/</span> (settings, .mcp.json, skills/, agents/),{" "}
+        <span className="font-mono">codex/</span> (config.toml, AGENTS.md), and{" "}
+        <span className="font-mono">kiro/</span> (agents, prompts, global_context.json). Your Bedrock model access is always preserved.
       </p>
 
       <input

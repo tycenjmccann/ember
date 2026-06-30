@@ -112,8 +112,8 @@ all unset — calls go through unauthenticated, as before.
 | `title` | `Ported: <repo>` | Session name shown in the sidebar. |
 | `branch` | current branch | Branch to push the in-flight work to (and check out in the cloud). |
 | `firstPrompt` | a default nudge | First instruction to the resumed agent. |
-| `view` | `chat` | Surface the session opens in. `terminal` auto-runs `claude --resume` in a live PTY; persisted to the session so a sidebar tap reopens it the same way. |
-| `cli` | `claude` | Cloud CLI to resume with (`claude` or `codex`). |
+| `view` | `chat` | Surface the session opens in. `terminal` auto-runs the CLI's resume (`claude --resume` / `codex resume` / `kiro-cli chat --resume-id`) in a live PTY; persisted to the session so a sidebar tap reopens it the same way. |
+| `cli` | `claude` | Cloud CLI to resume with (`claude`, `codex`, or `kiro`). |
 | `commitMessage` | auto | Message for the in-flight snapshot commit. |
 | `cwd` | server cwd | Where the transcript is read (the dir Claude Code launched in). |
 | `repoDir` | = `cwd` | Git repo dir, when it differs from `cwd` (e.g. Claude Code launched from a parent, code is in a subdir). Git ops run here. |
@@ -154,7 +154,7 @@ by hand).
 
 | Arg | Default | Notes |
 |---|---|---|
-| `cli` | — (required) | `claude` or `codex`. One at a time — run twice for both. |
+| `cli` | — (required) | `claude`, `codex`, or `kiro`. One at a time — run once per CLI. |
 
 What it ships per CLI:
 
@@ -195,8 +195,9 @@ CLI client — the admin gets it from `deploy/cognito/setup-cognito.sh`
 
 ## Limits / future
 
-- **Claude only.** `--resume` is a Claude Code mechanism. Codex resume uses a
-  different `thread_id`, not wired through the transcript path yet.
+- **All three CLIs resume.** Claude via `--resume` (transcript `.jsonl`), Codex via
+  `codex resume <thread_id>`, and Kiro via `kiro-cli chat --resume-id <uuid>` (a
+  SQLite conversation row, re-keyed to the local cwd on pull).
 - **Multi-tenant aware.** Sends a Cognito Bearer token (`EMBER_TOKEN` /
   `~/.ember/token`) so ported sessions land in your tenant. Unset = personal
   no-auth deploy. The identity rides the API calls; the per-user config/auth
