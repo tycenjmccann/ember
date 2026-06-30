@@ -327,6 +327,10 @@ def _apply_config_bundle(user_id: str | None, version: str | None,
     token = f"{user_id}:{version}"
     prev = _read_marker()
     if prev.get("token") == token:
+        # Bytes already staged on EFS, but the home-dir symlinks live on the
+        # container-local $HOME, which a warm-VM recycle wipes. Re-link (cheap,
+        # idempotent) before the early return so skills stay visible post-recycle.
+        _link_cli_dirs()
         return  # already applied to this warm VM
     # Switching versions/disabling → clear the previous bundle's files first.
     if prev.get("files"):
