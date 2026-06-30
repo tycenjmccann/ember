@@ -85,6 +85,9 @@ export interface CodingTurnParams {
   gitMode?: "pushed" | "bundle" | "selfContained" | "none";
   cloneUrl?: string;
   resumeBundleKey?: string;
+  // S3 prefix the session's ported artifacts live under. When set, the runtime
+  // restores each object into the workspace's .ember/artifacts/ on warm/resume.
+  artifactPrefix?: string;
 }
 
 function buildTurnPayload(params: CodingTurnParams): Record<string, unknown> {
@@ -108,6 +111,7 @@ function buildTurnPayload(params: CodingTurnParams): Record<string, unknown> {
   if (params.gitMode) payload.git_mode = params.gitMode;
   if (params.cloneUrl) payload.clone_url = params.cloneUrl;
   if (params.resumeBundleKey) payload.resume_bundle = params.resumeBundleKey;
+  if (params.artifactPrefix) payload.artifact_prefix = params.artifactPrefix;
   return payload;
 }
 
@@ -215,6 +219,7 @@ export async function warmCodingSession(params: {
   gitMode?: "pushed" | "bundle" | "selfContained" | "none";
   cloneUrl?: string;
   resumeBundleKey?: string;
+  artifactPrefix?: string;
   // Materialize the user's config bundle (skills/agents/MCP) as part of warming,
   // so an opened session is hot AND has the user's tools without a chat turn.
   userId?: string;
@@ -238,6 +243,7 @@ export async function warmCodingSession(params: {
   if (params.gitMode) payload.git_mode = params.gitMode;
   if (params.cloneUrl) payload.clone_url = params.cloneUrl;
   if (params.resumeBundleKey) payload.resume_bundle = params.resumeBundleKey;
+  if (params.artifactPrefix) payload.artifact_prefix = params.artifactPrefix;
   if (params.userId) payload.user_id = params.userId;
   if (params.configVersion) payload.config_version = params.configVersion;
   if (params.authMode) payload.auth_mode = params.authMode;
@@ -325,7 +331,14 @@ export async function checkpointCodingSession(params: {
   resumeSessionId?: string; // the conversation's real id (the transcript filename)
   tenantId?: string;
   region?: string;
-}): Promise<{ key?: string; bytes?: number; branch?: string }> {
+}): Promise<{
+  key?: string;
+  bytes?: number;
+  branch?: string;
+  artifactPrefix?: string;
+  artifactCount?: number;
+  artifactBytes?: number;
+}> {
   const runtimeArn = await runtimeArnFor(params.tenantId);
   const region = params.region || REGION;
   const payload: Record<string, unknown> = {
@@ -357,5 +370,8 @@ export async function checkpointCodingSession(params: {
     key: parsed.key as string | undefined,
     bytes: parsed.bytes as number | undefined,
     branch: parsed.branch as string | undefined,
+    artifactPrefix: (parsed.artifact_prefix as string | undefined) || undefined,
+    artifactCount: parsed.artifact_count as number | undefined,
+    artifactBytes: parsed.artifact_bytes as number | undefined,
   };
 }

@@ -48,6 +48,7 @@ export async function POST(
       gitMode: session.gitMode,
       cloneUrl: session.cloneUrl,
       resumeBundleKey: session.resumeBundleKey,
+      artifactPrefix: session.artifactPrefix,
       userId,
       tenantId,
       configVersion,

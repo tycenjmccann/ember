@@ -36,6 +36,7 @@ import {
 } from "./cli-adapter.js";
 import { gatherBundle } from "./config.js";
 import { gatherLoginBody } from "./login.js";
+import { detectArtifacts, uploadArtifact, stageArtifactLocally, downloadArtifact, fmtBytes } from "./artifacts.js";
 import { emberFetch } from "./auth.js";
 import { runCognitoLogin } from "./cognito-login.js";
 
@@ -74,6 +75,10 @@ const InputSchema = z.object({
     .boolean()
     .optional()
     .describe("Force bundle mode (ship a git bundle for the cloud to apply onto a clone of origin) even when origin is writable. Useful when you don't want to push a wip branch to a shared/upstream repo."),
+  artifacts: z
+    .enum(["y", "n", "auto"])
+    .optional()
+    .describe("Touched-but-untracked files this session produced/used (generated images, exports, datasets, media). omitted/'auto'/'y' = detect + ship them to the cloud's .ember/artifacts/; 'n' = skip. The filter is precise (only files the conversation touched that aren't git-tracked), so 'auto' ships deliverables without shipping junk."),
 });
 
 const server = new Server(
@@ -99,6 +104,7 @@ const TOOL = {
       cli: { type: "string", enum: ["claude", "codex", "kiro"], description: "Cloud CLI to resume with. Default claude." },
       commitMessage: { type: "string", description: "Commit message for the in-flight snapshot." },
       cwd: { type: "string", description: "Project directory. Defaults to the server cwd." },
+      artifacts: { type: "string", enum: ["y", "n", "auto"], description: "Ship session-touched untracked files (images/exports/data/media) to the cloud. auto/y=detect+ship, n=skip. Default auto." },
     },
   },
 };
@@ -335,6 +341,7 @@ async function runPull(rawArgs: unknown) {
     branch?: string;
     repo?: string;
     bytes?: number;
+    artifacts?: { rel: string; url: string; bytes: number }[];
     error?: string;
   };
   if (!res.ok) throw new Error(data.error || `checkpoint returned ${res.status}`);
@@ -365,7 +372,36 @@ async function runPull(rawArgs: unknown) {
     }
   }
 
+  // 5. bring home the cloud session's artifacts (touched-untracked deliverables
+  //    it produced — media, exports, data). Streamed into local .ember/artifacts/.
+  //    Per-file failure is non-fatal + named; the pull already succeeded.
+  const pulledArtifacts: string[] = [];
+  const failedArtifacts: { rel: string; error: string }[] = [];
+  let artifactBytes = 0;
+  if (data.artifacts?.length) {
+    await Promise.all(
+      data.artifacts.map(async (a) => {
+        try {
+          await downloadArtifact(cwd, a.rel, a.url);
+          pulledArtifacts.push(a.rel);
+          artifactBytes += a.bytes || 0;
+        } catch (e) {
+          failedArtifacts.push({ rel: a.rel, error: (e as Error).message });
+        }
+      })
+    );
+  }
+
   const sizeMb = (bytes.length / 1_048_576).toFixed(1);
+  const artifactLine =
+    pulledArtifacts.length > 0
+      ? `Artifacts: ${pulledArtifacts.length} file${pulledArtifacts.length === 1 ? "" : "s"} ` +
+        `(${fmtBytes(artifactBytes)}) → .ember/artifacts/ — ${pulledArtifacts.slice(0, 8).join(", ")}`
+      : "";
+  const artifactFailLine =
+    failedArtifacts.length > 0
+      ? `⚠️ ${failedArtifacts.length} artifact(s) failed: ${failedArtifacts.map((f) => f.rel).join(", ")}`
+      : "";
   const summary = [
     `✅ Pulled session home.`,
     ``,
@@ -373,6 +409,8 @@ async function runPull(rawArgs: unknown) {
     data.branch ? `Branch: ${gitNote}` : "",
     `Transcript: ${sizeMb} MB → ${placed.path}${placed.overwrote ? " (overwrote local)" : ""}`,
     placed.backup ? `Prior local copy backed up → ${placed.backup}` : "",
+    artifactLine,
+    artifactFailLine,
     ``,
     `Now exit this session and resume the pulled one:`,
     `  /exit`,
@@ -573,6 +611,15 @@ server.setRequestHandler(CallToolRequestSchema, async (req) => {
     const claudeSessionId = located.sessionId; // CLI-native resume id (field name kept for the API)
     const transcript = await readTranscriptBytes(located.file); // raw bytes → native resume
 
+    // 1b. artifact detection. The files this session touched that exist locally
+    //     and aren't git-tracked are exactly the deliverables the code bundle
+    //     misses. 'n' skips; 'auto'/'y' detect and (below) ship them.
+    const artifactMode = args.artifacts ?? "auto";
+    const detected =
+      artifactMode === "n"
+        ? null
+        : await detectArtifacts({ cwd, repoDir, transcript }).catch(() => null);
+
     // 2. git handoff — best-effort, flexible. The transcript ships regardless;
     //    git just determines whether (and how) the cloud also gets your code.
     const state = await readState(repoDir);
@@ -602,12 +649,18 @@ server.setRequestHandler(CallToolRequestSchema, async (req) => {
         cli,
         view: args.view || "chat",
         title: args.title,
+        // Artifact manifest → the route presigns a PUT per file. rel is the
+        // on-the-wire identity (validated server-side against path traversal).
+        artifacts: detected
+          ? detected.candidates.map((c) => ({ rel: c.rel, bytes: c.bytes }))
+          : undefined,
       }),
     });
     const data = (await res.json().catch(() => ({}))) as {
       url?: string;
       uploadUrl?: string;
       bundleUploadUrl?: string;
+      artifactUploads?: { rel: string; url: string }[];
       error?: string;
       session?: { sessionId?: string };
     };
@@ -631,6 +684,29 @@ server.setRequestHandler(CallToolRequestSchema, async (req) => {
         body: bundleBytes,
       });
       if (!ub.ok) throw new Error(`bundle upload failed: ${ub.status} ${ub.statusText}`);
+    }
+
+    // 4c. stream each detected artifact to its presigned PUT. Per-file failure is
+    //     NON-fatal — the port already succeeded (code + transcript shipped); we
+    //     count + NAME failures so the summary never reads a silent "0/N". Files
+    //     also copy into local .ember/artifacts so the pull round trip is symmetric.
+    const uploadedArtifacts: string[] = [];
+    const failedArtifacts: { rel: string; error: string }[] = [];
+    if (detected && data.artifactUploads?.length) {
+      const byRel = new Map(detected.candidates.map((c) => [c.rel, c]));
+      await Promise.all(
+        data.artifactUploads.map(async (u) => {
+          const cand = byRel.get(u.rel);
+          if (!cand) return;
+          try {
+            await uploadArtifact(u.url, cand.abs, cand.bytes);
+            uploadedArtifacts.push(u.rel);
+            await stageArtifactLocally(cwd, u.rel, cand.abs).catch(() => {});
+          } catch (e) {
+            failedArtifacts.push({ rel: u.rel, error: (e as Error).message });
+          }
+        })
+      );
     }
 
     // 6. pre-warm the microVM now (clone + checkout + install transcript) so the
@@ -701,11 +777,51 @@ server.setRequestHandler(CallToolRequestSchema, async (req) => {
       );
     }
 
+    // Artifacts line — what shipped, what failed (named), what the caps skipped.
+    // Never a silent "0/N": every excluded file is accounted for so the user
+    // knows exactly which deliverables did and didn't make the trip.
+    const artifactLines: string[] = [];
+    if (detected && (detected.count > 0 || detected.overCap.length > 0 || detected.dropped.length > 0)) {
+      if (detected.count > 0) {
+        const okBytes = detected.candidates
+          .filter((c) => uploadedArtifacts.includes(c.rel))
+          .reduce((n, c) => n + c.bytes, 0);
+        const names = uploadedArtifacts.slice(0, 8);
+        const more = uploadedArtifacts.length - names.length;
+        artifactLines.push(
+          ``,
+          `Artifacts: ${uploadedArtifacts.length}/${detected.count} shipped (${fmtBytes(okBytes)}) ` +
+            `→ restored in the cloud's .ember/artifacts/.`
+        );
+        if (names.length) artifactLines.push(`  ${names.join(", ")}${more > 0 ? `, +${more} more` : ""}`);
+      }
+      if (failedArtifacts.length > 0) {
+        artifactLines.push(
+          `  ⚠️ ${failedArtifacts.length} failed: ` +
+            failedArtifacts.map((f) => `${f.rel} (${f.error})`).join(", ")
+        );
+      }
+      const fileCapMb = Math.round(detected.fileCapBytes / 1024 / 1024);
+      if (detected.overCap.length > 0) {
+        artifactLines.push(
+          `  ${detected.overCap.length} over the ${fileCapMb} MB per-file cap (skipped): ` +
+            detected.overCap.map((c) => `${c.rel} (${fmtBytes(c.bytes)})`).join(", ")
+        );
+      }
+      if (detected.dropped.length > 0) {
+        artifactLines.push(
+          `  ${detected.dropped.length} skipped by the count/total cap: ` +
+            detected.dropped.map((c) => c.rel).slice(0, 8).join(", ")
+        );
+      }
+    }
+
     const summary = [
       `✅ Ported to Ember (native resume).`,
       ``,
       `Transcript: ${sizeMb} MB uploaded — the cloud agent resumes this exact session (${resumeCommand(cli, claudeSessionId)}).`,
       ...codeLines,
+      ...artifactLines,
       ``,
       `Open on any device:`,
       link,
