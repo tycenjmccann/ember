@@ -47,3 +47,29 @@ export function transcriptKey(tenantId: string, sessionId: string, claudeSession
 export function bundleKey(tenantId: string, sessionId: string): string {
   return `${resumePrefix(tenantId, sessionId)}work.bundle`;
 }
+
+/** Prefix the session's ported artifacts (touched-but-untracked deliverables —
+ *  generated media, exports, datasets) live under. The runtime lists this prefix
+ *  on warm and restores each object into the workspace's .ember/artifacts/. */
+export function artifactPrefix(tenantId: string, sessionId: string): string {
+  return `${resumePrefix(tenantId, sessionId)}artifacts/`;
+}
+
+/** S3 key for one ported artifact, identified by its workspace-relative path.
+ *  `rel` MUST be validated (no leading slash, no `..` segment) before this is
+ *  called — see safeRelPath. */
+export function artifactKey(tenantId: string, sessionId: string, rel: string): string {
+  return `${artifactPrefix(tenantId, sessionId)}${rel}`;
+}
+
+/** Validate an artifact's workspace-relative path: reject absolute paths and any
+ *  `..` traversal so a malicious/buggy manifest can't write outside the session's
+ *  artifact prefix (server side) or workspace (runtime side). Returns a POSIX rel
+ *  path, or null if unsafe. */
+export function safeRelPath(rel: string): string | null {
+  if (typeof rel !== "string" || !rel) return null;
+  const norm = rel.replace(/\\/g, "/");
+  if (norm.startsWith("/")) return null;
+  if (norm.split("/").some((seg) => seg === ".." || seg === "")) return null;
+  return norm;
+}

@@ -35,7 +35,13 @@ import { S3Client, PutObjectCommand } from "@aws-sdk/client-s3";
 import { getSignedUrl } from "@aws-sdk/s3-request-presigner";
 import { putSession } from "@/lib/ember/sessions";
 import { getIdentity } from "@/lib/ember/identity";
-import { transcriptKey as buildTranscriptKey, bundleKey as buildBundleKey } from "@/lib/ember/s3keys";
+import {
+  transcriptKey as buildTranscriptKey,
+  bundleKey as buildBundleKey,
+  artifactKey as buildArtifactKey,
+  artifactPrefix as buildArtifactPrefix,
+  safeRelPath,
+} from "@/lib/ember/s3keys";
 import type { EmberSession, EmberCli, EmberAuthMode } from "@/lib/ember/types";
 
 export const dynamic = "force-dynamic";
@@ -43,6 +49,10 @@ export const dynamic = "force-dynamic";
 const REGION = process.env.AWS_REGION || "us-east-1";
 const ARTIFACT_BUCKET = process.env.ARTIFACT_BUCKET || "";
 const UPLOAD_EXPIRES = 900; // 15 min to push the transcript
+// Server-side guard on the artifact manifest: a sane ceiling on how many PUTs we
+// presign per port (the MCP already applies its own count/size caps; this is the
+// untrusted-input backstop). Over-cap entries are dropped, not errored.
+const MAX_ARTIFACTS = 200;
 
 // Best-effort owner/name from any clone URL (for the default session title).
 function parseRepoFromUrl(url?: string): string | undefined {
@@ -113,6 +123,22 @@ export async function POST(request: NextRequest) {
     const transcriptKey = buildTranscriptKey(tenantId, sessionId, claudeSessionId);
     const bundleKey = wantBundleUpload ? buildBundleKey(tenantId, sessionId) : undefined;
 
+    // Artifact manifest (touched-but-untracked deliverables the MCP detected).
+    // Validate every rel path against traversal, dedupe, and cap the count —
+    // this is untrusted input that becomes S3 keys. Each survivor gets a
+    // presigned PUT the MCP streams the file to.
+    const rawArtifacts: Array<{ rel?: unknown }> = Array.isArray(body.artifacts) ? body.artifacts : [];
+    const artifactRels: string[] = [];
+    const seenRel = new Set<string>();
+    for (const a of rawArtifacts) {
+      if (artifactRels.length >= MAX_ARTIFACTS) break;
+      const safe = safeRelPath(typeof a?.rel === "string" ? a.rel : "");
+      if (!safe || seenRel.has(safe)) continue;
+      seenRel.add(safe);
+      artifactRels.push(safe);
+    }
+    const hasArtifacts = artifactRels.length > 0;
+
     const session: EmberSession = {
       sessionId,
       userId,
@@ -128,6 +154,7 @@ export async function POST(request: NextRequest) {
       // Resume the laptop conversation natively from the uploaded transcript.
       claudeSessionId,
       resumeTranscriptKey: transcriptKey,
+      artifactPrefix: hasArtifacts ? buildArtifactPrefix(tenantId, sessionId) : undefined,
       defaultView,
       pendingSeed: buildResumePrompt({ branch, firstPrompt }),
       createdAt: now,
@@ -158,11 +185,27 @@ export async function POST(request: NextRequest) {
         )
       : undefined;
 
+    // A presigned PUT per validated artifact rel. The MCP streams each file here.
+    const artifactUploads = await Promise.all(
+      artifactRels.map(async (rel) => ({
+        rel,
+        url: await getSignedUrl(
+          s3,
+          new PutObjectCommand({
+            Bucket: ARTIFACT_BUCKET,
+            Key: buildArtifactKey(tenantId, sessionId, rel),
+            ContentType: "application/octet-stream",
+          }),
+          { expiresIn: UPLOAD_EXPIRES }
+        ),
+      }))
+    );
+
     const base = process.env.DEPLOYMENT_URL || request.nextUrl.origin || "";
     const url = `${base.replace(/\/$/, "")}/ember?session=${sessionId}`;
 
     return NextResponse.json(
-      { session, url, uploadUrl, transcriptKey, bundleUploadUrl, bundleKey },
+      { session, url, uploadUrl, transcriptKey, bundleUploadUrl, bundleKey, artifactUploads },
       { status: 201 }
     );
   } catch (err) {

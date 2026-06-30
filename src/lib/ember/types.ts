@@ -67,6 +67,11 @@ export interface EmberSession {
   // S3 key of a git bundle: the laptop's in-flight commits (gitMode="bundle") or
   // the whole repo as `bundle --all` (gitMode="selfContained").
   resumeBundleKey?: string;
+  // S3 prefix the session's ported artifacts live under (touched-but-untracked
+  // deliverables: generated media, exports, datasets). Set at port time when the
+  // session shipped any; the runtime lists it on warm and restores each object
+  // into the workspace's .ember/artifacts/. Absent → no artifacts were shipped.
+  artifactPrefix?: string;
   // Which surface this session opens in (sidebar tap restores it). Set at port
   // time; defaults to chat. A ported terminal session auto-runs the CLI's resume
   // (claude --resume / codex resume / kiro-cli chat --resume-id — all three) in
