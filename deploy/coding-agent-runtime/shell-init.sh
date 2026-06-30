@@ -122,7 +122,22 @@ fi
 # The prepare step materializes the access key to the tmpfs creds dir when the
 # session is kiro. KIRO_HOME points at the per-session SQLite store. Secret never
 # lands on the shared EFS.
+# The chat path isolates each Ember session under its own KIRO_HOME
+# (_kiro_home_for); the PTY otherwise only sees the deploy-default and would read
+# a different — shared, cross-session — DB. The resume hint carries this session's
+# per-session home as EMBER_KIRO_HOME; prefer it so the Terminal reads the same
+# conversation store the headless turn wrote. (The hint lives in container-local
+# /tmp, one microVM per session, so it can't leak across sessions.)
+_resume_hint="/tmp/.resume-launch.sh"
+if [ -f "$_resume_hint" ]; then
+  # shellcheck disable=SC1090
+  . "$_resume_hint"
+  [ -n "${EMBER_KIRO_HOME:-}" ] && KIRO_HOME="$EMBER_KIRO_HOME"
+fi
 export KIRO_HOME="${KIRO_HOME:-$WORKSPACE_ROOT/.kiro-data}"
+# Kiro's SQLite session store follows $XDG_DATA_HOME/kiro-cli/, not $KIRO_HOME —
+# pin XDG_DATA_HOME so a resumed PTY reads the same DB the chat path wrote.
+export XDG_DATA_HOME="$KIRO_HOME"
 mkdir -p "$KIRO_HOME" 2>/dev/null || true
 if [ -f "$_EPHEMERAL_CREDS_DIR/.kiro-api-key" ]; then
   export KIRO_API_KEY="$(cat "$_EPHEMERAL_CREDS_DIR/.kiro-api-key")"

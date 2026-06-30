@@ -701,7 +701,11 @@ def _kiro_home_for(session_id: str | None) -> str:
 
 
 def _kiro_db_path(kiro_home: str | None = None) -> str:
-    return os.path.join(kiro_home or KIRO_HOME, "data.sqlite3")
+    # Kiro stores its SQLite under $XDG_DATA_HOME/kiro-cli/ (NOT $KIRO_HOME). We
+    # point XDG_DATA_HOME at the per-session home (see _run_kiro), so the DB lands
+    # in <home>/kiro-cli/data.sqlite3 — match that here so install/discovery/
+    # checkpoint all read the same file kiro actually wrote.
+    return os.path.join(kiro_home or KIRO_HOME, "kiro-cli", "data.sqlite3")
 
 
 def _install_kiro_resume_transcript(s3_key: str, session_id: str, workdir: str,
@@ -786,25 +790,35 @@ RESUME_HINT_PATH = "/tmp/.resume-launch.sh"  # noqa: S108 — container-local, s
 RESUME_HINT_NAME = ".resume-launch.sh"
 
 
-def _write_resume_launch_hint(workdir: str, resume_sid: str, runtime_session_id: str | None) -> bool:
+def _write_resume_launch_hint(workdir: str, resume_sid: str, runtime_session_id: str | None,
+                              cli: str = "claude", kiro_home: str | None = None) -> bool:
     """Write the hint the interactive shell reads on launch to
-    `cd <workdir> && claude --resume <resume_sid>` itself — so the browser never
+    `cd <workdir> && <cli> --resume <resume_sid>` itself — so the browser never
     types the resume command into an already-running TUI on reattach.
 
-    Two distinct ids: `resume_sid` is the CLAUDE conversation id (the `--resume`
-    arg); `runtime_session_id` is the AgentCore runtimeSessionId that keys the
+    Two distinct ids: `resume_sid` is the conversation id (the resume arg);
+    `runtime_session_id` is the AgentCore runtimeSessionId that keys the
     per-session EFS dir AND is what _restore_resume_launch_hint looks up later.
     They differ, so the durable copy MUST be keyed by the runtime id or restore
     would miss it on a recycled VM.
 
+    For kiro we also carry EMBER_KIRO_HOME (the per-session _kiro_home_for dir):
+    the PTY shell otherwise only sees the deploy-default KIRO_HOME and would read
+    a different — shared, cross-session — SQLite store than the chat path wrote.
+    shell-init exports KIRO_HOME/XDG_DATA_HOME from it so the Terminal sees the
+    same conversation row this session created.
+
     Writes both the private /tmp copy (what shell-init reads) and a durable copy
     in the per-session EFS dir (survives a VM recycle; restored to /tmp by
     _restore_resume_launch_hint). shell-init sources it once per fresh shell (its
-    run-once guard means a PTY reattach to a live `claude` never re-launches)."""
+    run-once guard means a PTY reattach to a live CLI never re-launches)."""
     body = (
         f"EMBER_RESUME_DIR={shlex.quote(os.path.realpath(workdir))}\n"
         f"EMBER_RESUME_SID={shlex.quote(resume_sid)}\n"
+        f"EMBER_RESUME_CLI={shlex.quote(cli)}\n"
     )
+    if cli == "kiro" and kiro_home:
+        body += f"EMBER_KIRO_HOME={shlex.quote(kiro_home)}\n"
     ok = False
     try:
         with open(RESUME_HINT_PATH, "w") as f:
@@ -824,6 +838,33 @@ def _write_resume_launch_hint(workdir: str, resume_sid: str, runtime_session_id:
             logger.warning("resume_hint_persist_failed", extra={"error": str(exc)[:200]})
     if ok:
         logger.info("resume_launch_hint_written", extra={"workdir": workdir})
+    return ok
+
+
+def _write_kiro_home_hint(session_id: str | None, kiro_home: str) -> bool:
+    """Pin the PTY to this session's per-session KIRO_HOME when there's nothing to
+    resume yet (a kiro Terminal opened before any headless turn). Writes ONLY
+    EMBER_KIRO_HOME — no EMBER_RESUME_SID — so shell-init isolates the data dir but
+    doesn't auto-exec a resume. Without this the first Terminal turn would land in
+    the shared deploy-default KIRO_HOME (a cross-session EFS DB). Mirrors
+    _write_resume_launch_hint's dual write: private /tmp + durable per-session EFS
+    (restored to /tmp by _restore_resume_launch_hint on a recycled VM)."""
+    body = f"EMBER_RESUME_CLI=kiro\nEMBER_KIRO_HOME={shlex.quote(kiro_home)}\n"
+    ok = False
+    try:
+        with open(RESUME_HINT_PATH, "w") as f:
+            f.write(body)
+        ok = True
+    except OSError as exc:
+        logger.warning("kiro_home_hint_failed", extra={"error": str(exc)[:200]})
+    if session_id:
+        try:
+            sdir = _session_dir(session_id)
+            os.makedirs(sdir, exist_ok=True)
+            with open(os.path.join(sdir, RESUME_HINT_NAME), "w") as f:
+                f.write(body)
+        except OSError as exc:
+            logger.warning("kiro_home_hint_persist_failed", extra={"error": str(exc)[:200]})
     return ok
 
 
@@ -1612,7 +1653,9 @@ def _run_kiro(prompt: str, workdir: str, kiro_session_id: str | None,
             "(login_cli kiro). Kiro has no Bedrock fallback.")
     home = kiro_home or KIRO_HOME
     os.makedirs(home, exist_ok=True)
-    env = {**os.environ, "KIRO_HOME": home, "KIRO_API_KEY": api_key}
+    # Kiro's session DB follows $XDG_DATA_HOME/kiro-cli/, not $KIRO_HOME — pin both
+    # so the per-session store is isolated AND lands where _kiro_db_path looks.
+    env = {**os.environ, "KIRO_HOME": home, "XDG_DATA_HOME": home, "KIRO_API_KEY": api_key}
 
     args = ["kiro-cli", "chat", "--no-interactive", "--trust-all-tools"]
     if KIRO_MODEL:
@@ -1791,6 +1834,14 @@ async def invocations(request: Request):
     # success/failure but always 200 so the /shell best-effort caller never errors
     # (a stale-mount VM will be replaced; the next turn retries).
     if prepare:
+        # A kiro session opened straight in Terminal (no headless turn / ported
+        # transcript yet) returns here before any _write_resume_launch_hint call,
+        # so the PTY would fall back to the shared deploy-default KIRO_HOME and put
+        # its FIRST conversation into a cross-session EFS DB. Pin the per-session
+        # home now (no resume id needed) so even that first Terminal turn is
+        # isolated. Don't clobber a richer hint already on disk (one with a SID).
+        if cli == "kiro" and kiro_home and not os.path.exists(RESUME_HINT_PATH):
+            _write_kiro_home_hint(session_id, kiro_home)
         # resume_ready: a (restored or prior) /tmp hint means the Terminal will
         # auto-resume this non-ported conversation.
         resume_ready = os.path.exists(RESUME_HINT_PATH)
@@ -1877,6 +1928,9 @@ async def invocations(request: Request):
         resume_ready = False
         if cli == "claude" and claude_session_id:
             resume_ready = _write_resume_launch_hint(workdir, claude_session_id, session_id)
+        elif cli == "kiro" and claude_session_id:
+            resume_ready = _write_resume_launch_hint(
+                workdir, claude_session_id, session_id, cli="kiro", kiro_home=kiro_home)
     except ValueError as ve:  # bad repo field — caller error, not a 500
         return JSONResponse({"error": str(ve)}, status_code=400)
     except Exception as exc:  # noqa: BLE001
@@ -1939,6 +1993,9 @@ async def invocations(request: Request):
     # the Terminal for this non-ported session also auto-resumes the conversation.
     if cli == "claude" and result.get("claude_session_id"):
         _write_resume_launch_hint(workdir, result["claude_session_id"], session_id)
+    elif cli == "kiro" and result.get("claude_session_id"):
+        _write_resume_launch_hint(
+            workdir, result["claude_session_id"], session_id, cli="kiro", kiro_home=kiro_home)
 
     result.update({"cli": cli, "workspace": workdir})
     logger.info("turn_done", extra={"cli": cli, "chars": len(result.get("response") or "")})
