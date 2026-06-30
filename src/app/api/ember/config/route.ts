@@ -31,7 +31,12 @@ export const maxDuration = 60;
 
 const REGION = process.env.AWS_REGION || "us-east-1";
 const s3 = new S3Client({ region: REGION });
-const MAX_BYTES = 25 * 1024 * 1024; // 25 MB — configs are small
+// Config bundles are normally small, but a Claude skills tree with referenced
+// media (demo videos, audio) legitimately runs to tens of MB after rebuildable
+// dirs (.venv/node_modules/renders) are pruned client-side. 100 MB clears that
+// with headroom while still rejecting a runaway upload. The route buffers the
+// body in memory, so this is also the per-request memory ceiling.
+const MAX_BYTES = 100 * 1024 * 1024; // 100 MB
 
 export async function GET(request: NextRequest) {
   const { userId } = getIdentity(request);
@@ -50,7 +55,7 @@ export async function POST(request: NextRequest) {
     return NextResponse.json({ error: "multipart field 'bundle' (a .zip) is required" }, { status: 400 });
   }
   if (file.size > MAX_BYTES) {
-    return NextResponse.json({ error: "bundle exceeds 25 MB" }, { status: 413 });
+    return NextResponse.json({ error: "bundle exceeds 100 MB" }, { status: 413 });
   }
   const label = (form?.get("label") as string) || undefined;
   // scope=claude|codex → merge only that CLI's subtree into the current bundle

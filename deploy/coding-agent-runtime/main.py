@@ -75,6 +75,16 @@ CLAUDE_CONFIG_DIR = os.environ.get("CLAUDE_CONFIG_DIR", os.path.join(WORKSPACE_R
 CODEX_HOME = os.environ.get("CODEX_HOME", os.path.join(WORKSPACE_ROOT, ".codex"))
 # Kiro keeps sessions in a SQLite DB under its data dir; KIRO_HOME relocates it.
 KIRO_HOME = os.environ.get("KIRO_HOME", os.path.join(WORKSPACE_ROOT, ".kiro-data"))
+
+# Skills (agentskills.io standard) and Kiro's config dir are read from FIXED
+# home-relative paths the CLIs hardcode — codex from ~/.agents/skills, kiro from
+# ~/.kiro/{skills,agents,prompts,steering} — which CODEX_HOME/KIRO_HOME do NOT
+# relocate. $HOME is container-local (wiped on a warm-VM recycle) while config
+# persists on EFS, so we stage these subtrees in EFS-backed dirs and symlink the
+# fixed home paths onto them (the same trick _codex_home_for uses for auth.json).
+_HOME = os.environ.get("HOME", "/home/bedrock_agentcore")
+CODEX_SKILLS_DIR = os.path.join(WORKSPACE_ROOT, ".agents-skills")  # → ~/.agents/skills
+KIRO_CONFIG_DIR = os.path.join(WORKSPACE_ROOT, ".kiro-config")     # → ~/.kiro/<dir>
 # Marker so we only materialize a given (user, version) once per warm microVM.
 _CONFIG_MARKER = os.path.join(WORKSPACE_ROOT, ".config-applied")
 BEDROCK_MANTLE_REGION = os.environ.get("BEDROCK_MANTLE_REGION", "us-east-2")
@@ -242,6 +252,35 @@ def _seed_claude_first_run(workdir: str | None = None) -> None:
 # ─── Per-user config bundle ───────────────────────────────────────────────────
 
 
+def _link_cli_dirs() -> None:
+    """Symlink the CLIs' FIXED home-relative config dirs onto the EFS-staged copies.
+
+    Codex reads USER-scope skills from ~/.agents/skills and Kiro reads its config
+    from ~/.kiro/* — paths neither CODEX_HOME nor KIRO_HOME relocates. $HOME is
+    container-local (gone after a warm-VM recycle), so we keep the real bytes on
+    EFS (CODEX_SKILLS_DIR / KIRO_CONFIG_DIR) and repoint the home dirs at them
+    each apply (idempotent; refresh in case $HOME was recreated)."""
+    links = {
+        os.path.join(_HOME, ".agents", "skills"): CODEX_SKILLS_DIR,
+        os.path.join(_HOME, ".kiro"): KIRO_CONFIG_DIR,
+    }
+    for link, target in links.items():
+        try:
+            os.makedirs(os.path.dirname(link), exist_ok=True)
+            # Replace any prior link/dir so the home path always points at EFS.
+            if os.path.islink(link):
+                if os.path.realpath(link) == os.path.realpath(target):
+                    continue
+                os.remove(link)
+            elif os.path.isdir(link):
+                shutil.rmtree(link)
+            elif os.path.exists(link):
+                os.remove(link)
+            os.symlink(target, link)
+        except OSError as exc:
+            logger.warning("cli_dir_link_failed", extra={"link": link, "error": str(exc)[:200]})
+
+
 def _apply_config_bundle(user_id: str | None, version: str | None,
                          tenant_id: str | None = None) -> None:
     """Materialize a user's coding-CLI config bundle into the CLI config dirs.
@@ -302,22 +341,43 @@ def _apply_config_bundle(user_id: str | None, version: str | None,
         logger.warning("config_bundle_fetch_failed", extra={"key": key, "error": str(exc)[:200]})
         return
 
-    dests = {"claude": CLAUDE_CONFIG_DIR, "codex": CODEX_HOME, "kiro": KIRO_HOME}
-    for d in dests.values():
+    # Stage every subtree on EFS (persists across warm-VM recycles), then symlink
+    # the CLIs' FIXED home-relative dirs onto the staged copies (see _link_cli_dirs).
+    for d in (CLAUDE_CONFIG_DIR, CODEX_HOME, KIRO_HOME, CODEX_SKILLS_DIR, KIRO_CONFIG_DIR):
         os.makedirs(d, exist_ok=True)
+
+    def _route(member: str) -> str | None:
+        """Map a bundle member path to its EFS staging target, honoring the CLI's
+        real on-disk layout. Returns None for anything we don't recognize."""
+        top, _, rel = member.partition("/")
+        if not rel:
+            return None
+        if top == "claude":
+            return os.path.join(CLAUDE_CONFIG_DIR, rel)
+        if top == "codex":
+            # Skills are USER-scope at ~/.agents/skills, NOT under CODEX_HOME.
+            if rel.startswith("skills/"):
+                return os.path.join(CODEX_SKILLS_DIR, rel[len("skills/"):])
+            return os.path.join(CODEX_HOME, rel)
+        if top == "kiro":
+            # skills/agents/prompts/steering → ~/.kiro/<dir>.
+            return os.path.join(KIRO_CONFIG_DIR, rel)
+        return None
+
     applied_paths: list = []
     try:
         with zipfile.ZipFile(io.BytesIO(raw)) as zf:
             for member in zf.namelist():
                 if member.endswith("/"):
                     continue
-                top, _, rel = member.partition("/")
-                dest_root = dests.get(top)
-                if not dest_root or not rel:
-                    continue  # ignore anything outside claude/ or codex/
-                # Path-traversal guard.
-                target = os.path.normpath(os.path.join(dest_root, rel))
-                if not target.startswith(os.path.normpath(dest_root) + os.sep):
+                target = _route(member)
+                if not target:
+                    continue  # outside a recognized CLI subtree
+                # Path-traversal guard: target must stay within its staging root.
+                target = os.path.normpath(target)
+                roots = (CLAUDE_CONFIG_DIR, CODEX_HOME, KIRO_HOME,
+                         CODEX_SKILLS_DIR, KIRO_CONFIG_DIR)
+                if not any(target.startswith(os.path.normpath(r) + os.sep) for r in roots):
                     continue
                 os.makedirs(os.path.dirname(target), exist_ok=True)
                 with zf.open(member) as src, open(target, "wb") as out:
@@ -326,6 +386,9 @@ def _apply_config_bundle(user_id: str | None, version: str | None,
     except zipfile.BadZipFile:
         logger.warning("config_bundle_bad_zip", extra={"key": key})
         return
+
+    # Point the CLIs' hardcoded home dirs at the EFS-staged subtrees.
+    _link_cli_dirs()
 
     # Record token + the exact files written, so a later disable/switch removes
     # precisely this bundle (and nothing else in the shared config dirs).
