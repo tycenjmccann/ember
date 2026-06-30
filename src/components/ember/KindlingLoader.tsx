@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useRef } from "react";
+import { useEffect, useId, useRef, useState } from "react";
 
 /**
  * KindlingLoader — the cold-start wait, reimagined as an ember pile catching
@@ -33,8 +33,6 @@ export interface KindlingLoaderProps {
   className?: string;
 }
 
-let SEQ = 0;
-
 export function KindlingLoader({
   lit = false,
   phases = PHASES_DEFAULT,
@@ -47,8 +45,23 @@ export function KindlingLoader({
   const gSmallRef = useRef<SVGLinearGradientElement>(null);
   const gBigRef = useRef<SVGLinearGradientElement>(null);
   const rafRef = useRef<number | null>(null);
-  // Unique gradient ids so multiple instances on one page never collide.
-  const uid = useRef(`kn${++SEQ}`).current;
+  // SSR-stable unique id so multiple instances' SVG <defs> never collide.
+  const uid = useId().replace(/:/g, "");
+
+  // When the caller doesn't drive activePhase, step through the phases on a
+  // timer so the checklist actually advances during the wait. Each phase gets
+  // an even slice of the ramp; the last stays active until `lit` flips.
+  const [autoPhase, setAutoPhase] = useState(0);
+  const driven = activePhase != null;
+  useEffect(() => {
+    if (driven || lit || phases.length <= 1) return;
+    setAutoPhase(0);
+    const step = rampMs / phases.length;
+    const ids = phases
+      .slice(1)
+      .map((_, i) => setTimeout(() => setAutoPhase(i + 1), step * (i + 1)));
+    return () => ids.forEach(clearTimeout);
+  }, [driven, lit, phases.length, rampMs]);
 
   // Band-climb: push the hot gradient stops upward as fill `f` (0..1+) rises.
   const BASE = [0, 0.22, 0.42, 0.6, 0.82];
@@ -64,18 +77,26 @@ export function KindlingLoader({
   const setHeat = (f: number) =>
     rootRef.current?.style.setProperty("--heat", (f * 1.05).toFixed(3));
 
+  // Resting "fill" floors per coal: smalls catch first (medium), the big coal
+  // lags (low). The big coal's targets exceed 1 (1.1) so it overdrives just
+  // past full at the peak — it's the hero of the pile and reads brightest.
   const SMALL_FLOOR = 0.42;
   const BIG_FLOOR = 0.18;
+  const BIG_PEAK = 1.1;
 
-  // Heat ramp (or lock to full when lit).
+  // Heat ramp (or lock to full when lit). Snaps straight to full under
+  // prefers-reduced-motion — no animated brightening.
   useEffect(() => {
     const cancel = () => {
       if (rafRef.current != null) cancelAnimationFrame(rafRef.current);
     };
-    if (lit) {
+    const reduced =
+      typeof window !== "undefined" &&
+      window.matchMedia?.("(prefers-reduced-motion: reduce)").matches;
+    if (lit || reduced) {
       cancel();
       applyBand(gSmallRef.current, 1);
-      applyBand(gBigRef.current, 1.1);
+      applyBand(gBigRef.current, BIG_PEAK);
       setHeat(1);
       return cancel;
     }
@@ -84,7 +105,7 @@ export function KindlingLoader({
       const t = Math.min(1, (now - start) / rampMs);
       const e = t < 0.5 ? 2 * t * t : 1 - Math.pow(-2 * t + 2, 2) / 2; // easeInOut
       applyBand(gSmallRef.current, SMALL_FLOOR + e * (1 - SMALL_FLOOR));
-      applyBand(gBigRef.current, BIG_FLOOR + e * (1.1 - BIG_FLOOR));
+      applyBand(gBigRef.current, BIG_FLOOR + e * (BIG_PEAK - BIG_FLOOR));
       setHeat(e);
       if (t < 1) rafRef.current = requestAnimationFrame(frame);
     };
@@ -93,7 +114,7 @@ export function KindlingLoader({
   }, [lit, rampMs]);
 
   const dim = size === "inline" ? { w: 28, h: 19 } : { w: 64, h: 44 };
-  const active = activePhase ?? phases.length - 1;
+  const active = activePhase ?? autoPhase;
 
   return (
     <span
