@@ -422,8 +422,9 @@ _KIRO_KEY_PATH = os.path.join(EPHEMERAL_CREDS_DIR, ".kiro-api-key")
 def _clear_subscription_creds() -> None:
     """Remove any materialized subscription creds so a Bedrock-mode session on a
     warm VM doesn't accidentally inherit a prior subscription session's plan.
-    Clears the tmpfs secrets, the codex symlink, and legacy EFS locations.
-    (Kiro is always BYO-key, so its key is cleared by the kiro branch itself.)"""
+    Clears the tmpfs secrets, the codex symlink, legacy EFS locations, and any
+    durable Kiro IDC auth rows (so a later non-kiro session on a warm VM can't
+    leave a disconnected user's IDC login readable in the Kiro DB)."""
     for p in (_CLAUDE_SUB_TOKEN_PATH,
               _CODEX_AUTH_TMPFS,
               _CODEX_AUTH_LINK,  # symlink (or pre-fix real file) at $CODEX_HOME/auth.json
@@ -433,6 +434,7 @@ def _clear_subscription_creds() -> None:
             os.remove(p)
         except OSError:
             pass
+    _clear_kiro_idc_auth(KIRO_HOME)
 
 
 def _materialize_kiro_key(user_id: str | None, tenant_id: str | None = None) -> bool:
@@ -444,12 +446,14 @@ def _materialize_kiro_key(user_id: str | None, tenant_id: str | None = None) -> 
     cred = _fetch_subscription_cred(user_id, "kiro", tenant_id) or {}
     key = cred.get("token") or cred.get("api_key") or cred.get("access_key")
     auth_kv = cred.get("authKv") or cred.get("auth_kv")
-    # Fail closed: always drop a stale tmpfs key first so a disconnected/IDC
-    # session can't keep exporting an old access key.
+    # Fail closed: always drop a stale tmpfs key AND any durable IDC rows first, so
+    # a disconnected/rotated session can't keep running on an old credential (the
+    # rows are re-written below only when a fresh IDC cred is present).
     try:
         os.remove(_KIRO_KEY_PATH)
     except OSError:
         pass
+    _clear_kiro_idc_auth(KIRO_HOME)
     if isinstance(auth_kv, dict) and auth_kv.get("kirocli:odic:token"):
         return _install_kiro_idc_auth(auth_kv, KIRO_HOME)
     if not key:
@@ -735,6 +739,33 @@ def _install_kiro_idc_auth(auth_kv: dict, kiro_home: str | None = None) -> bool:
     except Exception as exc:  # noqa: BLE001
         logger.warning("kiro_idc_auth_install_failed", extra={"error": str(exc)[:200]})
         return False
+
+
+# The IDC/SSO rows _install_kiro_idc_auth writes — deleted on disconnect/rotate so
+# a warm PTY can't keep running on a stale Identity Center account.
+_KIRO_IDC_KEYS = ("kirocli:odic:token", "kirocli:odic:device-registration",
+                  "codewhisperer:odic:token", "codewhisperer:odic:device-registration")
+
+
+def _clear_kiro_idc_auth(kiro_home: str | None = None) -> None:
+    """Remove any durable IDC login rows from the Kiro DB. Called whenever no Kiro
+    credential is present so `kiro-cli` (PTY) fails closed instead of continuing on
+    a disconnected/rotated account. Best-effort: a missing DB is already cleared."""
+    db_path = _kiro_db_path(kiro_home)
+    if not os.path.isfile(db_path):
+        return
+    try:
+        conn = sqlite3.connect(db_path)
+        try:
+            # Only the auth rows — the conversations table stays (session history).
+            conn.executescript(_KIRO_DDL)
+            conn.executemany("DELETE FROM auth_kv WHERE key = ?",
+                             [(k,) for k in _KIRO_IDC_KEYS])
+            conn.commit()
+        finally:
+            conn.close()
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("kiro_idc_auth_clear_failed", extra={"error": str(exc)[:200]})
 
 
 def _install_kiro_resume_transcript(s3_key: str, session_id: str, workdir: str,
