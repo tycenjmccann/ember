@@ -790,25 +790,35 @@ RESUME_HINT_PATH = "/tmp/.resume-launch.sh"  # noqa: S108 — container-local, s
 RESUME_HINT_NAME = ".resume-launch.sh"
 
 
-def _write_resume_launch_hint(workdir: str, resume_sid: str, runtime_session_id: str | None) -> bool:
+def _write_resume_launch_hint(workdir: str, resume_sid: str, runtime_session_id: str | None,
+                              cli: str = "claude", kiro_home: str | None = None) -> bool:
     """Write the hint the interactive shell reads on launch to
-    `cd <workdir> && claude --resume <resume_sid>` itself — so the browser never
+    `cd <workdir> && <cli> --resume <resume_sid>` itself — so the browser never
     types the resume command into an already-running TUI on reattach.
 
-    Two distinct ids: `resume_sid` is the CLAUDE conversation id (the `--resume`
-    arg); `runtime_session_id` is the AgentCore runtimeSessionId that keys the
+    Two distinct ids: `resume_sid` is the conversation id (the resume arg);
+    `runtime_session_id` is the AgentCore runtimeSessionId that keys the
     per-session EFS dir AND is what _restore_resume_launch_hint looks up later.
     They differ, so the durable copy MUST be keyed by the runtime id or restore
     would miss it on a recycled VM.
 
+    For kiro we also carry EMBER_KIRO_HOME (the per-session _kiro_home_for dir):
+    the PTY shell otherwise only sees the deploy-default KIRO_HOME and would read
+    a different — shared, cross-session — SQLite store than the chat path wrote.
+    shell-init exports KIRO_HOME/XDG_DATA_HOME from it so the Terminal sees the
+    same conversation row this session created.
+
     Writes both the private /tmp copy (what shell-init reads) and a durable copy
     in the per-session EFS dir (survives a VM recycle; restored to /tmp by
     _restore_resume_launch_hint). shell-init sources it once per fresh shell (its
-    run-once guard means a PTY reattach to a live `claude` never re-launches)."""
+    run-once guard means a PTY reattach to a live CLI never re-launches)."""
     body = (
         f"EMBER_RESUME_DIR={shlex.quote(os.path.realpath(workdir))}\n"
         f"EMBER_RESUME_SID={shlex.quote(resume_sid)}\n"
+        f"EMBER_RESUME_CLI={shlex.quote(cli)}\n"
     )
+    if cli == "kiro" and kiro_home:
+        body += f"EMBER_KIRO_HOME={shlex.quote(kiro_home)}\n"
     ok = False
     try:
         with open(RESUME_HINT_PATH, "w") as f:
@@ -1883,6 +1893,9 @@ async def invocations(request: Request):
         resume_ready = False
         if cli == "claude" and claude_session_id:
             resume_ready = _write_resume_launch_hint(workdir, claude_session_id, session_id)
+        elif cli == "kiro" and claude_session_id:
+            resume_ready = _write_resume_launch_hint(
+                workdir, claude_session_id, session_id, cli="kiro", kiro_home=kiro_home)
     except ValueError as ve:  # bad repo field — caller error, not a 500
         return JSONResponse({"error": str(ve)}, status_code=400)
     except Exception as exc:  # noqa: BLE001
@@ -1945,6 +1958,9 @@ async def invocations(request: Request):
     # the Terminal for this non-ported session also auto-resumes the conversation.
     if cli == "claude" and result.get("claude_session_id"):
         _write_resume_launch_hint(workdir, result["claude_session_id"], session_id)
+    elif cli == "kiro" and result.get("claude_session_id"):
+        _write_resume_launch_hint(
+            workdir, result["claude_session_id"], session_id, cli="kiro", kiro_home=kiro_home)
 
     result.update({"cli": cli, "workspace": workdir})
     logger.info("turn_done", extra={"cli": cli, "chars": len(result.get("response") or "")})
