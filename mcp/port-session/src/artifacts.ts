@@ -145,6 +145,17 @@ function harvestPaths(transcript: Buffer): Map<string, string> {
     if (p && !byPath.has(p)) byPath.set(p, "unknown");
   }
 
+  // Media sweep: deliverables are routinely produced by SHELL commands (a python
+  // script rendering a PNG, ffmpeg writing an MP4) — no Write tool, no file_path
+  // key, so both passes above miss them. Sweep the raw transcript for any token
+  // carrying a known artifact extension; detectArtifacts' existence / in-cwd /
+  // untracked / secret filters discard the noise, so a false match costs nothing.
+  const mediaRe = /(?:[A-Za-z0-9_~][A-Za-z0-9_.~/-]*)?\.(?:png|jpe?g|gif|webp|svg|bmp|tiff|heic|mp4|mov|webm|avi|mkv|mp3|wav|aac|flac|m4a|pdf|docx|pptx|xlsx|csv|parquet|arrow|feather|npy|npz|pkl|h5|sqlite|db)\b/gi;
+  while ((m = mediaRe.exec(text)) !== null) {
+    const p = m[0];
+    if (p && !byPath.has(p)) byPath.set(p, "shell");
+  }
+
   return byPath;
 }
 

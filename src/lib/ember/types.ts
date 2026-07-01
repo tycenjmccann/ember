@@ -24,6 +24,10 @@ export interface EmberTurn {
   role: "user" | "agent";
   text: string;
   at: string; // ISO timestamp
+  // Files the user attached to this message (chat composer upload). path is
+  // relative to the session's artifact prefix; the chat renders image
+  // attachments as inline thumbnails (presigned at read time), others as a chip.
+  attachments?: { path: string; name: string; contentType?: string; url?: string }[];
 }
 
 export interface EmberSession {

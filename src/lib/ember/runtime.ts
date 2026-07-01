@@ -88,6 +88,11 @@ export interface CodingTurnParams {
   // S3 prefix the session's ported artifacts live under. When set, the runtime
   // restores each object into the workspace's .ember/artifacts/ on warm/resume.
   artifactPrefix?: string;
+  // Chat attachments: paths (relative to the session's artifact prefix, e.g.
+  // "uploads/screenshot.png") the user uploaded in the composer. The runtime
+  // downloads them into the workspace's .ember/artifacts/ and appends their
+  // on-disk paths to the prompt so the CLI can open them with its file tools.
+  attachments?: string[];
 }
 
 function buildTurnPayload(params: CodingTurnParams): Record<string, unknown> {
@@ -112,6 +117,7 @@ function buildTurnPayload(params: CodingTurnParams): Record<string, unknown> {
   if (params.cloneUrl) payload.clone_url = params.cloneUrl;
   if (params.resumeBundleKey) payload.resume_bundle = params.resumeBundleKey;
   if (params.artifactPrefix) payload.artifact_prefix = params.artifactPrefix;
+  if (params.attachments?.length) payload.attachments = params.attachments;
   return payload;
 }
 

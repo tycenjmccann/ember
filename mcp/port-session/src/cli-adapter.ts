@@ -312,10 +312,77 @@ export async function localTranscriptPath(cli: Cli, cwd: string, sessionId: stri
 }
 
 /**
+ * Merge a pulled cloud transcript over the live local one WITHOUT severing the
+ * parent-uuid chain claude's resume walks.
+ *
+ * Pull almost always runs INSIDE the still-open session being pulled: the live
+ * process has already logged the pull tool_use row, and it will append the
+ * tool_result (parent = that tool_use) right after we return. A blind overwrite
+ * erases the tool_use, the append dangles, resume's backward walk stops at the
+ * seam, and the entire cloud history above it becomes unreachable/unscrollable.
+ *
+ * Fix: transcripts fork at the port point (shared prefix P, cloud branch, local
+ * branch). Emit the full cloud transcript, then re-append the local rows past
+ * the last uuid the cloud already has (the divergent tail: the pull turn itself),
+ * re-pointing any tail row whose parent no longer exists at the cloud's leaf.
+ * One unbroken timeline, same session id: …cloud work → pull turn → live appends.
+ */
+export function mergeClaudeTranscriptForPull(existingRaw: Buffer, cloudRaw: Buffer): Buffer {
+  type Entry = { line: string; rec: any };
+  const parse = (buf: Buffer): Entry[] =>
+    buf
+      .toString("utf8")
+      .split("\n")
+      .filter((l) => l.trim())
+      .map((line) => {
+        try {
+          return { line, rec: JSON.parse(line) };
+        } catch {
+          return { line, rec: null };
+        }
+      });
+
+  const cloud = parse(cloudRaw);
+  const local = parse(existingRaw);
+  if (!cloud.length) return existingRaw;
+
+  const cloudUuids = new Set<string>(cloud.map((e) => e.rec?.uuid).filter(Boolean));
+  let cloudLeaf: string | null = null;
+  for (const e of cloud) if (e.rec?.uuid) cloudLeaf = e.rec.uuid;
+
+  // Divergent tail = everything after the LAST local row the cloud already has.
+  let forkIdx = -1;
+  local.forEach((e, i) => {
+    if (e.rec?.uuid && cloudUuids.has(e.rec.uuid)) forkIdx = i;
+  });
+  const tail = local.slice(forkIdx + 1);
+  if (!tail.length || !cloudLeaf) return cloudRaw; // nothing diverged → clean replace
+
+  const tailUuids = new Set<string>(tail.map((e) => e.rec?.uuid).filter(Boolean));
+  const out: string[] = cloud.map((e) => e.line);
+  for (const e of tail) {
+    const r = e.rec;
+    if (r?.uuid && r.parentUuid && !tailUuids.has(r.parentUuid)) {
+      // Root of the local branch. Its parent is either erased (superseded by the
+      // cloud write) or — worse — still alive in the shared prefix, which would
+      // let resume's backward walk shortcut around the entire cloud branch.
+      // Either way, re-point it at the cloud's tip so the walk is linear:
+      // live appends → pull turn → cloud work → shared history.
+      out.push(JSON.stringify({ ...r, parentUuid: cloudLeaf }));
+    } else {
+      out.push(e.line);
+    }
+  }
+  return Buffer.from(out.join("\n") + "\n", "utf8");
+}
+
+/**
  * Write a pulled cloud transcript to the local path so the CLI's resume picks it
  * up. The cloud copy IS the canonical latest after a round trip (same session,
  * grown), so overwrite — but back up a divergent local copy to `<path>.bak-<stamp>`
- * first so a locally-continued branch is recoverable.
+ * first so a locally-continued branch is recoverable. For claude the write is a
+ * chain-preserving MERGE (see mergeClaudeTranscriptForPull), because pull usually
+ * runs inside the live session it is replacing.
  */
 export async function installLocalTranscript(
   cli: Cli,
@@ -344,18 +411,20 @@ export async function installLocalTranscript(
 
   let overwrote = false;
   let backup: string | undefined;
+  let payload: Buffer = Buffer.from(data);
   try {
     const existing = await readFile(dest);
     overwrote = true;
-    if (!Buffer.from(existing).equals(Buffer.from(data))) {
+    if (!Buffer.from(existing).equals(payload)) {
       backup = `${dest}.bak-${opts.stamp || "prev"}`;
       await writeFile(backup, existing);
+      if (cli === "claude") payload = mergeClaudeTranscriptForPull(existing, payload);
     }
   } catch (e) {
     if ((e as NodeJS.ErrnoException).code !== "ENOENT") throw e;
   }
 
-  await writeFile(dest, data);
+  await writeFile(dest, payload);
   return { path: dest, overwrote, backup };
 }
 
