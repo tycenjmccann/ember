@@ -1,0 +1,137 @@
+<!doctype html>
+<html lang="en"><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Signed in to Ember</title>
+<style>
+  /* ─── Ember auth callback — "night woods, one live ember" ────────────────
+     Editorial dark: a warm serif headline over a cold forest floor, a real
+     ember cluster breathing at center, sparks lifting off it. Self-contained:
+     inline CSS/SVG, system-available fonts (no network — this is a loopback
+     page that must render offline). Ashen, spark-less variant on failure. */
+  :root {
+    color-scheme: dark;
+    --ember-core: #ffd089;
+    --ember-hot:  #ff7a1a;
+    --ember-deep: #ff4d00;
+    --ember-link: #ff9d4d;
+    --bone: #f6f0e8;
+    --smoke: rgba(203,196,186,.66);
+    --ash: rgba(140,130,120,.6);
+  }
+  * { box-sizing: border-box; }
+  html, body { height: 100%; margin: 0; }
+  body {
+    display: grid; place-items: center;
+    background:
+      radial-gradient(120% 80% at 50% -18%, #241610 0%, #120c09 42%, #08060a 72%, #000 100%);
+    color: var(--bone);
+    font-family: system-ui, -apple-system, "Segoe UI", sans-serif;
+    letter-spacing: -0.01em;
+    overflow: hidden; position: relative;
+  }
+  /* film grain — SVG turbulence, no network */
+  body::before {
+    content: ""; position: fixed; inset: 0; pointer-events: none; z-index: 3;
+    opacity: .05; mix-blend-mode: overlay;
+    background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='140' height='140'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='.85' numOctaves='2' stitchTiles='stitch'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23n)'/%3E%3C/svg%3E");
+  }
+  /* a low, warm horizon glow rising from the ember — the "forest floor" */
+  body::after {
+    content: ""; position: fixed; left: 50%; bottom: -30%; z-index: 0;
+    width: 780px; height: 520px; transform: translateX(-50%);
+    background: radial-gradient(50% 50% at 50% 50%, rgba(255,106,0,.16), transparent 70%);
+    pointer-events: none;
+  }
+
+  .stage { position: relative; z-index: 2; text-align: center; padding: 2rem; }
+
+  /* kicker wordmark */
+  .kicker {
+    font-size: .72rem; font-weight: 600; letter-spacing: .42em;
+    text-transform: uppercase; color: var(--ash);
+    margin: 0 0 2.4rem; padding-left: .42em;
+    animation: fade 1s ease .1s both;
+  }
+
+  /* ─── ember cluster ─── */
+  .ember-wrap { position: relative; width: 132px; height: 132px; margin: 0 auto 2.2rem; }
+  .coals { width: 100%; height: 100%; display: block;
+    filter: drop-shadow(0 0 30px rgba(255,90,0,.5));
+    animation: breathe 3.4s ease-in-out infinite; transform-origin: 50% 62%; }
+  /* sparks lifting off */
+  .spark { position: absolute; bottom: 34%; width: 3px; height: 3px; border-radius: 50%;
+    background: var(--ember-core); box-shadow: 0 0 6px 1px rgba(255,140,40,.9);
+    opacity: 0; pointer-events: none; }
+  .spark.s1 { left: 42%; animation: rise-spark 2.6s ease-out .4s infinite; }
+  .spark.s2 { left: 54%; animation: rise-spark 3.2s ease-out 1.3s infinite; --dx: -14px; }
+  .spark.s3 { left: 36%; animation: rise-spark 2.9s ease-out 2.1s infinite; --dx: 10px; }
+  .spark.s4 { left: 60%; animation: rise-spark 3.5s ease-out 2.7s infinite; --dx: -8px; }
+  .spark.s5 { left: 48%; animation: rise-spark 3.0s ease-out 1.8s infinite; --dx: 6px; }
+
+  h1 {
+    margin: 0 0 .6rem; font-weight: 500; font-size: 2.15rem; line-height: 1.05;
+    letter-spacing: -0.015em; color: var(--bone);
+    font-family: "Iowan Old Style", "Palatino Linotype", Palatino, "Book Antiqua", Georgia, serif;
+    animation: rise 1s cubic-bezier(.2,.85,.25,1) .18s both;
+  }
+  .lede { margin: 0 auto; max-width: 30ch; font-size: 1rem; line-height: 1.5; color: var(--smoke);
+    animation: rise 1s cubic-bezier(.2,.85,.25,1) .28s both; }
+  .hint { margin: 2.4rem 0 0; font-size: .8rem; color: var(--ash);
+    animation: fade 1.2s ease .5s both; }
+  .hint .key { color: var(--smoke); border: 1px solid rgba(140,130,120,.28);
+    border-radius: 6px; padding: .12em .5em; font-family: ui-monospace, "SF Mono", Menlo, monospace;
+    font-size: .78em; }
+
+  /* hairline rule with an ember node */
+  .rule { width: 64px; height: 1px; margin: 2rem auto 0; position: relative;
+    background: linear-gradient(90deg, transparent, rgba(255,106,0,.5), transparent);
+    animation: fade 1.2s ease .6s both; }
+
+  /* ─── failure variant ─── */
+  body.failed { background: radial-gradient(120% 80% at 50% -18%, #16130f 0%, #0d0b09 45%, #060505 75%, #000 100%); }
+  body.failed::after { background: radial-gradient(50% 50% at 50% 50%, rgba(120,120,120,.06), transparent 70%); }
+  body.failed .coals { animation: none; filter: saturate(.12) brightness(.55) drop-shadow(0 0 10px rgba(0,0,0,.6)); }
+  body.failed .spark { display: none; }
+  body.failed .rule { background: linear-gradient(90deg, transparent, rgba(140,130,120,.4), transparent); }
+
+  @keyframes breathe {
+    0%,100% { transform: scale(1); }
+    50%     { transform: scale(1.035); }
+  }
+  @keyframes rise-spark {
+    0%   { opacity: 0; transform: translate(0,0) scale(1); }
+    12%  { opacity: 1; }
+    100% { opacity: 0; transform: translate(var(--dx, 4px), -104px) scale(.3); }
+  }
+  @keyframes rise { from { opacity: 0; transform: translateY(14px); } to { opacity: 1; transform: none; } }
+  @keyframes fade { from { opacity: 0; } to { opacity: 1; } }
+  @media (prefers-reduced-motion: reduce) {
+    .coals, .spark, .stage * { animation: none !important; }
+    .spark { display: none; }
+  }
+</style></head>
+<body class="">
+  <main class="stage">
+    <p class="kicker">Ember&nbsp;· Session</p>
+
+    <div class="ember-wrap">
+      <img class="coals" src="../../public/ember-icon.svg" alt="" aria-hidden="true">
+      <span class="spark s1"></span><span class="spark s2"></span><span class="spark s3"></span>
+      <span class="spark s4"></span><span class="spark s5"></span>
+    </div>
+
+    <h1 id="title">You're signed in.</h1>
+    <p class="lede" id="msg">Your workspace is warm. Head back to the terminal — Ember is ready to pick up where you left off.</p>
+    <div class="rule"></div>
+    <p class="hint">Safe to close this tab · press <span class="key">⌘W</span></p>
+  </main>
+
+  <!-- demo toggle: append ?fail to preview the ashen state -->
+  <script>
+    if (location.search.includes("fail")) {
+      document.body.classList.add("failed");
+      document.getElementById("title").textContent = "That didn't take.";
+      document.getElementById("msg").textContent = "The sign-in didn't complete. Return to the terminal and run authenticate again.";
+    }
+  </script>
+</body></html>

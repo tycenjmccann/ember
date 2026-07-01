@@ -1,0 +1,114 @@
+<!doctype html>
+<html lang="en"><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Ember · Sign in (Cognito Managed Login mockup)</title>
+<style>
+  /* ─── Mockup of the REAL Cognito Managed Login v2 box, Ember-branded ───────
+     This mirrors Cognito's actual DOM/layout (centered card, stacked labeled
+     inputs, primary button, forgot link, optional logo + page background) so
+     what you approve here is achievable through the branding schema — NOT a
+     from-scratch design. Only what Cognito exposes is styled:
+       page bg + optional bg image · form card bg/border/radius · logo
+       input bg/border/label · primary button · link · focus ring        */
+  :root {
+    color-scheme: dark;
+    --ember: #ff6a00; --ember-hover: #f25c00; --ember-press: #cc4a00;
+    --night: #0b0908; --card: #1a1816; --field: #0e0d0c;
+    --border: #3a3531; --bone: #f5efe8; --smoke: #c9c2bb; --ash: #8a8079;
+    --link: #ff9d4d;
+  }
+  * { box-sizing: border-box; }
+  html, body { height: 100%; margin: 0; }
+  body {
+    display: grid; place-items: center;
+    font-family: system-ui, -apple-system, "Segoe UI", sans-serif;
+    color: var(--bone);
+    /* page background — solid night + a low ember horizon (a bg IMAGE Cognito
+       lets us upload; here faked with gradients to preview the feel) */
+    background:
+      radial-gradient(60% 45% at 50% 118%, rgba(255,106,0,.16), transparent 70%),
+      radial-gradient(120% 90% at 50% -20%, #201410 0%, #0d0b09 46%, #060505 78%, #000 100%);
+    position: relative; overflow: hidden;
+  }
+  body::before { /* grain (page bg image can carry this) */
+    content:""; position:fixed; inset:0; pointer-events:none; opacity:.045; mix-blend-mode:overlay;
+    background-image:url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='140' height='140'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='.85' numOctaves='2'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23n)'/%3E%3C/svg%3E");
+  }
+
+  /* ─── the form card (Cognito .modal / form component) ─── */
+  .card {
+    width: 360px; max-width: 92vw; position: relative; z-index: 1;
+    background: var(--card);
+    border: 1px solid var(--border);
+    border-radius: 16px;
+    padding: 2.2rem 2rem 2rem;
+    box-shadow: 0 24px 70px -20px rgba(0,0,0,.8), 0 0 0 1px rgba(255,106,0,.05),
+                inset 0 1px 0 rgba(255,255,255,.03);
+    animation: rise .6s cubic-bezier(.2,.8,.2,1) both;
+  }
+
+  /* logo (Cognito form logo slot) — ember mark + wordmark */
+  .logo { display:flex; align-items:center; justify-content:center; gap:.6rem; margin:0 0 .4rem; }
+  .logo .mark { width: 34px; height: 34px; display:block; filter: drop-shadow(0 0 12px rgba(255,106,0,.55)); }
+  .logo .wordmark { font-size:1.12rem; font-weight:650; letter-spacing:-0.01em; }
+  .sub { text-align:center; margin:0 0 1.6rem; font-size:.82rem; color:var(--ash); }
+
+  label { display:block; font-size:.8rem; font-weight:560; color:var(--bone); margin:0 0 .4rem; }
+  .field { margin-bottom: 1.05rem; }
+  input {
+    width:100%; height:42px; padding:0 .8rem; font-size:.95rem;
+    background:var(--field); color:var(--bone);
+    border:1px solid var(--border); border-radius:9px; outline:none;
+    transition:border-color .15s, box-shadow .15s;
+  }
+  input::placeholder { color:var(--ash); }
+  input:focus { border-color:var(--ember); box-shadow:0 0 0 3px rgba(255,106,0,.22); }
+
+  .row { display:flex; align-items:center; justify-content:space-between; margin:-.2rem 0 1.4rem; }
+  .show { display:flex; align-items:center; gap:.4rem; font-size:.78rem; color:var(--smoke); cursor:pointer; }
+  .show input { width:14px; height:14px; accent-color:var(--ember); }
+  a.link { color:var(--link); font-size:.8rem; text-decoration:none; }
+  a.link:hover { color:#ffc187; text-decoration:underline; }
+
+  button.primary {
+    width:100%; height:44px; border:none; border-radius:10px; cursor:pointer;
+    background:var(--ember); color:#1a1410; font-size:.95rem; font-weight:650;
+    letter-spacing:.01em; transition:background .15s, transform .06s, box-shadow .15s;
+    box-shadow:0 6px 20px -6px rgba(255,106,0,.6);
+  }
+  button.primary:hover { background:var(--ember-hover); box-shadow:0 8px 26px -6px rgba(255,106,0,.7); }
+  button.primary:active { background:var(--ember-press); transform:translateY(1px); }
+
+  .foot { margin:1.5rem 0 0; text-align:center; font-size:.72rem; color:var(--ash); letter-spacing:.04em; }
+  .foot b { color:var(--smoke); font-weight:560; }
+
+  @keyframes rise { from{opacity:0; transform:translateY(12px)} to{opacity:1; transform:none} }
+  @media (prefers-reduced-motion: reduce){ .card{animation:none} }
+</style></head>
+<body>
+  <form class="card" onsubmit="return false">
+    <div class="logo">
+      <img class="mark" src="../../public/ember-icon.svg" alt="Ember">
+      <span class="wordmark">Ember</span>
+    </div>
+    <p class="sub">Keep your session warm</p>
+
+    <div class="field">
+      <label for="e">Email address</label>
+      <input id="e" type="email" placeholder="you@company.com" autocomplete="email">
+    </div>
+    <div class="field">
+      <label for="p">Password</label>
+      <input id="p" type="password" placeholder="••••••••••••" autocomplete="current-password">
+    </div>
+
+    <div class="row">
+      <label class="show"><input type="checkbox"> Show password</label>
+      <a class="link" href="#">Forgot your password?</a>
+    </div>
+
+    <button class="primary" type="submit">Sign in</button>
+
+    <p class="foot">Protected by <b>Amazon Cognito</b></p>
+  </form>
+</body></html>

@@ -1,0 +1,71 @@
+{
+  "components": {
+    "pageBackground": {
+      "image": { "enabled": false },
+      "lightMode": { "color": "0b0908ff" },
+      "darkMode": { "color": "0b0908ff" }
+    },
+    "pageText": {
+      "lightMode": { "headingColor": "f5efe8ff", "bodyColor": "c9c2bbff", "descriptionColor": "c9c2bbff" },
+      "darkMode": { "headingColor": "f5efe8ff", "bodyColor": "c9c2bbff", "descriptionColor": "c9c2bbff" }
+    },
+    "form": {
+      "backgroundImage": { "enabled": false },
+      "logo": { "enabled": true, "location": "CENTER", "position": "TOP", "formInclusion": "IN" },
+      "lightMode": { "backgroundColor": "1a1816ff", "borderColor": "3a3531ff" },
+      "darkMode": { "backgroundColor": "1a1816ff", "borderColor": "3a3531ff" }
+    },
+    "primaryButton": {
+      "lightMode": {
+        "defaults": { "backgroundColor": "ff6a00ff", "textColor": "1a1410ff" },
+        "hover": { "backgroundColor": "f25c00ff", "textColor": "1a1410ff" },
+        "active": { "backgroundColor": "cc4a00ff", "textColor": "1a1410ff" }
+      },
+      "darkMode": {
+        "defaults": { "backgroundColor": "ff6a00ff", "textColor": "1a1410ff" },
+        "hover": { "backgroundColor": "f25c00ff", "textColor": "1a1410ff" },
+        "active": { "backgroundColor": "cc4a00ff", "textColor": "1a1410ff" }
+      }
+    },
+    "secondaryButton": {
+      "lightMode": {
+        "defaults": { "backgroundColor": "00000000", "textColor": "f5efe8ff", "borderColor": "3a3531ff" },
+        "hover": { "backgroundColor": "ffffff14", "textColor": "f5efe8ff", "borderColor": "ff6a00ff" }
+      },
+      "darkMode": {
+        "defaults": { "backgroundColor": "00000000", "textColor": "f5efe8ff", "borderColor": "3a3531ff" },
+        "hover": { "backgroundColor": "ffffff14", "textColor": "f5efe8ff", "borderColor": "ff6a00ff" }
+      }
+    }
+  },
+  "componentClasses": {
+    "inputLabel": {
+      "lightMode": { "textColor": "f5efe8ff" },
+      "darkMode": { "textColor": "f5efe8ff" }
+    },
+    "inputDescription": {
+      "lightMode": { "textColor": "c9c2bbff" },
+      "darkMode": { "textColor": "c9c2bbff" }
+    },
+    "input": {
+      "lightMode": { "defaults": { "backgroundColor": "0e0d0cff", "borderColor": "3a3531ff" }, "placeholderColor": "8a8079ff" },
+      "darkMode": { "defaults": { "backgroundColor": "0e0d0cff", "borderColor": "3a3531ff" }, "placeholderColor": "8a8079ff" }
+    },
+    "link": {
+      "lightMode": { "defaults": { "textColor": "ff9d4dff" }, "hover": { "textColor": "ffc187ff" } },
+      "darkMode": { "defaults": { "textColor": "ff9d4dff" }, "hover": { "textColor": "ffc187ff" } }
+    },
+    "divider": {
+      "lightMode": { "borderColor": "3a3531ff" },
+      "darkMode": { "borderColor": "3a3531ff" }
+    },
+    "optionControls": {
+      "lightMode": { "defaults": { "backgroundColor": "0e0d0cff", "borderColor": "3a3531ff" }, "selected": { "backgroundColor": "ff6a00ff", "foregroundColor": "1a1410ff" } },
+      "darkMode": { "defaults": { "backgroundColor": "0e0d0cff", "borderColor": "3a3531ff" }, "selected": { "backgroundColor": "ff6a00ff", "foregroundColor": "1a1410ff" } }
+    },
+    "focusState": {
+      "lightMode": { "borderColor": "ff6a00ff" },
+      "darkMode": { "borderColor": "ff6a00ff" }
+    }
+  }
+}
