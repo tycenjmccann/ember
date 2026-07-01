@@ -1178,6 +1178,12 @@ _ARTIFACT_FILE_CAP = int(os.environ.get("EMBER_ARTIFACT_FILE_CAP_MB", "500")) * 
 _ARTIFACT_TOTAL_CAP = int(os.environ.get("EMBER_ARTIFACT_TOTAL_CAP_MB", "2048")) * 1024 * 1024
 _ARTIFACT_COUNT_CAP = int(os.environ.get("EMBER_ARTIFACT_COUNT_CAP", "200"))
 _PATH_KEY_RE = re.compile(r'"(?:file_path|notebook_path)"\s*:\s*"((?:[^"\\]|\\.)*)"')
+_MEDIA_TOKEN_RE = re.compile(
+    r'(?:[A-Za-z0-9_~][A-Za-z0-9_.~/-]*)?\.(?:png|jpe?g|gif|webp|svg|bmp|tiff|heic'
+    r'|mp4|mov|webm|avi|mkv|mp3|wav|aac|flac|m4a|pdf|docx|pptx|xlsx'
+    r'|csv|parquet|arrow|feather|npy|npz|pkl|h5|sqlite|db)\b',
+    re.IGNORECASE,
+)
 
 # Credential files a turn may have read/written — never ship them home. Mirror of
 # the MCP's isSecretPath (artifacts.ts). `.key` omitted (Keynote uses it).
@@ -1216,6 +1222,11 @@ def _detect_cloud_artifacts(transcript_text: bytes, workdir: str) -> list[dict]:
     except Exception:  # noqa: BLE001
         text = ""
     raws = set(_PATH_KEY_RE.findall(text))
+    # Media sweep: shell-produced deliverables (a script rendering a PNG, ffmpeg
+    # writing an MP4) never appear under a file_path key. Sweep raw text for
+    # artifact-extension tokens; the exists/in-workdir/untracked/secret filters
+    # below discard the noise. Mirrors the MCP-side sweep in artifacts.ts.
+    raws.update(m.group(0) for m in _MEDIA_TOKEN_RE.finditer(text))
     artifacts_root = os.path.join(workdir, ".ember", "artifacts")
     # Always include whatever's already staged in .ember/artifacts/ (the port leg
     # placed shipped files there; the cloud may have added more).
@@ -1592,6 +1603,37 @@ def _install_artifacts(artifact_prefix: str, workdir: str, session_id: str | Non
                        extra={"prefix": artifact_prefix, "error": str(exc)[:200]})
     return restored
 
+
+def _fetch_attachments(artifact_prefix: str, attachments: list, workdir: str) -> list[str]:
+    """Download chat attachments (paths relative to the session's artifact
+    prefix) into the workspace's .ember/artifacts/ and return their absolute
+    on-disk paths. Traversal-guarded; best-effort per file — one bad attachment
+    never fails the turn."""
+    if not (artifact_prefix and attachments and workdir and ARTIFACT_BUCKET):
+        return []
+    dest_root = os.path.join(workdir, ".ember", "artifacts")
+    real_root = os.path.realpath(dest_root)
+    paths: list[str] = []
+    try:
+        s3 = boto3.client("s3", region_name=os.environ.get("AWS_REGION", "us-east-1"))
+        for rel in attachments[:20]:
+            rel = str(rel or "").lstrip("/")
+            if not rel or ".." in rel.split("/"):
+                continue
+            dest = os.path.join(dest_root, rel)
+            real_dest = os.path.realpath(dest)
+            if real_dest != real_root and not real_dest.startswith(real_root + os.sep):
+                continue
+            try:
+                os.makedirs(os.path.dirname(dest), exist_ok=True)
+                with open(dest, "wb") as fh:
+                    s3.download_fileobj(ARTIFACT_BUCKET, artifact_prefix + rel, fh)
+                paths.append(dest)
+            except Exception as exc:  # noqa: BLE001
+                logger.warning("attachment_fetch_failed", extra={"rel": rel, "error": str(exc)[:200]})
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("attachments_fetch_failed", extra={"error": str(exc)[:200]})
+    return paths
 
 def _selfcontained_workspace(session_id: str | None) -> str | None:
     """Path of an already-rebuilt self-contained repo for this session, or None.
@@ -2052,6 +2094,10 @@ async def invocations(request: Request):
     # deliverables: generated media, exports, datasets). Restored into the
     # workspace's .ember/artifacts/ once the workdir is known.
     artifact_prefix = payload.get("artifact_prefix")
+    # Chat attachments: paths (relative to artifact_prefix, e.g. uploads/x.png)
+    # the user uploaded in the composer. Downloaded into .ember/artifacts/ and
+    # appended to the prompt so the CLI can open them with its file tools.
+    attachments = payload.get("attachments") or []
 
     # On resume, recover the repo the conversation was started in (so we land in
     # the same cwd Claude Code scoped the session to) when the caller omits it.
@@ -2194,6 +2240,13 @@ async def invocations(request: Request):
         # Idempotent per warm VM; best-effort — never fails the turn.
         if artifact_prefix and workdir:
             _install_artifacts(artifact_prefix, workdir, session_id)
+        # Chat attachments: fetch the user's uploads for THIS turn and point the
+        # CLI at them (appended paths — the CLI reads them with its file tools).
+        if attachments and workdir and not warm and not checkpoint:
+            fetched = _fetch_attachments(artifact_prefix or "", attachments, workdir)
+            if fetched:
+                listing = "\n".join(f"- {p}" for p in fetched)
+                prompt = (prompt + "\n\nAttached file(s) for this message (already downloaded locally):\n" + listing)
         # Hand the interactive Terminal a one-shot launch hint: which dir to cd
         # into and which conversation to `claude --resume`. shell-init.sh reads
         # this on a FRESH shell only (its run-once guard means a PTY reattach to

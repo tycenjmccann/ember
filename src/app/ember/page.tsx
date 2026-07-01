@@ -1,7 +1,7 @@
 "use client";
 
 import { useState, useEffect, useCallback, useRef } from "react";
-import { Plus, Cloud, ArrowUp, Square, Trash2, GitBranch, MessageSquare, TerminalSquare, Settings, Upload, Check, ChevronDown, ChevronLeft, X, KeyRound, Server, UserCircle } from "lucide-react";
+import { Plus, Cloud, ArrowUp, Square, Trash2, GitBranch, MessageSquare, TerminalSquare, FileBox, Paperclip, Settings, Upload, Check, ChevronDown, ChevronLeft, X, KeyRound, Server, UserCircle } from "lucide-react";
 import dynamic from "next/dynamic";
 import { sseData } from "@/lib/sse";
 import { MarkdownRenderer } from "@/components/ember/MarkdownRenderer";
@@ -12,6 +12,8 @@ import { KindlingLoader } from "@/components/ember/KindlingLoader";
 
 // xterm touches the DOM/window — load only in the browser.
 const ShellTerminal = dynamic(() => import("@/components/ember/ShellTerminal"), { ssr: false });
+const ArtifactsPanel = dynamic(() => import("@/components/ember/ArtifactsPanel"), { ssr: false });
+const Lightbox = dynamic(() => import("@/components/ember/Lightbox"), { ssr: false });
 import type {
   EmberSession,
   EmberSessionSummary,
@@ -26,6 +28,16 @@ const WARMTH_DOT: Record<SessionWarmth, string> = {
   cold: "warmth-dot warmth-dot--cold",   // ash, gone out
 };
 const WARMTH_LABEL: Record<SessionWarmth, string> = { warm: "Active", idle: "Idle", cold: "Asleep" };
+
+// Compact "last active" label for the sidebar — "now", "4m", "2h", "3d".
+// Keeps the row scannable: how long since the session last did anything.
+function relativeTime(iso: string): string {
+  const sec = Math.max(0, (Date.now() - new Date(iso).getTime()) / 1000);
+  if (sec < 45) return "now";
+  if (sec < 3600) return `${Math.round(sec / 60)}m`;
+  if (sec < 86400) return `${Math.round(sec / 3600)}h`;
+  return `${Math.round(sec / 86400)}d`;
+}
 
 export default function EmberPage() {
   const [sessions, setSessions] = useState<EmberSessionSummary[]>([]);
@@ -51,7 +63,15 @@ export default function EmberPage() {
   // irreversible — the backend reaper purges the workspace + transcript — so we
   // confirm first to catch accidental taps.
   const [confirmDelete, setConfirmDelete] = useState<EmberSessionSummary | null>(null);
-  const [view, setView] = useState<"chat" | "terminal">("chat");
+  const [view, setView] = useState<"chat" | "terminal" | "artifacts">("chat");
+  // Chat attachments: files uploaded in the composer, awaiting the next send.
+  // path = artifact-prefix path passed to the turn; previewUrl = local object URL
+  // for an instant thumbnail before the server presigns one.
+  const [attachments, setAttachments] = useState<{ path: string; name: string; contentType?: string; previewUrl?: string }[]>([]);
+  const [attaching, setAttaching] = useState(false);
+  const attachInput = useRef<HTMLInputElement>(null);
+  // Tapped chat image → full-screen lightbox (pinch-zoom).
+  const [lightbox, setLightbox] = useState<{ url: string; name: string } | null>(null);
   const [voiceActive, setVoiceActive] = useState(false); // dictating → keep mic mounted
   const [sessionsOpen, setSessionsOpen] = useState(false); // mobile session drawer
   const streamEnd = useRef<HTMLDivElement>(null);
@@ -182,22 +202,61 @@ export default function EmberPage() {
     setSelectedId(session.sessionId);
   };
 
+  // Upload picked files to the session's artifact prefix (presigned PUT), then
+  // stage them as pending attachments for the next send.
+  const uploadAttachments = async (files: FileList | null) => {
+    if (!active || !files || files.length === 0) return;
+    setAttaching(true);
+    try {
+      for (const file of Array.from(files)) {
+        const presign = await fetch(`/api/ember/sessions/${active.sessionId}/artifacts`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ name: file.name }),
+        });
+        const d = await presign.json();
+        if (!presign.ok) throw new Error(d.error || `presign failed (${presign.status})`);
+        const put = await fetch(d.uploadUrl, {
+          method: "PUT",
+          headers: { "Content-Type": d.contentType || file.type || "application/octet-stream" },
+          body: file,
+        });
+        if (!put.ok) throw new Error(`upload failed (${put.status})`);
+        const previewUrl = file.type.startsWith("image/") ? URL.createObjectURL(file) : undefined;
+        setAttachments((xs) => [...xs, { path: d.path, name: file.name, contentType: d.contentType || file.type, previewUrl }]);
+      }
+    } catch (e) {
+      flash((e as Error).message);
+    } finally {
+      setAttaching(false);
+      if (attachInput.current) attachInput.current.value = "";
+    }
+  };
+
   const send = async () => {
-    if (!active || !draft.trim() || sending) return;
+    if (!active || sending) return;
+    if (!draft.trim() && attachments.length === 0) return;
     const prompt = draft.trim();
     setDraft("");
     await runTurn(prompt);
   };
 
   const runTurn = async (prompt: string, displayAs?: string) => {
-    if (!active || !prompt || sending) return;
+    if (!active || sending) return;
+    // Snapshot + clear pending attachments for this turn.
+    const turnAttachments = attachments;
+    if (!prompt && turnAttachments.length === 0) return;
     const sid = active.sessionId;
     // Turn count before this turn — the server will hold baseCount+2 (user +
     // agent) once it persists, which is how recovery knows the reply is ready.
     const baseCount = active.turns.length;
     setSending(true);
+    setAttachments([]); // consumed by this turn
+    const optimisticAttach = turnAttachments.length
+      ? turnAttachments.map((a) => ({ path: a.path, name: a.name, contentType: a.contentType, url: a.previewUrl }))
+      : undefined;
     setActive((s) =>
-      s ? { ...s, turns: [...s.turns, { role: "user", text: displayAs ?? prompt, at: new Date().toISOString() }] } : s
+      s ? { ...s, turns: [...s.turns, { role: "user", text: displayAs ?? prompt, at: new Date().toISOString(), ...(optimisticAttach ? { attachments: optimisticAttach } : {}) }] } : s
     );
     // True only once the SSE body started arriving — distinguishes a recoverable
     // mid-stream drop (the turn is running server-side) from a real failure
@@ -215,7 +274,11 @@ export default function EmberPage() {
         {
           method: "POST",
           headers: { "Content-Type": "application/json" },
-          body: JSON.stringify(displayAs ? { prompt, displayPrompt: displayAs } : { prompt }),
+          body: JSON.stringify({
+            prompt,
+            ...(displayAs ? { displayPrompt: displayAs } : {}),
+            ...(turnAttachments.length ? { attachments: turnAttachments.map((a) => a.path) } : {}),
+          }),
           signal: abort.signal,
         }
       );
@@ -382,7 +445,7 @@ export default function EmberPage() {
   useEffect(() => {
     if (!active?.pendingSeed) return;
     if (active.turns.length > 0) return;
-    if (view === "terminal") return;
+    if (view !== "chat") return;
     if (seededRef.current === active.sessionId) return;
     seededRef.current = active.sessionId;
     const seed = active.pendingSeed;
@@ -456,6 +519,8 @@ export default function EmberPage() {
                     <div className="flex items-center gap-1.5 mt-0.5 text-[12px] text-[var(--color-text-secondary)]">
                       <CliBadge cli={s.cli} className="text-[10px] !px-1.5 !py-0" />
                       {s.repo && <span className="truncate">{s.repo.split("/").slice(-2).join("/")}</span>}
+                      <span className="shrink-0 opacity-60" aria-hidden>·</span>
+                      <span className="shrink-0 tabular-nums" title={`Last active ${new Date(s.updatedAt).toLocaleString()}`}>{relativeTime(s.updatedAt)}</span>
                     </div>
                   </div>
                   <button
@@ -555,7 +620,9 @@ export default function EmberPage() {
                   runs in the resumed TUI, which never flows back into the chat
                   turns[]. Showing Chat would render only the original port's stale
                   replay — so lock it disabled (visible for orientation, with a
-                  tooltip) and keep the user on the terminal it was ported into. */}
+                  tooltip) and keep the user on the terminal it was ported into.
+                  Icon-only on phones (labels would overflow 3 segments); icon +
+                  label from sm up. aria-label keeps each tab accessible. */}
               {(() => {
                 const terminalOnly = active.defaultView === "terminal";
                 return (
@@ -565,20 +632,28 @@ export default function EmberPage() {
                       onClick={() => !terminalOnly && setView("chat")}
                       disabled={terminalOnly}
                       aria-disabled={terminalOnly}
+                      aria-label="Chat"
                       className={terminalOnly ? "opacity-40 cursor-not-allowed" : ""}
                       title={terminalOnly ? "This is a terminal session — its conversation runs in the live terminal" : undefined}
                     >
-                      <MessageSquare className="w-3.5 h-3.5" /> Chat
+                      <MessageSquare className="w-3.5 h-3.5" /> <span className="hidden sm:inline">Chat</span>
                     </button>
-                    <button data-on={view === "terminal"} onClick={() => setView("terminal")} title="Live terminal into the session microVM">
-                      <TerminalSquare className="w-3.5 h-3.5" /> Terminal
+                    <button data-on={view === "terminal"} onClick={() => setView("terminal")} aria-label="Terminal" title="Live terminal into the session microVM">
+                      <TerminalSquare className="w-3.5 h-3.5" /> <span className="hidden sm:inline">Terminal</span>
+                    </button>
+                    <button data-on={view === "artifacts"} onClick={() => setView("artifacts")} aria-label="Artifacts" title="Generated outputs (videos, images, exports)">
+                      <FileBox className="w-3.5 h-3.5" /> <span className="hidden sm:inline">Artifacts</span>
                     </button>
                   </div>
                 );
               })()}
             </div>
 
-            {view === "terminal" ? (
+            {view === "artifacts" ? (
+              <div className="flex-1 min-h-0">
+                <ArtifactsPanel sessionId={active.sessionId} />
+              </div>
+            ) : view === "terminal" ? (
               <div className="flex-1 min-h-0">
                 <ShellTerminal
                   sessionId={active.sessionId}
@@ -610,8 +685,26 @@ export default function EmberPage() {
               )}
               {active.turns.map((t, i) =>
                 t.role === "user" ? (
-                  <div key={i} className="msg-in self-end max-w-[85%] md:max-w-[70%] bubble-user px-3.5 py-2 text-[15px] whitespace-pre-wrap break-words leading-snug">
-                    {t.text}
+                  <div key={i} className="msg-in self-end max-w-[85%] md:max-w-[70%] flex flex-col items-end gap-1.5">
+                    {t.attachments && t.attachments.length > 0 && (
+                      <div className="flex flex-wrap gap-1.5 justify-end">
+                        {t.attachments.map((a, j) =>
+                          a.contentType?.startsWith("image/") && a.url ? (
+                            // eslint-disable-next-line @next/next/no-img-element
+                            <img key={j} src={a.url} alt={a.name} onClick={() => setLightbox({ url: a.url!, name: a.name })} className="rounded-xl max-h-44 max-w-[200px] object-cover border-[0.5px] border-[var(--color-border)] cursor-zoom-in" />
+                          ) : (
+                            <span key={j} className="flex items-center gap-1 text-[12px] px-2.5 py-1.5 rounded-xl bubble-user">
+                              <Paperclip className="w-3 h-3" /> <span className="max-w-[160px] truncate">{a.name}</span>
+                            </span>
+                          )
+                        )}
+                      </div>
+                    )}
+                    {t.text && (
+                      <div className="bubble-user px-3.5 py-2 text-[15px] whitespace-pre-wrap break-words leading-snug">
+                        {t.text}
+                      </div>
+                    )}
                   </div>
                 ) : (
                   <div key={i} data-testid="cc-agent-turn" className="msg-in self-stretch w-full mt-1.5">
@@ -663,7 +756,49 @@ export default function EmberPage() {
 
             {view === "chat" && (
             <div className="ios-blur hairline-t flex-shrink-0 px-3 md:px-5 pt-2.5 pb-3" style={{ paddingBottom: "max(env(safe-area-inset-bottom), 12px)" }}>
+              {/* Pending attachments (uploaded, awaiting send) */}
+              {attachments.length > 0 && (
+                <div className="flex flex-wrap gap-2 mb-2">
+                  {attachments.map((a) =>
+                    a.previewUrl ? (
+                      <div key={a.path} className="relative">
+                        {/* eslint-disable-next-line @next/next/no-img-element */}
+                        <img src={a.previewUrl} alt={a.name} className="w-16 h-16 rounded-xl object-cover border-[0.5px] border-[var(--color-border)]" />
+                        <button onClick={() => setAttachments((xs) => xs.filter((x) => x.path !== a.path))} className="press-sm absolute -top-1.5 -right-1.5 w-5 h-5 rounded-full bg-[var(--color-surface-2)] border-[0.5px] border-[var(--color-border)] flex items-center justify-center" aria-label={`Remove ${a.name}`}>
+                          <X className="w-3 h-3" />
+                        </button>
+                      </div>
+                    ) : (
+                      <span key={a.path} className="flex items-center gap-1 text-[12px] pl-2 pr-1 py-1 rounded-full" style={{ background: "var(--ios-fill-tertiary)" }}>
+                        <Paperclip className="w-3 h-3" /> <span className="max-w-[140px] truncate">{a.name}</span>
+                        <button onClick={() => setAttachments((xs) => xs.filter((x) => x.path !== a.path))} className="press-sm opacity-60" aria-label={`Remove ${a.name}`}>
+                          <X className="w-3.5 h-3.5" />
+                        </button>
+                      </span>
+                    )
+                  )}
+                </div>
+              )}
               <div className="relative flex items-end gap-2">
+                <input
+                  ref={attachInput}
+                  type="file"
+                  multiple
+                  accept="image/*,.pdf,.txt,.md,.csv,.json"
+                  className="hidden"
+                  onChange={(e) => uploadAttachments(e.target.files)}
+                />
+                {/* Attach (+) — pick image/file from the phone; uploads then rides
+                    along with the next message straight to the Claude session. */}
+                <button
+                  onClick={() => attachInput.current?.click()}
+                  disabled={attaching || sending}
+                  className="press-sm w-[34px] h-[34px] mb-0.5 rounded-full flex items-center justify-center flex-shrink-0 disabled:opacity-40"
+                  style={{ background: "var(--color-surface-2)", border: "0.5px solid var(--color-border)" }}
+                  aria-label="Attach a file"
+                >
+                  <Plus className={`w-5 h-5 ${attaching ? "animate-pulse" : ""}`} strokeWidth={2.4} />
+                </button>
                 <div className="flex-1 flex items-end bg-[var(--color-surface-2)] rounded-[20px] pl-4 pr-1.5 py-1 border-[0.5px] border-[var(--color-border)] focus-within:border-[var(--ios-blue)] transition-colors">
                   <textarea
                     ref={inputRef}
@@ -699,7 +834,7 @@ export default function EmberPage() {
                   >
                     <Square className="w-3.5 h-3.5" strokeWidth={0} fill="currentColor" />
                   </button>
-                ) : draft.trim() && !voiceActive ? (
+                ) : (draft.trim() || attachments.length > 0) && !voiceActive ? (
                   <button
                     onClick={send}
                     data-testid="cc-send"
@@ -738,6 +873,10 @@ export default function EmberPage() {
           onCancel={() => setConfirmDelete(null)}
           onConfirm={confirmRemove}
         />
+      )}
+
+      {lightbox && (
+        <Lightbox src={lightbox.url} alt={lightbox.name} downloadName={lightbox.name} onClose={() => setLightbox(null)} />
       )}
 
       {toast && (
