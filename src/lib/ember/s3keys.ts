@@ -62,6 +62,20 @@ export function artifactKey(tenantId: string, sessionId: string, rel: string): s
   return `${artifactPrefix(tenantId, sessionId)}${rel}`;
 }
 
+/** Prefix a pulled-home session's transcript + checkpointed artifacts live under.
+ *  Keyed by the conversation's RESUME id (the transcript filename id), which is
+ *  what the runtime checkpoints under — NOT the Ember session id. */
+export function checkpointPrefix(tenantId: string, resumeId: string): string {
+  return `${tenantRoot(tenantId)}/checkpoint/${resumeId}/`;
+}
+
+/** Prefix cloud-generated artifacts land under at checkpoint time (the runtime's
+ *  _checkpoint_artifacts uploads here). Distinct from the resume/upload prefix,
+ *  so the web listing must read both. */
+export function checkpointArtifactPrefix(tenantId: string, resumeId: string): string {
+  return `${checkpointPrefix(tenantId, resumeId)}artifacts/`;
+}
+
 /** Validate an artifact's workspace-relative path: reject absolute paths and any
  *  `..` traversal so a malicious/buggy manifest can't write outside the session's
  *  artifact prefix (server side) or workspace (runtime side). Returns a POSIX rel

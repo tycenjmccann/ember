@@ -20,7 +20,7 @@ import { S3Client, ListObjectsV2Command, GetObjectCommand, PutObjectCommand } fr
 import { getSignedUrl } from "@aws-sdk/s3-request-presigner";
 import { getOwnedSession } from "@/lib/ember/sessions";
 import { getIdentity } from "@/lib/ember/identity";
-import { artifactPrefix, artifactKey } from "@/lib/ember/s3keys";
+import { artifactPrefix, artifactKey, checkpointArtifactPrefix } from "@/lib/ember/s3keys";
 
 export const dynamic = "force-dynamic";
 
@@ -72,36 +72,45 @@ export async function GET(
     return NextResponse.json({ error: "Session not found" }, { status: 404 });
   }
 
-  const prefix = artifactPrefix(tenantId, params.id);
+  // Artifacts land under TWO prefixes: the resume/upload prefix (ported laptop
+  // outputs + composer uploads, keyed by the Ember session id) and the checkpoint
+  // prefix (cloud outputs synced on checkpoint/pull, keyed by the resume id). List
+  // both so the tab shows everything; dedupe by path (checkpoint = newer cloud
+  // output, so it wins a name collision).
+  const prefixes: string[] = [artifactPrefix(tenantId, params.id)];
+  if (session.claudeSessionId) {
+    prefixes.push(checkpointArtifactPrefix(tenantId, session.claudeSessionId));
+  }
   const s3 = new S3Client({ region: REGION });
 
   try {
-    const objects: { Key?: string; Size?: number }[] = [];
-    let token: string | undefined;
-    do {
-      const page = await s3.send(
-        new ListObjectsV2Command({ Bucket: ARTIFACT_BUCKET, Prefix: prefix, ContinuationToken: token })
-      );
-      objects.push(...(page.Contents || []));
-      token = page.IsTruncated ? page.NextContinuationToken : undefined;
-    } while (token);
+    const byPath = new Map<string, { key: string; bytes: number }>();
+    for (const prefix of prefixes) {
+      let token: string | undefined;
+      do {
+        const page = await s3.send(
+          new ListObjectsV2Command({ Bucket: ARTIFACT_BUCKET, Prefix: prefix, ContinuationToken: token })
+        );
+        for (const o of page.Contents || []) {
+          if (!o.Key || o.Key === prefix) continue;
+          // Later prefix (checkpoint) overwrites the earlier one on a name clash.
+          byPath.set(o.Key.slice(prefix.length), { key: o.Key, bytes: o.Size ?? 0 });
+        }
+        token = page.IsTruncated ? page.NextContinuationToken : undefined;
+      } while (token);
+    }
 
     const artifacts = await Promise.all(
-      objects
-        .filter((o) => o.Key && o.Key !== prefix)
-        .map(async (o) => {
-          const path = o.Key!.slice(prefix.length);
-          return {
-            path,
-            bytes: o.Size ?? 0,
-            contentType: contentTypeFor(path),
-            url: await getSignedUrl(
-              s3,
-              new GetObjectCommand({ Bucket: ARTIFACT_BUCKET, Key: o.Key! }),
-              { expiresIn: DOWNLOAD_EXPIRES }
-            ),
-          };
-        })
+      Array.from(byPath.entries()).map(async ([path, o]) => ({
+        path,
+        bytes: o.bytes,
+        contentType: contentTypeFor(path),
+        url: await getSignedUrl(
+          s3,
+          new GetObjectCommand({ Bucket: ARTIFACT_BUCKET, Key: o.key }),
+          { expiresIn: DOWNLOAD_EXPIRES }
+        ),
+      }))
     );
 
     return NextResponse.json({ artifacts });
@@ -126,8 +135,11 @@ export async function POST(
   const body = await request.json().catch(() => ({}));
   const name = safeName(body.name);
   // Namespace user uploads so they're distinguishable from agent-generated
-  // outputs (and never collide with a generated path of the same name).
-  const path = `uploads/${name}`;
+  // outputs, and give each its own timestamped subdir so two same-named uploads
+  // (e.g. phone screenshots both called image.png) don't overwrite each other —
+  // the chat stores this exact path, so a collision would remap an old message's
+  // thumbnail to the newer file.
+  const path = `uploads/${Date.now().toString(36)}/${name}`;
   const key = artifactKey(tenantId, params.id, path);
 
   try {
