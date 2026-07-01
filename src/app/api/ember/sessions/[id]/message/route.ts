@@ -11,6 +11,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import { getOwnedSession, putSession, DEFAULT_USER_ID } from "@/lib/ember/sessions";
 import { getIdentity } from "@/lib/ember/identity";
+import { artifactPrefix } from "@/lib/ember/s3keys";
 import { invokeCodingTurn, invokeCodingTurnStream, codingRuntimeConfigured } from "@/lib/ember/runtime";
 import { currentConfigVersion } from "@/lib/ember/config-store";
 import { sseData } from "@/lib/sse";
@@ -103,9 +104,14 @@ export async function POST(
         gitMode: session.gitMode,
         cloneUrl: session.cloneUrl,
         resumeBundleKey: session.resumeBundleKey,
-        artifactPrefix: session.artifactPrefix,
       }
     : {};
+
+  // The session's artifact prefix (tenant-scoped) — where ported artifacts live
+  // AND where composer uploads land. Passed on every turn (not just ported ones)
+  // so a chat attachment on a plain session still resolves to the right S3 key;
+  // the runtime's restore is marker-guarded + no-ops when the prefix is empty.
+  const sessionArtifactPrefix = artifactPrefix(tenantId, session.sessionId);
 
   // ── Streaming path (claude): relay SSE, persist on the terminal 'done' frame.
   if (wantStream) {
@@ -114,7 +120,7 @@ export async function POST(
       upstream = await invokeCodingTurnStream({
         sessionId: session.sessionId, prompt, cli: session.cli, repo: session.repo,
         claudeSessionId: session.claudeSessionId, userId, tenantId, configVersion, region,
-        authMode: session.authMode, attachments, ...resumeFields,
+        authMode: session.authMode, attachments, artifactPrefix: sessionArtifactPrefix, ...resumeFields,
       });
     } catch (err) {
       return NextResponse.json({ error: (err as Error).message }, { status: 502 });
@@ -183,7 +189,7 @@ export async function POST(
     const result = await invokeCodingTurn({
       sessionId: session.sessionId, prompt, cli: session.cli, repo: session.repo,
       claudeSessionId: session.claudeSessionId, userId, tenantId, configVersion, region,
-      authMode: session.authMode, attachments, ...resumeFields,
+      authMode: session.authMode, attachments, artifactPrefix: sessionArtifactPrefix, ...resumeFields,
     });
 
     const agentTurn: EmberTurn = { role: "agent", text: result.response, at: new Date().toISOString() };
