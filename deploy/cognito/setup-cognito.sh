@@ -181,9 +181,23 @@ for BRAND_CLIENT in "$CLIENT_ID" "$CLI_CLIENT_ID"; do
       --use-cognito-provided-values \
       --query 'ManagedLoginBranding.ManagedLoginBrandingId' --output text)
   fi
-  aws cognito-idp update-managed-login-branding \
-    --user-pool-id "$POOL_ID" --managed-login-branding-id "$BRAND_ID" --region "$AWS_REGION" \
-    --settings "file://$HERE/branding.json" >/dev/null
+  # branding.json enables components.form.logo, which only turns ON the logo slot
+  # — the image itself is a SEPARATE input (--assets, not --settings). Without it
+  # the box shows an empty slot / stale default. Ship the PNG as a FORM_LOGO asset
+  # for both color modes so the Ember mark actually renders.
+  if [[ -f "$HERE/login-logo.png" ]]; then
+    LOGO_B64=$(base64 -i "$HERE/login-logo.png" | tr -d '\n')
+    aws cognito-idp update-managed-login-branding \
+      --user-pool-id "$POOL_ID" --managed-login-branding-id "$BRAND_ID" --region "$AWS_REGION" \
+      --settings "file://$HERE/branding.json" \
+      --assets \
+        "Category=FORM_LOGO,ColorMode=LIGHT,Extension=PNG,Bytes=$LOGO_B64" \
+        "Category=FORM_LOGO,ColorMode=DARK,Extension=PNG,Bytes=$LOGO_B64" >/dev/null
+  else
+    aws cognito-idp update-managed-login-branding \
+      --user-pool-id "$POOL_ID" --managed-login-branding-id "$BRAND_ID" --region "$AWS_REGION" \
+      --settings "file://$HERE/branding.json" >/dev/null
+  fi
   echo "  branded client ${BRAND_CLIENT} (${BRAND_ID})"
 done
 
