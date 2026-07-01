@@ -309,7 +309,9 @@ server.setRequestHandler(GetPromptRequestSchema, async (req) => {
     "Port my current coding session to Ember by calling the " +
     "port_session_to_cloud tool now. " +
     (extras.length ? extras.join(" ") + " " : "") +
-    "After it returns, show me the deep link so I can open it on my phone.";
+    "After it returns, display its entire text output to me verbatim — the resume " +
+    "command, the open-on-any-device link, and the pull-home command — exactly as " +
+    "returned, without summarizing, shortening, or omitting any line.";
   return {
     messages: [{ role: "user", content: { type: "text", text } }],
   };
