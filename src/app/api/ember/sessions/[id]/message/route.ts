@@ -78,8 +78,10 @@ export async function POST(
       ? { attachments: attachments.map((p) => ({ path: p, name: p.split("/").pop() || p, contentType: ctFor(p) })) }
       : {}),
   };
-  const wantStream =
-    request.nextUrl.searchParams.get("stream") === "1" && session.cli === "claude";
+  // Every CLI streams now: claude (token deltas), codex (per-step frames), kiro
+  // (line-by-line stdout). Streaming also keeps the socket alive past the proxy's
+  // idle timeout, so long codex turns no longer 502 with a plaintext body.
+  const wantStream = request.nextUrl.searchParams.get("stream") === "1";
   const userId = session.userId || DEFAULT_USER_ID;
   const configVersion = await currentConfigVersion(userId);
   const region = request.nextUrl.searchParams.get("region") || undefined;
@@ -113,7 +115,7 @@ export async function POST(
   // the runtime's restore is marker-guarded + no-ops when the prefix is empty.
   const sessionArtifactPrefix = artifactPrefix(tenantId, session.sessionId);
 
-  // ── Streaming path (claude): relay SSE, persist on the terminal 'done' frame.
+  // ── Streaming path (all CLIs): relay SSE, persist on the terminal 'done' frame.
   if (wantStream) {
     let upstream: ReadableStream<Uint8Array>;
     try {
@@ -184,7 +186,8 @@ export async function POST(
     });
   }
 
-  // ── Buffered path (codex, or stream not requested).
+  // ── Buffered path (stream not requested — e.g. a legacy client): one blocking
+  // invoke, reply returned when the turn finishes.
   try {
     const result = await invokeCodingTurn({
       sessionId: session.sessionId, prompt, cli: session.cli, repo: session.repo,

@@ -105,6 +105,10 @@ CODEX_SUB_MODEL = os.environ.get("CODEX_SUB_MODEL", "gpt-5.1-codex")
 # the account default win (kiro's default is its own opus-class model).
 KIRO_MODEL = os.environ.get("KIRO_MODEL", "")
 
+# Strips ANSI escape / color sequences from a CLI's raw terminal output (kiro
+# prints its reply with them) so streamed SSE text renders clean in the browser.
+_ANSI_RE = re.compile(r"\x1b\[[0-9;?]*[ -/]*[@-~]")
+
 _CODING_PROC_NAMES = ("claude", "codex", "kiro", "kiro-cli", "node")
 COLLECTOR_BIN = "/usr/bin/otelcol-contrib"
 COLLECTOR_CFG = "/app/otel-collector-config.yaml"
@@ -2037,6 +2041,161 @@ def _run_codex(prompt: str, workdir: str, codex_session_id: str | None,
     return {"response": text, "claude_session_id": thread_id}
 
 
+def _stream_codex(prompt: str, workdir: str, codex_session_id: str | None,
+                  repo: str | None = None, auth_mode: str = "bedrock",
+                  user_id: str | None = None, runtime_session_id: str | None = None,
+                  tenant_id: str | None = None, codex_home: str | None = None):
+    """Generator yielding SSE lines for a Codex turn as it runs.
+
+    codex exec --json emits per-STEP JSONL (not token deltas): thread.started,
+    item.started/completed (command_execution, reasoning, agent_message), and a
+    final turn.completed/turn.failed. We map those to the same {type:text|done|
+    error} SSE frames _stream_claude uses:
+      • agent_message text            → 'text' (the reply itself)
+      • command_execution / reasoning → 'text' as a dim status line so the user
+                                        sees live progress instead of a spinner
+      • turn.completed                → 'done' carrying the full reply + thread_id
+    Streaming also keeps the connection alive, so a long codex turn no longer
+    trips the front-end proxy's idle timeout (the old buffered-path failure)."""
+    def sse(obj: dict) -> str:
+        return f"data: {json.dumps(obj)}\n\n"
+
+    env = {**os.environ, "WORKSPACE_DIR": workdir}
+    if codex_home:
+        env["CODEX_HOME"] = codex_home
+    if auth_mode == "subscription":
+        if not _materialize_codex_auth(user_id, tenant_id):
+            exc = ("subscription mode selected but no Codex auth uploaded — "
+                   "run the login step (codex login) on your laptop first")
+            yield sse({"type": "error", "error": exc})
+            yield sse({"type": "done", "response": f"⚠ {exc}", "claude_session_id": codex_session_id})
+            return
+        env["CODEX_AUTH_MODE"] = "subscription"
+        env["CODEX_SUB_MODEL"] = CODEX_SUB_MODEL
+    args = ["/app/run-codex.sh", prompt]
+    if codex_session_id:
+        args.append(codex_session_id)
+
+    proc = subprocess.Popen(args, cwd=workdir, env=env, stdout=subprocess.PIPE,
+                            stderr=subprocess.PIPE, text=True, stdin=subprocess.DEVNULL, bufsize=1)
+    thread_id: str | None = codex_session_id
+    reply_parts: list[str] = []          # only agent_message text = the actual reply
+    emitted_any_reply = False            # did we stream reply text (vs only status)?
+    fail_detail: str | None = None
+    try:
+        for line in proc.stdout:  # line-buffered: yields as codex emits each frame
+            line = line.strip()
+            if not line:
+                continue
+            try:
+                obj = json.loads(line)
+            except json.JSONDecodeError:
+                continue
+            t = obj.get("type")
+            if t == "thread.started" and obj.get("thread_id"):
+                thread_id = obj["thread_id"]
+                continue
+            if t in ("error", "turn.failed"):
+                fail_detail = str(obj.get("message") or (obj.get("error") or {}).get("message") or "")[:400]
+                continue
+            # item.started/completed carry the step payload (older builds: msg).
+            item = obj.get("item") or obj.get("msg") or {}
+            itype = item.get("type")
+            if itype == "agent_message":
+                # The reply. completed frame has the whole message; stream it once.
+                if t == "item.completed":
+                    msg = item.get("text") or item.get("message") or ""
+                    if msg:
+                        reply_parts.append(msg)
+                        emitted_any_reply = True
+                        yield sse({"type": "text", "text": msg})
+            elif itype == "command_execution" and t == "item.started":
+                cmd = str(item.get("command") or "").strip()
+                if cmd:
+                    yield sse({"type": "text", "text": f"\n`$ {cmd[:200]}`\n"})
+            elif itype == "reasoning" and t == "item.completed":
+                note = str(item.get("text") or "").strip()
+                if note:
+                    yield sse({"type": "text", "text": f"\n_{note[:300]}_\n"})
+        proc.wait(timeout=30)
+    except Exception as exc:  # noqa: BLE001
+        yield sse({"type": "error", "error": str(exc)[:600]})
+        return
+    if proc.returncode not in (0, None) or fail_detail:
+        banner = ((proc.stderr.read() or "")[:200] if proc.stderr else "")
+        err = fail_detail or banner or f"codex exited {proc.returncode}"
+        yield sse({"type": "error", "error": f"codex: {err}"})
+        yield sse({"type": "done", "response": f"⚠ codex: {err}",
+                   "claude_session_id": thread_id})
+        return
+    _remember_session(thread_id, repo)
+    if thread_id:
+        _write_resume_launch_hint(workdir, thread_id, runtime_session_id,
+                                  cli="codex", codex_home=codex_home)
+    yield sse({"type": "done",
+               "response": "".join(reply_parts) if emitted_any_reply else "",
+               "claude_session_id": thread_id})
+
+
+def _stream_kiro(prompt: str, workdir: str, kiro_session_id: str | None,
+                 repo: str | None = None, user_id: str | None = None,
+                 runtime_session_id: str | None = None, tenant_id: str | None = None,
+                 kiro_home: str | None = None):
+    """Generator yielding SSE lines for a Kiro turn as it runs.
+
+    Kiro chat has no JSON event stream — it prints the reply to stdout as it
+    generates. We strip ANSI, stream stdout line-by-line as 'text' frames (live
+    output, no buffering → no proxy idle-timeout), then learn the conversation
+    id from the newest conversations_v2 row and emit the terminal 'done'."""
+    def sse(obj: dict) -> str:
+        return f"data: {json.dumps(obj)}\n\n"
+
+    cred = _fetch_subscription_cred(user_id, "kiro", tenant_id) or {}
+    api_key = cred.get("token") or cred.get("api_key") or cred.get("access_key")
+    if not api_key:
+        exc = ("no Kiro access key uploaded — run the login step on your laptop "
+               "(login_cli kiro). Kiro has no Bedrock fallback.")
+        yield sse({"type": "error", "error": exc})
+        yield sse({"type": "done", "response": f"⚠ {exc}", "claude_session_id": kiro_session_id})
+        return
+    home = kiro_home or KIRO_HOME
+    os.makedirs(home, exist_ok=True)
+    env = {**os.environ, "KIRO_HOME": home, "XDG_DATA_HOME": home, "KIRO_API_KEY": api_key}
+
+    args = ["kiro-cli", "chat", "--no-interactive", "--trust-all-tools"]
+    if KIRO_MODEL:
+        args += ["--model", KIRO_MODEL]
+    if kiro_session_id:
+        args += ["--resume-id", kiro_session_id]
+    args.append(prompt)
+
+    proc = subprocess.Popen(args, cwd=workdir, env=env, stdout=subprocess.PIPE,
+                            stderr=subprocess.PIPE, text=True, stdin=subprocess.DEVNULL, bufsize=1)
+    full_text: list[str] = []
+    try:
+        for line in proc.stdout:
+            clean = _ANSI_RE.sub("", line)
+            if not clean.strip():
+                continue
+            full_text.append(clean)
+            yield sse({"type": "text", "text": clean})
+        proc.wait(timeout=30)
+    except Exception as exc:  # noqa: BLE001
+        yield sse({"type": "error", "error": str(exc)[:600]})
+        return
+    if proc.returncode not in (0, None):
+        err = ((proc.stderr.read() or "")[:400] if proc.stderr else "") or f"kiro exited {proc.returncode}"
+        yield sse({"type": "error", "error": f"kiro: {err}"})
+        yield sse({"type": "done", "response": f"⚠ kiro: {err}", "claude_session_id": kiro_session_id})
+        return
+    conv_id = kiro_session_id or _kiro_newest_id(workdir, home)
+    if conv_id:
+        _write_resume_launch_hint(workdir, conv_id, runtime_session_id,
+                                  cli="kiro", kiro_home=kiro_home)
+    yield sse({"type": "done", "response": "".join(full_text).strip(),
+               "claude_session_id": conv_id})
+
+
 def _run_kiro(prompt: str, workdir: str, kiro_session_id: str | None,
               user_id: str | None = None, tenant_id: str | None = None,
               kiro_home: str | None = None) -> dict:
@@ -2403,13 +2562,21 @@ async def invocations(request: Request):
         # seed into a bare shell; leave it pending for a retry).
         return JSONResponse({"warmed": True, "workspace": workdir, "cli": cli, "resume_ready": resume_ready})
 
-    # Streaming path (claude): yield SSE as the turn runs. The runtime forwards
+    # Streaming path (all CLIs): yield SSE as the turn runs. The runtime forwards
     # an async/sync generator response as text/event-stream through InvokeAgentRuntime.
-    if stream and cli == "claude":
-        return StreamingResponse(
-            _stream_claude(prompt, workdir, claude_session_id, repo, auth_mode, user_id, session_id, tenant_id),
-            media_type="text/event-stream",
-        )
+    # Each generator maps its CLI's live output to the same {type:text|done|error}
+    # frames; streaming also keeps the connection alive past the front-end proxy's
+    # idle timeout (the old buffered-codex "upstream request timeout" failure).
+    if stream:
+        gen = None
+        if cli == "claude":
+            gen = _stream_claude(prompt, workdir, claude_session_id, repo, auth_mode, user_id, session_id, tenant_id)
+        elif cli == "codex":
+            gen = _stream_codex(prompt, workdir, claude_session_id, repo, auth_mode, user_id, session_id, tenant_id, codex_home)
+        elif cli == "kiro":
+            gen = _stream_kiro(prompt, workdir, claude_session_id, repo, user_id, session_id, tenant_id, kiro_home)
+        if gen is not None:
+            return StreamingResponse(gen, media_type="text/event-stream")
 
     try:
         if cli == "codex":

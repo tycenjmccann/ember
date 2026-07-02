@@ -268,7 +268,7 @@ export default function EmberPage() {
     stoppedRef.current = false;
     inflight.current = { displayPrompt: displayAs ?? prompt, acc: "" };
     try {
-      const canStream = active.cli === "claude";
+      const canStream = true; // every CLI streams (claude/codex/kiro)
       const res = await fetch(
         `/api/ember/sessions/${active.sessionId}/message${canStream ? "?stream=1" : ""}`,
         {
