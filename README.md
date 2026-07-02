@@ -14,6 +14,14 @@
 [![Self-host](https://img.shields.io/badge/self--host-one%20command-ff6a00.svg)](#stand-it-up-one-command)
 [![Open-core](https://img.shields.io/badge/open--core-MIT%20%2B%20enterprise-3a3531.svg)](#open-core)
 
+<br/>
+
+<a href="https://tjmapps.org/ember">
+  <img src=".github/assets/demo-poster.png" alt="Ember — sessions staying warm across Claude Code, Codex, and Kiro" width="760" />
+</a>
+
+<sub>▶ <a href="https://tjmapps.org/ember">Watch the demo</a></sub>
+
 </div>
 
 
