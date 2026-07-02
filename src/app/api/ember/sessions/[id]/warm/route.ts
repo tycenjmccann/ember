@@ -39,7 +39,8 @@ export async function POST(
   const userId = session.userId || DEFAULT_USER_ID;
   const configVersion = await currentConfigVersion(userId);
   // Bind to the verified requester, not the creator — shared tenant sessions.
-  const githubToken = await cloneTokenForUser(requesterId, session.repo);
+  const { token: githubToken, connected: githubAppConnected } =
+    await cloneTokenForUser(requesterId, session.repo);
   try {
     await warmCodingSession({
       sessionId: session.sessionId,
@@ -58,6 +59,7 @@ export async function POST(
       region,
       authMode: session.authMode,
       githubToken,
+      githubAppConnected,
     });
     return NextResponse.json({ warmed: true });
   } catch (err) {

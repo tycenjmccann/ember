@@ -30,12 +30,13 @@ WORKSPACE_DIR="${WORKSPACE_DIR:-/mnt/workspace}"
 mkdir -p "$WORKSPACE_DIR"
 cd "$WORKSPACE_DIR"
 
-# GitHub auth for private clone/push (mirrors the fleet container's git setup).
-if [ -n "${GITHUB_PAT:-}" ]; then
-  git config --global "url.https://x-access-token:${GITHUB_PAT}@github.com/.insteadOf" "https://github.com/"
-  git config --global user.email "${GIT_AUTHOR_EMAIL:-agent@ember.example.com}"
-  git config --global user.name "${GIT_AUTHOR_NAME:-AgentCore Hub Agent}"
-fi
+# GitHub auth for private clone/push is configured by the server's _configure_git
+# (credential.https://github.com.helper → tmpfs token, App-scoped). We deliberately
+# do NOT add a url.insteadOf PAT rewrite here: it would override that helper and
+# re-expose a long-lived PAT even when a short-lived App token was minted. Just set
+# the author identity for commits.
+git config --global user.email "${GIT_AUTHOR_EMAIL:-agent@ember.example.com}" 2>/dev/null || true
+git config --global user.name "${GIT_AUTHOR_NAME:-AgentCore Hub Agent}" 2>/dev/null || true
 
 MODEL="${CODEX_MODEL:-openai.gpt-5.5}"
 PROJECT="${BEDROCK_MANTLE_PROJECT:-default}"

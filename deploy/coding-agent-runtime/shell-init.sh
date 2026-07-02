@@ -156,11 +156,20 @@ if [ -f "$_EPHEMERAL_CREDS_DIR/.kiro-api-key" ]; then
   _KIRO_AUTH="your access key"
 fi
 
-# ── GitHub CLI / git → authenticated via the PAT (no `gh auth login`) ──
-if [ -n "${GITHUB_PAT:-}" ]; then
+# ── GitHub CLI / git auth (no `gh auth login`) ──
+# git itself authenticates through the credential helper the server configured
+# (_configure_git → credential.https://github.com.helper, reading the tmpfs
+# token file). We only need GH_TOKEN here so the `gh` CLI is authed. Prefer the
+# short-lived GitHub App token the server materialized to tmpfs; fall back to the
+# personal-deploy GITHUB_PAT. NO url.insteadOf rewrite — it would embed the token
+# in ~/.gitconfig and override the scoped helper (re-exposing a long-lived PAT).
+if [ -f "$_EPHEMERAL_CREDS_DIR/github" ]; then
+  GH_TOKEN="$(cat "$_EPHEMERAL_CREDS_DIR/github")"
+  export GH_TOKEN GITHUB_TOKEN="$GH_TOKEN"
+  git config --global --add safe.directory '*' 2>/dev/null || true
+elif [ -n "${GITHUB_PAT:-}" ]; then
   export GH_TOKEN="$GITHUB_PAT"
   export GITHUB_TOKEN="$GITHUB_PAT"
-  git config --global "url.https://x-access-token:${GITHUB_PAT}@github.com/.insteadOf" "https://github.com/" 2>/dev/null || true
   git config --global --add safe.directory '*' 2>/dev/null || true
 fi
 

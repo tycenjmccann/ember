@@ -121,8 +121,10 @@ export async function POST(
   // Bound to the VERIFIED REQUESTER, never session.userId: tenant sessions are
   // shared (getOwnedSession only checks the tenant boundary), so minting off the
   // creator's installation would hand a coworker the creator's repo access. Each
-  // turn clones with the token of whoever actually sent it.
-  const githubToken = await cloneTokenForUser(requesterId, session.repo);
+  // turn clones with the token of whoever actually sent it. `connected` tells the
+  // runtime NOT to fall back to GITHUB_PAT when a connected user's mint is denied.
+  const { token: githubToken, connected: githubAppConnected } =
+    await cloneTokenForUser(requesterId, session.repo);
 
   // ── Streaming path (claude): relay SSE, persist on the terminal 'done' frame.
   if (wantStream) {
@@ -131,7 +133,7 @@ export async function POST(
       upstream = await invokeCodingTurnStream({
         sessionId: session.sessionId, prompt, cli: session.cli, repo: session.repo,
         claudeSessionId: session.claudeSessionId, userId, tenantId, configVersion, region,
-        authMode: session.authMode, attachments, artifactPrefix: sessionArtifactPrefix, githubToken, ...resumeFields,
+        authMode: session.authMode, attachments, artifactPrefix: sessionArtifactPrefix, githubToken, githubAppConnected, ...resumeFields,
       });
     } catch (err) {
       return NextResponse.json({ error: (err as Error).message }, { status: 502 });
@@ -200,7 +202,7 @@ export async function POST(
     const result = await invokeCodingTurn({
       sessionId: session.sessionId, prompt, cli: session.cli, repo: session.repo,
       claudeSessionId: session.claudeSessionId, userId, tenantId, configVersion, region,
-      authMode: session.authMode, attachments, artifactPrefix: sessionArtifactPrefix, githubToken, ...resumeFields,
+      authMode: session.authMode, attachments, artifactPrefix: sessionArtifactPrefix, githubToken, githubAppConnected, ...resumeFields,
     });
 
     const agentTurn: EmberTurn = { role: "agent", text: result.response, at: new Date().toISOString() };

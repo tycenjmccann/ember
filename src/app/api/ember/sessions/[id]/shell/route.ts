@@ -71,7 +71,8 @@ export async function POST(
     // GitHub token binds to the VERIFIED REQUESTER opening the terminal, not the
     // session creator — shared tenant sessions must not lend a coworker the
     // creator's repo access (mirrors the message route).
-    const githubToken = await cloneTokenForUser(requesterId, session.repo);
+    const { token: githubToken, connected: githubAppConnected } =
+      await cloneTokenForUser(requesterId, session.repo);
     if (session.resumeTranscriptKey) {
       // Full setup must COMPLETE before the resume runs. Bound it so a pathological
       // clone can't hang the request past maxDuration; if it times out the PTY's
@@ -97,6 +98,7 @@ export async function POST(
           region: REGION,
           authMode: session.authMode,
           githubToken,
+          githubAppConnected,
         }).catch(() => null),
         new Promise<null>((r) => setTimeout(() => r(null), 50_000)),
       ]);
@@ -120,6 +122,7 @@ export async function POST(
           region: REGION,
           authMode: session.authMode,
           githubToken,
+          githubAppConnected,
         }).catch(() => null),
         new Promise<null>((r) => setTimeout(() => r(null), 4000)),
       ]);

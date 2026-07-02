@@ -97,6 +97,11 @@ export interface CodingTurnParams {
   // the hub per turn. The runtime prefers it over the shared GITHUB_PAT env. Never
   // logged; expires ~1h so leakage from a task is tightly bounded.
   githubToken?: string;
+  // True when the requesting user has a GitHub App installation connected. When
+  // set, the runtime must NOT fall back to GITHUB_PAT if githubToken is absent —
+  // a connected user's clone must stay within their App scope, never escalate to
+  // the operator's broad PAT (see cloneTokenForUser).
+  githubAppConnected?: boolean;
 }
 
 function buildTurnPayload(params: CodingTurnParams): Record<string, unknown> {
@@ -123,6 +128,7 @@ function buildTurnPayload(params: CodingTurnParams): Record<string, unknown> {
   if (params.artifactPrefix) payload.artifact_prefix = params.artifactPrefix;
   if (params.attachments?.length) payload.attachments = params.attachments;
   if (params.githubToken) payload.github_token = params.githubToken;
+  if (params.githubAppConnected) payload.github_app_connected = true;
   return payload;
 }
 
@@ -239,6 +245,7 @@ export async function warmCodingSession(params: {
   region?: string;
   authMode?: EmberAuthMode;
   githubToken?: string;
+  githubAppConnected?: boolean;
 }): Promise<{ resumeReady: boolean }> {
   const runtimeArn = await runtimeArnFor(params.tenantId);
   const region = params.region || REGION;
@@ -260,6 +267,7 @@ export async function warmCodingSession(params: {
   if (params.configVersion) payload.config_version = params.configVersion;
   if (params.authMode) payload.auth_mode = params.authMode;
   if (params.githubToken) payload.github_token = params.githubToken;
+  if (params.githubAppConnected) payload.github_app_connected = true;
 
   const command = new InvokeAgentRuntimeCommand({
     agentRuntimeArn: runtimeArn,
@@ -303,6 +311,7 @@ export async function prepareCodingSession(params: {
   // only through prepare (no chat turn), so the runtime must configure the git
   // credential helper here for private-repo git/gh in Terminal to work.
   githubToken?: string;
+  githubAppConnected?: boolean;
 }): Promise<{ resumeReady: boolean }> {
   const runtimeArn = await runtimeArnFor(params.tenantId);
   const region = params.region || REGION;
@@ -316,6 +325,7 @@ export async function prepareCodingSession(params: {
   if (params.configVersion) payload.config_version = params.configVersion;
   if (params.authMode) payload.auth_mode = params.authMode;
   if (params.githubToken) payload.github_token = params.githubToken;
+  if (params.githubAppConnected) payload.github_app_connected = true;
 
   const command = new InvokeAgentRuntimeCommand({
     agentRuntimeArn: runtimeArn,

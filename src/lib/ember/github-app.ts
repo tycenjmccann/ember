@@ -129,29 +129,46 @@ export async function mintInstallationToken(
   return minted;
 }
 
+export interface CloneTokenResult {
+  /** The minted installation token, if one was issued. */
+  token?: string;
+  /** True when the user has a GitHub App installation connected. When this is
+   *  true but `token` is undefined, the mint was DENIED (repo out of the
+   *  selected-repo scope, installation revoked, GitHub error) — the runtime must
+   *  NOT fall back to the operator's GITHUB_PAT, or it would clone with broader
+   *  access than the user's App scope allows. */
+  connected: boolean;
+}
+
 /**
- * Best-effort clone token for a user's session. Returns undefined (never throws)
- * when the App isn't configured, the user hasn't connected, or GitHub declines —
- * the runtime then falls back to the GITHUB_PAT env path. `repo` scopes the token
- * to just that repo when the install was a selective one.
+ * Clone token for a user's session. Never throws. The `connected` flag lets the
+ * caller/runtime tell two cases apart that must behave differently:
+ *   - not connected (App unconfigured OR user hasn't installed) → `{connected:
+ *     false}` → GITHUB_PAT fallback is legitimate (personal-deploy path).
+ *   - connected but mint failed/denied → `{connected: true, token: undefined}` →
+ *     fallback is FORBIDDEN; the runtime clears creds so the clone fails cleanly
+ *     inside the user's chosen App scope rather than escalating to the PAT.
+ * `repo` scopes the token to just that repo when the install was selective.
  */
 export async function cloneTokenForUser(
   userId: string,
   repo?: string
-): Promise<string | undefined> {
+): Promise<CloneTokenResult> {
+  if (!(await githubAppConfigured())) return { connected: false };
+  const conn = await getGithubConnection(userId).catch(() => null);
+  if (!conn?.installationId) return { connected: false };
   try {
-    if (!(await githubAppConfigured())) return undefined;
-    const conn = await getGithubConnection(userId);
-    if (!conn?.installationId) return undefined;
     // Scope to the single repo when we can name it (owner/name → name). A
     // whole-installation token otherwise (e.g. "list my repos" with no repo yet).
     const shortName = repo?.split("/").filter(Boolean).pop();
     const scope =
       conn.repoSelection === "selected" && shortName ? [shortName] : undefined;
     const { token } = await mintInstallationToken(conn.installationId, scope);
-    return token;
+    return { token, connected: true };
   } catch {
-    return undefined;
+    // Connected, but GitHub declined the scoped mint → stay connected with no
+    // token so the caller enforces scope instead of leaking the PAT.
+    return { connected: true };
   }
 }
 

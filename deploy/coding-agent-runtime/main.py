@@ -674,6 +674,7 @@ def _clear_git_credential_helper() -> None:
         ["git", "config", "--global", "--unset-all", "credential.https://github.com.helper"],
         check=False,
     )
+    _clear_insteadof_pat_rewrite()
     for path in (_GIT_CRED_PATH, _GIT_CRED_HELPER):
         try:
             os.remove(path)
@@ -683,7 +684,28 @@ def _clear_git_credential_helper() -> None:
     os.environ.pop("GITHUB_TOKEN", None)
 
 
-def _configure_git(github_token: str | None = None) -> None:
+def _clear_insteadof_pat_rewrite() -> None:
+    """Drop any `url.https://x-access-token:*@github.com/.insteadOf` entry.
+
+    Older builds (and the shell/codex launchers when GITHUB_PAT is set) rewrite
+    every `https://github.com/...` to a PAT-bearing URL. That rewrite happens
+    BEFORE git's credential lookup, so it silently overrides our credential
+    helper — a clone would keep using the long-lived PAT even when a short-lived
+    App token was minted. Remove the whole url.*insteadOf subsection so the
+    helper is the only auth path."""
+    # Enumerate matching keys, then unset each (git has no wildcard unset).
+    res = subprocess.run(
+        ["git", "config", "--global", "--get-regexp",
+         r"^url\..*x-access-token.*\.insteadof$"],
+        capture_output=True, text=True, check=False,
+    )
+    for line in res.stdout.splitlines():
+        key = line.split(" ", 1)[0].strip()
+        if key:
+            subprocess.run(["git", "config", "--global", "--unset-all", key], check=False)
+
+
+def _configure_git(github_token: str | None = None, app_connected: bool = False) -> None:
     # Session storage mounts under a uid that may differ from the runtime user,
     # so Git refuses to operate ("dubious ownership"). Trust the workspace tree.
     subprocess.run(
@@ -699,11 +721,22 @@ def _configure_git(github_token: str | None = None) -> None:
                     os.environ.get("GIT_AUTHOR_EMAIL", "agent@ember.example.com")], check=False)
     subprocess.run(["git", "config", "--global", "user.name",
                     os.environ.get("GIT_AUTHOR_NAME", "AgentCore Hub Agent")], check=False)
-    # Token source: the hub's short-lived GitHub App token (per turn) wins; the
-    # long-lived GITHUB_PAT env is the personal-deploy fallback.
-    token = github_token or os.environ.get("GITHUB_PAT")
+    # Always clear any legacy PAT insteadOf rewrite: it would override the
+    # credential helper and re-expose the long-lived PAT even when we mint a
+    # short-lived token below.
+    _clear_insteadof_pat_rewrite()
+    # Token source: the hub's short-lived GitHub App token (per turn) wins. The
+    # long-lived GITHUB_PAT env is the personal-deploy fallback — but ONLY for
+    # users with no GitHub App connection. A CONNECTED user whose scoped mint was
+    # denied (repo outside their selected repos, install revoked) must NOT clone
+    # with the operator's broad PAT: that bypasses their chosen App scope. Fail
+    # closed to the App boundary instead.
+    token = github_token
+    if not token and not app_connected:
+        token = os.environ.get("GITHUB_PAT")
     if not token:
-        # No token this turn — scrub any the prior turn left on this warm runtime.
+        # No usable token — scrub any the prior turn left on this warm runtime so
+        # a stale/expired token (or the PAT) can't linger.
         _clear_git_credential_helper()
         return
     _write_git_credential_helper(token)
@@ -2206,8 +2239,12 @@ async def invocations(request: Request):
     # appended to the prompt so the CLI can open them with its file tools.
     attachments = payload.get("attachments") or []
     # Short-lived GitHub App clone token minted by the hub (falls back to the
-    # GITHUB_PAT env when absent). Never logged.
+    # GITHUB_PAT env when absent AND the user isn't App-connected). Never logged.
     github_token = payload.get("github_token")
+    # True when the requester has a GitHub App installation. If set, a missing
+    # token means the scoped mint was DENIED — do not fall back to GITHUB_PAT
+    # (would escalate past the user's App scope). See _configure_git.
+    github_app_connected = bool(payload.get("github_app_connected"))
 
     # On resume, recover the repo the conversation was started in (so we land in
     # the same cwd Claude Code scoped the session to) when the caller omits it.
@@ -2263,7 +2300,7 @@ async def invocations(request: Request):
         # helper here too — otherwise Terminal `git`/`gh` on a private repo has no
         # App token, or keeps a prior turn's stale/expired one. Passing None (user
         # disconnected / mint failed) scrubs it.
-        _configure_git(github_token)
+        _configure_git(github_token, app_connected=github_app_connected)
         # A kiro session opened straight in Terminal (no headless turn / ported
         # transcript yet) returns here before any _write_resume_launch_hint call,
         # so the PTY would fall back to the shared deploy-default KIRO_HOME and put
@@ -2283,7 +2320,7 @@ async def invocations(request: Request):
 
     # Workspace setup IS fatal — no workdir, no turn.
     try:
-        _configure_git(github_token)
+        _configure_git(github_token, app_connected=github_app_connected)
         # Self-contained: no origin — rebuild a standalone repo from the laptop's
         # `bundle --all` (the no-remote / not-a-repo port). The bundle IS the only
         # source of the code, so this replaces the clone entirely.
