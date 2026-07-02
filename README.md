@@ -6,6 +6,8 @@
 
 **The open-source coding agent — Claude Code + Codex + Kiro — that runs inside _your own_ AWS account.**
 
+[**Website**](https://tjmapps.org/ember) · [Get started](#stand-it-up-one-command) · [How it works](#the-wedge)
+
 [![License: MIT](https://img.shields.io/badge/License-MIT-ff6a00.svg)](LICENSE)
 [![Runs in your AWS](https://img.shields.io/badge/runs%20in-your%20AWS-ff6a00.svg)](#the-wedge)
 [![BYO plan = $0 marginal LLM](https://img.shields.io/badge/BYO%20plan-%240%20marginal%20LLM-ff6a00.svg)](#the-wedge)
