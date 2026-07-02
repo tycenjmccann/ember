@@ -2258,6 +2258,12 @@ async def invocations(request: Request):
     # success/failure but always 200 so the /shell best-effort caller never errors
     # (a stale-mount VM will be replaced; the next turn retries).
     if prepare:
+        # A terminal-only session reaches the VM ONLY through prepare (no chat turn
+        # runs _configure_git), so install/refresh/clear the GitHub credential
+        # helper here too — otherwise Terminal `git`/`gh` on a private repo has no
+        # App token, or keeps a prior turn's stale/expired one. Passing None (user
+        # disconnected / mint failed) scrubs it.
+        _configure_git(github_token)
         # A kiro session opened straight in Terminal (no headless turn / ported
         # transcript yet) returns here before any _write_resume_launch_hint call,
         # so the PTY would fall back to the shared deploy-default KIRO_HOME and put

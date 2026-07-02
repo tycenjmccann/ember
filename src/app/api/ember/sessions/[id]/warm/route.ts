@@ -25,7 +25,7 @@ export async function POST(
   if (!codingRuntimeConfigured()) {
     return NextResponse.json({ error: "Coding runtime not configured" }, { status: 503 });
   }
-  const { tenantId } = getIdentity(request);
+  const { userId: requesterId, tenantId } = getIdentity(request);
   const session = await getOwnedSession(params.id, tenantId);
   if (!session) {
     return NextResponse.json({ error: "Session not found" }, { status: 404 });
@@ -38,7 +38,8 @@ export async function POST(
   const region = request.nextUrl.searchParams.get("region") || undefined;
   const userId = session.userId || DEFAULT_USER_ID;
   const configVersion = await currentConfigVersion(userId);
-  const githubToken = await cloneTokenForUser(userId, session.repo);
+  // Bind to the verified requester, not the creator — shared tenant sessions.
+  const githubToken = await cloneTokenForUser(requesterId, session.repo);
   try {
     await warmCodingSession({
       sessionId: session.sessionId,

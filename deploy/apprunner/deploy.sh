@@ -121,13 +121,16 @@ aws iam put-role-policy --role-name "$INSTANCE_ROLE" --policy-name "EmberAppRunn
         \"Resource\": \"*\"
       },
       {
-        \"Sid\": \"SecretsManagerCreds\",
+        \"Sid\": \"SecretsManagerUserCreds\",
         \"Effect\": \"Allow\",
-        \"Action\": [\"secretsmanager:CreateSecret\", \"secretsmanager:PutSecretValue\", \"secretsmanager:GetSecretValue\", \"secretsmanager:DeleteSecret\", \"secretsmanager:DescribeSecret\", \"secretsmanager:TagResource\"],
-        \"Resource\": [
-          \"arn:aws:secretsmanager:${AWS_REGION}:${ACCOUNT_ID}:secret:ember/t/*\",
-          \"arn:aws:secretsmanager:${AWS_REGION}:${ACCOUNT_ID}:secret:ember/github-app*\"
-        ]
+        \"Action\": [\"secretsmanager:CreateSecret\", \"secretsmanager:PutSecretValue\", \"secretsmanager:DeleteSecret\", \"secretsmanager:DescribeSecret\", \"secretsmanager:TagResource\"],
+        \"Resource\": \"arn:aws:secretsmanager:${AWS_REGION}:${ACCOUNT_ID}:secret:ember/t/*\"
+      },
+      {
+        \"Sid\": \"SecretsManagerGithubApp\",
+        \"Effect\": \"Allow\",
+        \"Action\": [\"secretsmanager:CreateSecret\", \"secretsmanager:PutSecretValue\", \"secretsmanager:GetSecretValue\", \"secretsmanager:DeleteSecret\", \"secretsmanager:DescribeSecret\"],
+        \"Resource\": \"arn:aws:secretsmanager:${AWS_REGION}:${ACCOUNT_ID}:secret:ember/github-app*\"
       },
       {
         \"Sid\": \"STS\",

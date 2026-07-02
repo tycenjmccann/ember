@@ -41,7 +41,7 @@ export async function POST(
     );
   }
 
-  const { tenantId } = getIdentity(request);
+  const { userId: requesterId, tenantId } = getIdentity(request);
   const session = await getOwnedSession(params.id, tenantId);
   if (!session) {
     return NextResponse.json({ error: "Session not found" }, { status: 404 });
@@ -68,7 +68,10 @@ export async function POST(
   try {
     const userId = session.userId || DEFAULT_USER_ID;
     const configVersion = await currentConfigVersion(userId);
-    const githubToken = await cloneTokenForUser(userId, session.repo);
+    // GitHub token binds to the VERIFIED REQUESTER opening the terminal, not the
+    // session creator — shared tenant sessions must not lend a coworker the
+    // creator's repo access (mirrors the message route).
+    const githubToken = await cloneTokenForUser(requesterId, session.repo);
     if (session.resumeTranscriptKey) {
       // Full setup must COMPLETE before the resume runs. Bound it so a pathological
       // clone can't hang the request past maxDuration; if it times out the PTY's
@@ -116,6 +119,7 @@ export async function POST(
           configVersion,
           region: REGION,
           authMode: session.authMode,
+          githubToken,
         }).catch(() => null),
         new Promise<null>((r) => setTimeout(() => r(null), 4000)),
       ]);

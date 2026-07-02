@@ -33,7 +33,7 @@ export async function POST(
     );
   }
 
-  const { tenantId } = getIdentity(request);
+  const { userId: requesterId, tenantId } = getIdentity(request);
   const session = await getOwnedSession(params.id, tenantId);
   if (!session) {
     return NextResponse.json({ error: "Session not found" }, { status: 404 });
@@ -117,7 +117,12 @@ export async function POST(
   // Short-lived GitHub App clone token (undefined if the App isn't configured or
   // the user hasn't connected — the runtime falls back to GITHUB_PAT). Minted per
   // turn so an expiry never strands a warm session.
-  const githubToken = await cloneTokenForUser(userId, session.repo);
+  //
+  // Bound to the VERIFIED REQUESTER, never session.userId: tenant sessions are
+  // shared (getOwnedSession only checks the tenant boundary), so minting off the
+  // creator's installation would hand a coworker the creator's repo access. Each
+  // turn clones with the token of whoever actually sent it.
+  const githubToken = await cloneTokenForUser(requesterId, session.repo);
 
   // ── Streaming path (claude): relay SSE, persist on the terminal 'done' frame.
   if (wantStream) {
