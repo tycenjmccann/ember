@@ -139,6 +139,7 @@ export default function EmberPage() {
         not_configured: "GitHub App isn't set up yet — ask your operator",
         forbidden: "Only an admin can create the GitHub App",
         state_mismatch: "GitHub connection couldn't be verified — start from Connect and try again",
+        ownership_unverified: "Couldn't confirm you own that GitHub installation — start from Connect and try again",
         error: "GitHub connection failed — try again",
         app_error: "Couldn't create the GitHub App — try again",
       };

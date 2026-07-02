@@ -104,11 +104,16 @@ identical. Org vs user is a GitHub-side install choice, not a code fork.
   - `GET` → connection status (account login, repo count) — never the token.
   - `DELETE` → disconnect (clear installation record).
 - **`src/app/api/ember/github/callback/route.ts` (new):** GitHub redirect target
-  after install; captures `installation_id` (+ `setup_action`), **verifies the
-  signed `state` nonce** binds the install to the signed-in user, stores it,
-  bounces back to `/ember`. Without the state check a user could replay a callback
-  with another org's `installation_id` and mint tokens for repos they don't
-  administer, so a mismatch is rejected (`?github=state_mismatch`).
+  after install; captures `installation_id` (+ `setup_action`, `code`). Two gates
+  before storing: (1) the signed `state` nonce proves THIS user started an install
+  flow (CSRF + session binding; `?github=state_mismatch` on fail); (2) **ownership
+  proof** — the manifest sets `request_oauth_on_install`, so GitHub appends an
+  OAuth `code`; we exchange it for a user token and confirm the installation is in
+  that user's `/user/installations` (`verifyInstallationOwnership`). State alone is
+  insufficient: during its lifetime a user could start their own flow then swap in
+  another org's `installation_id`. Ownership failure → `?github=ownership_unverified`.
+  (An App created before OAuth-on-install has no client creds and falls back to
+  state-only.)
 - **`src/app/api/ember/github/install/route.ts` (new):** issues the signed state
   (`issueInstallState(userId)`, HMAC keyed off the App private key) and redirects
   the user to GitHub's install screen carrying `?state=`.

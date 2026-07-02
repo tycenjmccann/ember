@@ -43,6 +43,8 @@ export async function GET(request: NextRequest) {
         privateKey: app.privateKey,
         slug: app.slug,
         webhookSecret: app.webhookSecret,
+        clientId: app.clientId,
+        clientSecret: app.clientSecret,
       });
       resetGithubAppConfigCache();
       // Send the operator to GitHub to install the freshly created App, carrying
@@ -67,6 +69,11 @@ export async function GET(request: NextRequest) {
     redirect_url: `${base}/api/ember/github/manifest`,
     callback_urls: [`${base}/api/ember/github/callback`],
     setup_url: `${base}/api/ember/github/callback`,
+    // Ask GitHub to run the OAuth flow AS PART OF install, so the install
+    // callback carries a `code` we exchange for a user token — that's how we
+    // prove the connecting user actually controls the installation (not just
+    // that they started some flow). See verifyInstallationOwnership.
+    request_oauth_on_install: true,
     public: false,
     // contents:write → clone/push; metadata:read is mandatory; pull_requests:write
     // → `gh pr create` / the Create-PR API (a core agent step after pushing a

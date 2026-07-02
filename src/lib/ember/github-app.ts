@@ -13,7 +13,7 @@
 
 import { SignJWT, importPKCS8 } from "jose";
 import { createPrivateKey, createHmac, timingSafeEqual } from "crypto";
-import { getGithubAppConfig } from "./secrets";
+import { getGithubAppConfig, type GithubAppSecret } from "./secrets";
 import { getGithubConnection } from "./github-store";
 
 const GITHUB_API = process.env.GITHUB_API_URL || "https://api.github.com";
@@ -30,10 +30,8 @@ export function repoShortName(repo?: string): string | undefined {
   return last || undefined;
 }
 
-export interface GithubAppConfig {
-  appId: string;
-  privateKey: string; // PEM (PKCS#8 or PKCS#1)
-}
+// The App config as stored (App id + PEM, plus optional slug/OAuth creds).
+export type GithubAppConfig = GithubAppSecret;
 
 export interface InstallationToken {
   token: string;
@@ -275,6 +273,8 @@ export async function exchangeManifestCode(code: string): Promise<{
   slug: string;
   htmlUrl: string;
   webhookSecret?: string;
+  clientId?: string;
+  clientSecret?: string;
 }> {
   const res = await fetch(`${GITHUB_API}/app-manifests/${encodeURIComponent(code)}/conversions`, {
     method: "POST",
@@ -293,6 +293,8 @@ export async function exchangeManifestCode(code: string): Promise<{
     html_url: string;
     pem: string;
     webhook_secret?: string;
+    client_id?: string;
+    client_secret?: string;
   };
   return {
     appId: String(json.id),
@@ -300,5 +302,79 @@ export async function exchangeManifestCode(code: string): Promise<{
     slug: json.slug,
     htmlUrl: json.html_url,
     webhookSecret: json.webhook_secret,
+    clientId: json.client_id,
+    clientSecret: json.client_secret,
   };
+}
+
+// GitHub's OAuth authorize/token host (github.com), distinct from the REST API
+// host. Overridable for GHES.
+const GITHUB_OAUTH_HOST = process.env.GITHUB_OAUTH_HOST || "https://github.com";
+
+/**
+ * Prove the connecting user controls `installationId`: exchange the OAuth `code`
+ * GitHub appended to the install redirect for a user access token, then confirm
+ * the installation appears in that user's own `/user/installations`. Returns the
+ * user's login on success, or null if the code is bad or the installation isn't
+ * theirs. This is what stops a user from binding an installation id they merely
+ * *know* (a valid `state` only proves they started *a* flow, not that they
+ * administer this particular installation).
+ */
+export async function verifyInstallationOwnership(
+  code: string,
+  installationId: string
+): Promise<{ login?: string } | null> {
+  try {
+    const cfg = await loadConfig();
+    if (!cfg?.clientId || !cfg?.clientSecret) return null; // pre-OAuth App: caller decides
+    const tokRes = await fetch(`${GITHUB_OAUTH_HOST}/login/oauth/access_token`, {
+      method: "POST",
+      headers: { Accept: "application/json", "Content-Type": "application/json" },
+      body: JSON.stringify({
+        client_id: cfg.clientId,
+        client_secret: cfg.clientSecret,
+        code,
+      }),
+    });
+    if (!tokRes.ok) return null;
+    const tok = (await tokRes.json()) as { access_token?: string };
+    if (!tok.access_token) return null;
+
+    // Page through the user's installations; confirm this id is among them.
+    const target = String(installationId);
+    let login: string | undefined;
+    for (let page = 1; page <= 10; page++) {
+      const res = await fetch(
+        `${GITHUB_API}/user/installations?per_page=100&page=${page}`,
+        {
+          headers: {
+            Authorization: `Bearer ${tok.access_token}`,
+            Accept: "application/vnd.github+json",
+            "X-GitHub-Api-Version": "2022-11-28",
+          },
+        }
+      );
+      if (!res.ok) return null;
+      const json = (await res.json()) as {
+        total_count?: number;
+        installations?: Array<{ id: number; account?: { login?: string } }>;
+      };
+      const list = json.installations || [];
+      const hit = list.find((i) => String(i.id) === target);
+      if (hit) {
+        login = hit.account?.login;
+        return { login };
+      }
+      if (list.length < 100) break; // last page
+    }
+    return null; // not among the user's installations → reject
+  } catch {
+    return null;
+  }
+}
+
+/** True when the App has OAuth client creds (so ownership can be enforced). */
+export async function githubAppHasOAuth(): Promise<boolean> {
+  const cfg = await loadConfig();
+  return Boolean(cfg?.clientId && cfg?.clientSecret);
 }

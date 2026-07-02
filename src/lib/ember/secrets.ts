@@ -51,6 +51,11 @@ export interface GithubAppSecret {
   privateKey: string;
   slug?: string;
   webhookSecret?: string;
+  // OAuth client creds (from the manifest conversion). Used to exchange the
+  // install-callback `code` for a user token so we can prove the connecting user
+  // actually controls the installation they're binding (see github-app.ts).
+  clientId?: string;
+  clientSecret?: string;
 }
 
 /** Read the GitHub App config (Secrets Manager, or the env override), or null. */

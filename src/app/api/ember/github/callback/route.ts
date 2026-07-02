@@ -9,7 +9,12 @@
 import { NextRequest, NextResponse } from "next/server";
 import { getIdentity } from "@/lib/ember/identity";
 import { putGithubConnection, deleteGithubConnection } from "@/lib/ember/github-store";
-import { getInstallation, verifyInstallState } from "@/lib/ember/github-app";
+import {
+  getInstallation,
+  verifyInstallState,
+  verifyInstallationOwnership,
+  githubAppHasOAuth,
+} from "@/lib/ember/github-app";
 
 export const dynamic = "force-dynamic";
 
@@ -24,6 +29,7 @@ export async function GET(request: NextRequest) {
     const installationId = request.nextUrl.searchParams.get("installation_id") || "";
     const setupAction = request.nextUrl.searchParams.get("setup_action") || "";
     const state = request.nextUrl.searchParams.get("state") || "";
+    const code = request.nextUrl.searchParams.get("code") || "";
 
     // A "request"/cancel with no installation → nothing to store.
     if (!installationId) {
@@ -35,19 +41,35 @@ export async function GET(request: NextRequest) {
       return NextResponse.redirect(`${back}?github=disconnected`);
     }
 
-    // Bind the installation to the user who actually initiated the flow. Without
-    // this, any signed-in user could replay a callback with another org's
-    // installation id and mint tokens for repos they don't administer. The state
-    // is the signed nonce our install route issued for THIS user.
+    // First gate: the signed state proves THIS user started an install flow (CSRF
+    // + ties the flow to the session). Necessary but not sufficient.
     if (!(await verifyInstallState(state, userId))) {
       return NextResponse.redirect(`${back}?github=state_mismatch`);
+    }
+
+    // Second gate: prove this user actually CONTROLS installationId — not just
+    // that they know it. `state` alone can't do this: during its lifetime a user
+    // could start their own flow then swap in another org's installation id. With
+    // OAuth-on-install, GitHub appends a `code`; we exchange it for a user token
+    // and confirm the installation is in THAT user's /user/installations. Only an
+    // App created before this change (no OAuth creds) falls back to state-only.
+    let verifiedAccount: string | undefined;
+    if (await githubAppHasOAuth()) {
+      if (!code) {
+        return NextResponse.redirect(`${back}?github=ownership_unverified`);
+      }
+      const owned = await verifyInstallationOwnership(code, installationId);
+      if (!owned) {
+        return NextResponse.redirect(`${back}?github=ownership_unverified`);
+      }
+      verifiedAccount = owned.login;
     }
 
     const meta = await getInstallation(installationId);
     await putGithubConnection(
       {
         installationId,
-        account: meta?.account,
+        account: verifiedAccount || meta?.account,
         repoSelection: meta?.repoSelection,
         connectedAt: new Date().toISOString(),
       },
