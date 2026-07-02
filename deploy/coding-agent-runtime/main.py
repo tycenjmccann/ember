@@ -1044,6 +1044,71 @@ def _install_resume_transcript(s3_key: str, session_id: str, workdir: str,
         return False
 
 
+def _sanitize_codex_rollout(raw: bytes) -> bytes:
+    """Make a laptop-recorded codex rollout safe to resume against Bedrock Mantle.
+
+    Codex records reasoning items with provider-bound `encrypted_content`. A
+    rollout recorded on a laptop (model_provider "openai") carries OpenAI-encrypted
+    blobs; replaying them to Mantle's Responses API fails hard with
+    `validation_error: encrypted content missing recognized prefix (expected
+    rsn_/smry_)` — codex exits 1 and the whole resume dies. We drop reasoning items
+    whose encrypted blob doesn't carry a Mantle-recognized prefix (portable ones,
+    e.g. a prior cloud turn's rsn_/smry_ content, are kept).
+
+    We also drop a trailing unpaired `function_call` (no matching
+    function_call_output) — the port tool-call is often the last row the laptop
+    wrote before shipping, and the Responses API rejects a dangling call on replay.
+
+    Cross-provider only: the pristine S3 copy is untouched, so a pull-home resume
+    against the laptop's own OpenAI key still has its native encrypted reasoning."""
+    lines = raw.split(b"\n")
+    parsed: list[tuple[bytes, dict | None]] = []
+    output_ids: set[str] = set()
+    for ln in lines:
+        s = ln.strip()
+        if not s:
+            parsed.append((ln, None)); continue
+        try:
+            obj = json.loads(s)
+        except Exception:  # noqa: BLE001 — keep non-JSON lines verbatim
+            parsed.append((ln, None)); continue
+        parsed.append((ln, obj))
+        p = obj.get("payload") or {}
+        if obj.get("type") == "response_item" and p.get("type") == "function_call_output":
+            cid = p.get("call_id")
+            if cid:
+                output_ids.add(cid)
+
+    def _encrypted_portable(p: dict) -> bool:
+        blobs: list[str] = []
+        if p.get("encrypted_content"):
+            blobs.append(p["encrypted_content"])
+        for c in (p.get("content") or []):
+            if isinstance(c, dict) and c.get("encrypted_content"):
+                blobs.append(c["encrypted_content"])
+        if not blobs:
+            return True  # no encrypted payload → nothing provider-bound to reject
+        return all(str(b).startswith(("rsn_", "smry_")) for b in blobs)
+
+    kept: list[bytes] = []
+    dropped_reasoning = dropped_calls = 0
+    for ln, obj in parsed:
+        if obj and obj.get("type") == "response_item":
+            p = obj.get("payload") or {}
+            t = p.get("type")
+            if t == "reasoning" and not _encrypted_portable(p):
+                dropped_reasoning += 1; continue
+            if t == "function_call" and p.get("call_id") not in output_ids:
+                dropped_calls += 1; continue
+        kept.append(ln)
+
+    if not (dropped_reasoning or dropped_calls):
+        return raw
+    logger.info("codex_rollout_sanitized",
+                extra={"dropped_reasoning": dropped_reasoning, "dropped_calls": dropped_calls})
+    return b"\n".join(kept)
+
+
 def _install_codex_resume_transcript(s3_key: str, session_id: str,
                                      codex_home: str | None = None) -> bool:
     """Codex analog of _install_resume_transcript. Download a ported codex rollout
@@ -1054,6 +1119,10 @@ def _install_codex_resume_transcript(s3_key: str, session_id: str,
     need the original YYYY/MM/DD path. Idempotent: if a rollout for this uuid is
     already present (e.g. a prior turn grew it), keep that grown copy.
 
+    The downloaded bytes are sanitized (_sanitize_codex_rollout) before landing on
+    disk: a laptop-recorded rollout's OpenAI-encrypted reasoning would otherwise
+    make the first Mantle resume fail with a validation_error.
+
     codex_home is the PER-SESSION home (_codex_home_for) so two Ember sessions
     resuming the same uuid don't share one rollout."""
     home = codex_home or CODEX_HOME
@@ -1061,7 +1130,22 @@ def _install_codex_resume_transcript(s3_key: str, session_id: str,
         return False
     existing = _find_codex_rollout(session_id, home)
     if existing:
-        return True  # already on disk (possibly grown by a prior cloud turn)
+        # Already on disk (possibly grown by a prior cloud turn). Self-heal a
+        # rollout installed before the sanitizer existed: re-sanitize in place so
+        # a session poisoned by a pre-fix warm can resume. No-op once clean (the
+        # sanitizer returns the bytes unchanged), and portable rsn_/smry_ reasoning
+        # a cloud turn added is preserved.
+        try:
+            with open(existing, "rb") as f:
+                cur = f.read()
+            fixed = _sanitize_codex_rollout(cur)
+            if fixed != cur:
+                with open(existing, "wb") as f:
+                    f.write(fixed)
+                logger.info("codex_rollout_resanitized", extra={"session": session_id})
+        except Exception as exc:  # noqa: BLE001 — non-fatal
+            logger.warning("codex_rollout_resanitize_failed", extra={"error": str(exc)[:200]})
+        return True
     # Codex locates a session by parsing BOTH a timestamp and the uuid out of the
     # filename (rollout-<YYYY-MM-DDThh-mm-ss>-<uuid>.jsonl), so the name must match
     # that shape or the scan skips it. Place it under today's YYYY/MM/DD like codex
@@ -1076,7 +1160,7 @@ def _install_codex_resume_transcript(s3_key: str, session_id: str,
         s3 = boto3.client("s3", region_name=os.environ.get("AWS_REGION", "us-east-1"))
         obj = s3.get_object(Bucket=ARTIFACT_BUCKET, Key=s3_key)
         with open(dest, "wb") as f:
-            f.write(obj["Body"].read())
+            f.write(_sanitize_codex_rollout(obj["Body"].read()))
         logger.info("codex_resume_transcript_installed", extra={"session": session_id})
         return True
     except Exception as exc:  # noqa: BLE001 — non-fatal; fall back to a cold turn
@@ -1912,7 +1996,21 @@ def _run_codex(prompt: str, workdir: str, codex_session_id: str | None,
     proc = subprocess.run(args, cwd=workdir, env=env, capture_output=True,
                           text=True, timeout=TURN_TIMEOUT_S, stdin=subprocess.DEVNULL)
     if proc.returncode != 0:
-        raise RuntimeError(f"codex exited {proc.returncode}: {proc.stderr.strip()[:600]}")
+        # codex exec --json writes its real failure to STDOUT (a {"type":"error"}
+        # / {"type":"turn.failed"} JSONL frame), not stderr — stderr only carries
+        # run-codex.sh's banner. Surface the last error frame so the turn error is
+        # diagnosable instead of an opaque "codex exited 1: <banner>".
+        detail = ""
+        for line in reversed(proc.stdout.splitlines()):
+            try:
+                o = json.loads(line)
+            except json.JSONDecodeError:
+                continue
+            if o.get("type") in ("error", "turn.failed"):
+                detail = str(o.get("message") or (o.get("error") or {}).get("message") or "")[:400]
+                break
+        banner = proc.stderr.strip()[:200]
+        raise RuntimeError(f"codex exited {proc.returncode}: {detail or banner}")
     # codex exec --json emits JSONL. Pull the thread_id (resume handle) and the
     # final assistant text. New shape:
     #   {"type":"thread.started","thread_id":"..."}
