@@ -113,7 +113,13 @@ identical. Org vs user is a GitHub-side install choice, not a code fork.
   insufficient: during its lifetime a user could start their own flow then swap in
   another org's `installation_id`. Ownership failure → `?github=ownership_unverified`.
   (An App created before OAuth-on-install has no client creds and falls back to
-  state-only.)
+  state-only.) Ownership also requires **admin proof**, not mere visibility:
+  `/user/installations` lists org installs a member can only *access*, so for an
+  org-account install we additionally require the user's org membership role to be
+  `admin` (`/user/memberships/orgs/{org}`); a user-account install must belong to
+  the authenticated user. The manifest-**creation** flow (phase 1→2) carries its
+  own signed `state` too, so an admin can't be lured into exchanging an attacker's
+  manifest `code` (which would store the attacker's App as Ember's).
 - **`src/app/api/ember/github/install/route.ts` (new):** issues the signed state
   (`issueInstallState(userId)`, HMAC keyed off the App private key) and redirects
   the user to GitHub's install screen carrying `?state=`.

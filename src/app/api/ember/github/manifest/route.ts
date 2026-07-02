@@ -15,6 +15,8 @@ import {
   exchangeManifestCode,
   resetGithubAppConfigCache,
   issueInstallState,
+  issueManifestState,
+  verifyManifestState,
 } from "@/lib/ember/github-app";
 import { putGithubAppConfig } from "@/lib/ember/secrets";
 import { getIdentity, isAdmin } from "@/lib/ember/identity";
@@ -32,10 +34,20 @@ export async function GET(request: NextRequest) {
     return NextResponse.redirect(`${base}/ember?github=forbidden`);
   }
 
+  const { userId } = getIdentity(request);
   const code = request.nextUrl.searchParams.get("code");
 
   // Phase 2 — GitHub returned a temporary code; convert it to App credentials.
   if (code) {
+    // CSRF guard: only exchange a code that came from OUR phase-1 form. Without
+    // this, an attacker could create an App from their OWN manifest pointing here
+    // as redirect_url, capture the temp code, then lure an admin to
+    // /api/ember/github/manifest?code=<attacker> — and we'd store the attacker's
+    // App as Ember's. GitHub echoes back the `state` we put in the manifest.
+    const state = request.nextUrl.searchParams.get("state") || "";
+    if (!(await verifyManifestState(state, userId))) {
+      return NextResponse.redirect(`${base}/ember?github=state_mismatch`);
+    }
     try {
       const app = await exchangeManifestCode(code);
       await putGithubAppConfig({
@@ -49,10 +61,9 @@ export async function GET(request: NextRequest) {
       resetGithubAppConfigCache();
       // Send the operator to GitHub to install the freshly created App, carrying
       // a signed state so the connect callback binds the install to this admin.
-      const { userId } = getIdentity(request);
-      const state = await issueInstallState(userId);
+      const installState = await issueInstallState(userId);
       const install = new URL(`https://github.com/apps/${app.slug}/installations/new`);
-      install.searchParams.set("state", state);
+      install.searchParams.set("state", installState);
       return NextResponse.redirect(install.toString());
     } catch (err) {
       console.error("[ember] github manifest exchange error:", err);
@@ -81,9 +92,14 @@ export async function GET(request: NextRequest) {
     default_permissions: { contents: "write", metadata: "read", pull_requests: "write" },
   };
 
+  // Signed state GitHub echoes to our redirect_url — verified in phase 2 so we
+  // only ever exchange a code that originated from THIS admin's form submission.
+  const manifestState = await issueManifestState(userId);
+  const action = `https://github.com/settings/apps/new?state=${encodeURIComponent(manifestState)}`;
+
   const html = `<!doctype html><html><head><meta charset="utf-8"><title>Creating Ember GitHub App…</title></head>
 <body style="font-family:system-ui;background:#0b0b0d;color:#eee;display:flex;align-items:center;justify-content:center;height:100vh;margin:0">
-<form id="f" method="post" action="https://github.com/settings/apps/new">
+<form id="f" method="post" action="${action}">
   <input type="hidden" name="manifest" value='${JSON.stringify(manifest).replace(/'/g, "&#39;")}'>
   <noscript><button type="submit">Continue to GitHub</button></noscript>
 </form>

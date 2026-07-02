@@ -250,11 +250,45 @@ export async function issueInstallState(userId: string): Promise<string> {
 
 /** Verify a state token came from us, hasn't expired, and matches `userId`. */
 export async function verifyInstallState(state: string, userId: string): Promise<boolean> {
+  return verifyState(state, userId, "install");
+}
+
+// The manifest-creation flow needs its OWN CSRF nonce (a distinct purpose from
+// the install flow), so a token minted for one can't be replayed for the other.
+// Purpose is folded into the signed payload.
+export async function issueManifestState(userId: string): Promise<string> {
+  const key = await stateKey();
+  const payload = `manifest.${encodeURIComponent(userId)}.${Date.now() + STATE_TTL_MS}`;
+  return `${payload}.${sign(payload, key)}`;
+}
+
+export async function verifyManifestState(state: string, userId: string): Promise<boolean> {
+  return verifyState(state, userId, "manifest");
+}
+
+/** Shared HMAC-state verifier. `purpose` "install" tokens are `user.exp.mac`;
+ *  "manifest" tokens are `manifest.user.exp.mac` — kept distinct so neither can
+ *  stand in for the other. */
+async function verifyState(
+  state: string,
+  userId: string,
+  purpose: "install" | "manifest"
+): Promise<boolean> {
   try {
     const parts = state.split(".");
+    const key = await stateKey();
+    if (purpose === "manifest") {
+      if (parts.length !== 4 || parts[0] !== "manifest") return false;
+      const [, encUser, expiryStr, mac] = parts;
+      const expected = sign(`manifest.${encUser}.${expiryStr}`, key);
+      const a = Buffer.from(mac);
+      const b = Buffer.from(expected);
+      if (a.length !== b.length || !timingSafeEqual(a, b)) return false;
+      if (Date.now() > Number(expiryStr)) return false;
+      return decodeURIComponent(encUser) === userId;
+    }
     if (parts.length !== 3) return false;
     const [encUser, expiryStr, mac] = parts;
-    const key = await stateKey();
     const expected = sign(`${encUser}.${expiryStr}`, key);
     const a = Buffer.from(mac);
     const b = Buffer.from(expected);
@@ -339,35 +373,68 @@ export async function verifyInstallationOwnership(
     if (!tokRes.ok) return null;
     const tok = (await tokRes.json()) as { access_token?: string };
     if (!tok.access_token) return null;
+    const bearer = tok.access_token;
+    const gh = (path: string) =>
+      fetch(`${GITHUB_API}${path}`, {
+        headers: {
+          Authorization: `Bearer ${bearer}`,
+          Accept: "application/vnd.github+json",
+          "X-GitHub-Api-Version": "2022-11-28",
+        },
+      });
 
-    // Page through the user's installations; confirm this id is among them.
+    // Find the installation among the ones this user can see. NOTE this list
+    // includes installations the user merely has repo ACCESS to via org
+    // membership — NOT proof they administer it. So we additionally require an
+    // admin relationship below before trusting it.
     const target = String(installationId);
-    let login: string | undefined;
+    let hit:
+      | { id: number; account?: { login?: string; type?: string } }
+      | undefined;
     for (let page = 1; page <= 10; page++) {
-      const res = await fetch(
-        `${GITHUB_API}/user/installations?per_page=100&page=${page}`,
-        {
-          headers: {
-            Authorization: `Bearer ${tok.access_token}`,
-            Accept: "application/vnd.github+json",
-            "X-GitHub-Api-Version": "2022-11-28",
-          },
-        }
-      );
+      const res = await gh(`/user/installations?per_page=100&page=${page}`);
       if (!res.ok) return null;
       const json = (await res.json()) as {
-        total_count?: number;
-        installations?: Array<{ id: number; account?: { login?: string } }>;
+        installations?: Array<{
+          id: number;
+          account?: { login?: string; type?: string };
+        }>;
       };
       const list = json.installations || [];
-      const hit = list.find((i) => String(i.id) === target);
-      if (hit) {
-        login = hit.account?.login;
-        return { login };
-      }
+      hit = list.find((i) => String(i.id) === target);
+      if (hit) break;
       if (list.length < 100) break; // last page
     }
-    return null; // not among the user's installations → reject
+    if (!hit) return null; // not visible to this user at all → reject
+
+    // Admin proof — /user/installations access alone is insufficient (an org
+    // member can see an org install without administering it). Require that the
+    // authenticated user actually manages the installation's account:
+    //   • User-account install  → the account login IS the authenticated user.
+    //   • Organization install  → the user's org membership role is "admin".
+    const login = hit.account?.login;
+    const accountType = (hit.account?.type || "").toLowerCase();
+
+    const meRes = await gh("/user");
+    if (!meRes.ok) return null;
+    const me = (await meRes.json()) as { login?: string };
+    if (!me.login) return null;
+
+    if (accountType === "organization") {
+      if (!login) return null;
+      // 200 + role:"admin" only when the caller is an org admin.
+      const memRes = await gh(`/user/memberships/orgs/${encodeURIComponent(login)}`);
+      if (!memRes.ok) return null;
+      const mem = (await memRes.json()) as { role?: string; state?: string };
+      if (mem.role !== "admin" || mem.state !== "active") return null;
+      return { login };
+    }
+
+    // User (or bot) account install: only the account owner administers it.
+    if (login && login.toLowerCase() === me.login.toLowerCase()) {
+      return { login };
+    }
+    return null;
   } catch {
     return null;
   }
