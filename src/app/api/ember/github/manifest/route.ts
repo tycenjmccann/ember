@@ -68,7 +68,10 @@ export async function GET(request: NextRequest) {
     callback_urls: [`${base}/api/ember/github/callback`],
     setup_url: `${base}/api/ember/github/callback`,
     public: false,
-    default_permissions: { contents: "write", metadata: "read" },
+    // contents:write → clone/push; metadata:read is mandatory; pull_requests:write
+    // → `gh pr create` / the Create-PR API (a core agent step after pushing a
+    // branch), which 403s without it.
+    default_permissions: { contents: "write", metadata: "read", pull_requests: "write" },
   };
 
   const html = `<!doctype html><html><head><meta charset="utf-8"><title>Creating Ember GitHub App…</title></head>

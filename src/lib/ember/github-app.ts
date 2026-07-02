@@ -18,6 +18,18 @@ import { getGithubConnection } from "./github-store";
 
 const GITHUB_API = process.env.GITHUB_API_URL || "https://api.github.com";
 
+/** Bare repo name from owner/name OR a clone URL (https/ssh), sans `.git`. */
+export function repoShortName(repo?: string): string | undefined {
+  if (!repo) return undefined;
+  const last = repo
+    .trim()
+    .replace(/\.git$/i, "")
+    .split(/[/:]/) // handles owner/name, https://…/owner/name, git@host:owner/name
+    .filter(Boolean)
+    .pop();
+  return last || undefined;
+}
+
 export interface GithubAppConfig {
   appId: string;
   privateKey: string; // PEM (PKCS#8 or PKCS#1)
@@ -158,9 +170,12 @@ export async function cloneTokenForUser(
   const conn = await getGithubConnection(userId).catch(() => null);
   if (!conn?.installationId) return { connected: false };
   try {
-    // Scope to the single repo when we can name it (owner/name → name). A
-    // whole-installation token otherwise (e.g. "list my repos" with no repo yet).
-    const shortName = repo?.split("/").filter(Boolean).pop();
+    // Scope to the single repo when we can name it. GitHub's `repositories` scope
+    // wants the bare repo NAME, but `repo` may arrive as owner/name OR a full
+    // clone URL (https://github.com/owner/name.git, git@github.com:owner/name.git)
+    // — the runtime accepts all three. Normalize to the trailing name and strip a
+    // .git suffix, else a selected install mints with "name.git" and GitHub 403s.
+    const shortName = repoShortName(repo);
     const scope =
       conn.repoSelection === "selected" && shortName ? [shortName] : undefined;
     const { token } = await mintInstallationToken(conn.installationId, scope);
