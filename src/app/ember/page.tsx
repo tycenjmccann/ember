@@ -186,6 +186,25 @@ export default function EmberPage() {
     setTimeout(() => setToast(null), 3500);
   };
 
+  // Switch the in-session surface. Chat/Terminal are real "types" — persist the
+  // last one used so the sidebar icon matches how the session is actually worked
+  // (web sessions used to be pinned to chat forever). Artifacts is a transient
+  // peek, so it never rewrites defaultView.
+  const selectView = (next: "chat" | "terminal" | "artifacts") => {
+    setView(next);
+    if (next === "artifacts" || !active) return;
+    if (active.defaultView === next) return;
+    setActive((s) => (s ? { ...s, defaultView: next } : s));
+    setSessions((list) =>
+      list.map((s) => (s.sessionId === active.sessionId ? { ...s, defaultView: next } : s))
+    );
+    fetch(`/api/ember/sessions/${active.sessionId}`, {
+      method: "PATCH",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ defaultView: next }),
+    }).catch(() => {});
+  };
+
   const createSession = async (cli: EmberCli, repo: string, authMode: EmberAuthMode, title: string) => {
     const res = await fetch("/api/ember/sessions", {
       method: "POST",
@@ -629,7 +648,7 @@ export default function EmberPage() {
                   <div className={`ios-segment flex-shrink-0 ${active.claudeSessionId ? "" : "ml-auto"}`}>
                     <button
                       data-on={view === "chat"}
-                      onClick={() => !terminalOnly && setView("chat")}
+                      onClick={() => !terminalOnly && selectView("chat")}
                       disabled={terminalOnly}
                       aria-disabled={terminalOnly}
                       aria-label="Chat"
@@ -638,10 +657,10 @@ export default function EmberPage() {
                     >
                       <MessageSquare className="w-3.5 h-3.5" /> <span className="hidden sm:inline">Chat</span>
                     </button>
-                    <button data-on={view === "terminal"} onClick={() => setView("terminal")} aria-label="Terminal" title="Live terminal into the session microVM">
+                    <button data-on={view === "terminal"} onClick={() => selectView("terminal")} aria-label="Terminal" title="Live terminal into the session microVM">
                       <TerminalSquare className="w-3.5 h-3.5" /> <span className="hidden sm:inline">Terminal</span>
                     </button>
-                    <button data-on={view === "artifacts"} onClick={() => setView("artifacts")} aria-label="Artifacts" title="Generated outputs (videos, images, exports)">
+                    <button data-on={view === "artifacts"} onClick={() => selectView("artifacts")} aria-label="Artifacts" title="Generated outputs (videos, images, exports)">
                       <FileBox className="w-3.5 h-3.5" /> <span className="hidden sm:inline">Artifacts</span>
                     </button>
                   </div>

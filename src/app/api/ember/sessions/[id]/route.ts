@@ -71,6 +71,11 @@ export async function PATCH(
     if (!session) return NextResponse.json({ error: "Session not found" }, { status: 404 });
     const body = await request.json().catch(() => ({}));
     if (body.clearPendingSeed) session.pendingSeed = undefined;
+    // Track the surface the user actually works in so the sidebar icon matches
+    // reality (web sessions used to be pinned to "chat" at creation).
+    if (body.defaultView === "chat" || body.defaultView === "terminal") {
+      session.defaultView = body.defaultView;
+    }
     session.updatedAt = new Date().toISOString();
     await putSession(session);
     return NextResponse.json({ session });
