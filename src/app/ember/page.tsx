@@ -186,11 +186,11 @@ export default function EmberPage() {
     setTimeout(() => setToast(null), 3500);
   };
 
-  const createSession = async (cli: EmberCli, repo: string, authMode: EmberAuthMode) => {
+  const createSession = async (cli: EmberCli, repo: string, authMode: EmberAuthMode, title: string) => {
     const res = await fetch("/api/ember/sessions", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ cli, repo: repo || undefined, authMode }),
+      body: JSON.stringify({ cli, repo: repo || undefined, authMode, title: title || undefined }),
     });
     if (!res.ok) {
       flash("Failed to create session");
@@ -978,12 +978,13 @@ function NewSessionSheet({
   onManageAccount,
 }: {
   onClose: () => void;
-  onCreate: (cli: EmberCli, repo: string, authMode: EmberAuthMode) => void;
+  onCreate: (cli: EmberCli, repo: string, authMode: EmberAuthMode, title: string) => void;
   onManageAccount: () => void;
 }) {
   const [cli, setCli] = useState<EmberCli>("claude");
   const [authMode, setAuthMode] = useState<EmberAuthMode>("bedrock");
   const [repo, setRepo] = useState("");
+  const [title, setTitle] = useState("");
   const [connected, setConnected] = useState<{ claude?: boolean; codex?: boolean; kiro?: boolean }>({});
 
   useEffect(() => {
@@ -1017,6 +1018,20 @@ function NewSessionSheet({
           <X className="w-4 h-4" strokeWidth={2.6} />
         </button>
       </div>
+
+      <label className="block text-[13px] font-semibold text-[var(--color-text-secondary)] mb-2 ml-1">
+        TITLE <span className="font-normal opacity-70">— optional</span>
+      </label>
+      <input
+        value={title}
+        onChange={(e) => setTitle(e.target.value)}
+        placeholder="New session"
+        autoComplete="off"
+        maxLength={120}
+        data-testid="cc-title-input"
+        className="w-full px-4 py-3 rounded-[12px] text-[16px] outline-none border-[0.5px] border-[var(--color-border)] focus:border-[var(--ios-blue)] mb-5 transition-colors"
+        style={{ background: "var(--color-surface-2)" }}
+      />
 
       <label className="block text-[13px] font-semibold text-[var(--color-text-secondary)] mb-2 ml-1">AGENT</label>
       <div className="ios-segment w-full mb-5 !rounded-[12px]">
@@ -1094,7 +1109,7 @@ function NewSessionSheet({
       </p>
 
       <button
-        onClick={() => onCreate(cli, repo.trim(), authMode)}
+        onClick={() => onCreate(cli, repo.trim(), authMode, title.trim())}
         data-testid="cc-start"
         className="press w-full py-3.5 rounded-[14px] text-[16px] font-semibold text-white"
         style={{ background: "var(--ios-blue)", boxShadow: "0 6px 18px rgba(255,106,0,0.3)" }}
