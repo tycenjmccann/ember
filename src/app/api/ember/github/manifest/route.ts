@@ -88,8 +88,15 @@ export async function GET(request: NextRequest) {
     public: false,
     // contents:write → clone/push; metadata:read is mandatory; pull_requests:write
     // → `gh pr create` / the Create-PR API (a core agent step after pushing a
-    // branch), which 403s without it.
-    default_permissions: { contents: "write", metadata: "read", pull_requests: "write" },
+    // branch), which 403s without it. members:read (org permission) lets the
+    // install callback verify an org admin via /user/memberships/orgs/{org} — the
+    // org-ownership check 403s without it.
+    default_permissions: {
+      contents: "write",
+      metadata: "read",
+      pull_requests: "write",
+      members: "read",
+    },
   };
 
   // Signed state GitHub echoes to our redirect_url — verified in phase 2 so we

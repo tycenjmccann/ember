@@ -168,14 +168,15 @@ export async function cloneTokenForUser(
   const conn = await getGithubConnection(userId).catch(() => null);
   if (!conn?.installationId) return { connected: false };
   try {
-    // Scope to the single repo when we can name it. GitHub's `repositories` scope
-    // wants the bare repo NAME, but `repo` may arrive as owner/name OR a full
-    // clone URL (https://github.com/owner/name.git, git@github.com:owner/name.git)
-    // — the runtime accepts all three. Normalize to the trailing name and strip a
-    // .git suffix, else a selected install mints with "name.git" and GitHub 403s.
+    // Scope to the single repo WHENEVER we can name it — not just for "selected"
+    // installs. Omitting `repositories` yields a token good for EVERY repo in the
+    // installation (including an "all repositories" grant), and the runtime
+    // exports it as GH_TOKEN, so a turn on one repo could read/push any sibling.
+    // `repo` may be owner/name OR a clone URL (https/ssh); repoShortName strips
+    // .git and returns the bare name GitHub's scope expects. Only fall back to a
+    // whole-installation token when no repo is known (e.g. "list my repos").
     const shortName = repoShortName(repo);
-    const scope =
-      conn.repoSelection === "selected" && shortName ? [shortName] : undefined;
+    const scope = shortName ? [shortName] : undefined;
     const { token } = await mintInstallationToken(conn.installationId, scope);
     return { token, connected: true };
   } catch {

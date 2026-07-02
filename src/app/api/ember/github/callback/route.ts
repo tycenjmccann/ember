@@ -8,7 +8,11 @@
 
 import { NextRequest, NextResponse } from "next/server";
 import { getIdentity } from "@/lib/ember/identity";
-import { putGithubConnection, deleteGithubConnection } from "@/lib/ember/github-store";
+import {
+  getGithubConnection,
+  putGithubConnection,
+  deleteGithubConnection,
+} from "@/lib/ember/github-store";
 import {
   getInstallation,
   verifyInstallState,
@@ -36,14 +40,28 @@ export async function GET(request: NextRequest) {
       return NextResponse.redirect(`${back}?github=cancelled`);
     }
 
+    const stateOk = await verifyInstallState(state, userId);
+
     if (setupAction === "delete") {
+      // Never delete on an unauthenticated cross-site GET: without a guard, any
+      // site could send a victim's browser here with setup_action=delete and clear
+      // their connection (which, with a PAT fallback configured, downgrades the
+      // next turn from the user's App scope to the broad PAT). Accept the delete
+      // only when it's provably legitimate: EITHER our signed state, OR (for a
+      // GitHub-initiated uninstall redirect, which carries no state) an
+      // installation_id that matches the one we actually stored for this user.
+      const conn = await getGithubConnection(userId).catch(() => null);
+      const matchesStored = Boolean(conn && conn.installationId === installationId);
+      if (!stateOk && !matchesStored) {
+        return NextResponse.redirect(`${back}?github=state_mismatch`);
+      }
       await deleteGithubConnection(userId);
       return NextResponse.redirect(`${back}?github=disconnected`);
     }
 
-    // First gate: the signed state proves THIS user started an install flow (CSRF
-    // + ties the flow to the session). Necessary but not sufficient.
-    if (!(await verifyInstallState(state, userId))) {
+    // Store path: the signed state proves THIS user started an install flow (CSRF
+    // + session binding). Necessary but not sufficient — ownership is proven next.
+    if (!stateOk) {
       return NextResponse.redirect(`${back}?github=state_mismatch`);
     }
 
