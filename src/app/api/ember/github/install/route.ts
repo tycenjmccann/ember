@@ -9,7 +9,8 @@
 
 import { NextRequest, NextResponse } from "next/server";
 import { getGithubAppConfig } from "@/lib/ember/secrets";
-import { isAdmin } from "@/lib/ember/identity";
+import { getIdentity, isAdmin } from "@/lib/ember/identity";
+import { issueInstallState } from "@/lib/ember/github-app";
 
 export const dynamic = "force-dynamic";
 
@@ -32,5 +33,11 @@ export async function GET(request: NextRequest) {
   if (!cfg.slug) {
     return NextResponse.redirect(`${base}/ember?github=app_error`);
   }
-  return NextResponse.redirect(`https://github.com/apps/${cfg.slug}/installations/new`);
+  // Bind this install flow to the signed-in user so the callback can prove the
+  // installation was authorized by THIS user (GitHub echoes ?state= back).
+  const { userId } = getIdentity(request);
+  const state = await issueInstallState(userId);
+  const url = new URL(`https://github.com/apps/${cfg.slug}/installations/new`);
+  url.searchParams.set("state", state);
+  return NextResponse.redirect(url.toString());
 }

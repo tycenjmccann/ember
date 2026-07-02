@@ -627,26 +627,60 @@ def _write_git_credential_helper(token: str) -> None:
     """Materialize the token to tmpfs and point git at a helper that reads it.
 
     Keeps the secret OUT of ~/.gitconfig (a static, world-readable-to-the-agent
-    file). The helper echoes username/password for github.com on demand; git
-    invokes it per fetch/push and never persists the value."""
+    file). The helper answers ONLY for github.com and never persists the value —
+    git invokes it per fetch/push, passing the request's protocol/host on stdin.
+
+    The host guard matters: a bare `credential.helper` is consulted for EVERY
+    host, so without it git would offer the GitHub token to any HTTPS remote a
+    task cloned (e.g. an attacker-controlled `evil.test`). We parse stdin and
+    reply only when protocol=https AND host=github.com."""
     os.makedirs(EPHEMERAL_CREDS_DIR, exist_ok=True)
     with open(_GIT_CRED_PATH, "w", encoding="utf-8") as f:
         f.write(token)
     os.chmod(_GIT_CRED_PATH, 0o600)
-    # A tiny credential helper: any github.com prompt → x-access-token + the token.
+    # Read the key=value request off stdin; only emit creds for https github.com.
     helper = (
         "#!/bin/sh\n"
         'test "$1" = get || exit 0\n'
-        'echo username=x-access-token\n'
+        "proto=; host=\n"
+        'while IFS="=" read -r k v; do\n'
+        '  [ -z "$k" ] && break\n'
+        '  case "$k" in protocol) proto=$v ;; host) host=$v ;; esac\n'
+        "done\n"
+        '{ [ "$proto" = https ] && [ "$host" = github.com ]; } || exit 0\n'
+        "echo username=x-access-token\n"
         f'echo "password=$(cat {_GIT_CRED_PATH})"\n'
     )
     with open(_GIT_CRED_HELPER, "w", encoding="utf-8") as f:
         f.write(helper)
     os.chmod(_GIT_CRED_HELPER, 0o700)
+    # Bind under credential.https://github.com.* too, so the helper is not even
+    # consulted for other hosts (defense in depth atop the in-helper host check).
     subprocess.run(
-        ["git", "config", "--global", "--replace-all", "credential.helper", _GIT_CRED_HELPER],
+        ["git", "config", "--global", "--replace-all",
+         "credential.https://github.com.helper", _GIT_CRED_HELPER],
         check=False,
     )
+
+
+def _clear_git_credential_helper() -> None:
+    """Remove any GitHub token this runtime materialized on a prior turn.
+
+    A warm runtime is reused across turns and users. If an earlier turn wrote an
+    App token but the current turn has none (user disconnected GitHub, or minting
+    failed), leaving the helper + tmpfs token + GH_TOKEN in place would let the
+    agent keep using the stale installation token until it expired. Wipe them."""
+    subprocess.run(
+        ["git", "config", "--global", "--unset-all", "credential.https://github.com.helper"],
+        check=False,
+    )
+    for path in (_GIT_CRED_PATH, _GIT_CRED_HELPER):
+        try:
+            os.remove(path)
+        except FileNotFoundError:
+            pass
+    os.environ.pop("GH_TOKEN", None)
+    os.environ.pop("GITHUB_TOKEN", None)
 
 
 def _configure_git(github_token: str | None = None) -> None:
@@ -669,6 +703,8 @@ def _configure_git(github_token: str | None = None) -> None:
     # long-lived GITHUB_PAT env is the personal-deploy fallback.
     token = github_token or os.environ.get("GITHUB_PAT")
     if not token:
+        # No token this turn — scrub any the prior turn left on this warm runtime.
+        _clear_git_credential_helper()
         return
     _write_git_credential_helper(token)
     # Expose the token to the GitHub CLI so the agent can enumerate/inspect repos

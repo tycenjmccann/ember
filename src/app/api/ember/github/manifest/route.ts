@@ -11,9 +11,13 @@
  */
 
 import { NextRequest, NextResponse } from "next/server";
-import { exchangeManifestCode, resetGithubAppConfigCache } from "@/lib/ember/github-app";
+import {
+  exchangeManifestCode,
+  resetGithubAppConfigCache,
+  issueInstallState,
+} from "@/lib/ember/github-app";
 import { putGithubAppConfig } from "@/lib/ember/secrets";
-import { isAdmin } from "@/lib/ember/identity";
+import { getIdentity, isAdmin } from "@/lib/ember/identity";
 
 export const dynamic = "force-dynamic";
 
@@ -41,8 +45,13 @@ export async function GET(request: NextRequest) {
         webhookSecret: app.webhookSecret,
       });
       resetGithubAppConfigCache();
-      // Send the operator to GitHub to install the freshly created App.
-      return NextResponse.redirect(`https://github.com/apps/${app.slug}/installations/new`);
+      // Send the operator to GitHub to install the freshly created App, carrying
+      // a signed state so the connect callback binds the install to this admin.
+      const { userId } = getIdentity(request);
+      const state = await issueInstallState(userId);
+      const install = new URL(`https://github.com/apps/${app.slug}/installations/new`);
+      install.searchParams.set("state", state);
+      return NextResponse.redirect(install.toString());
     } catch (err) {
       console.error("[ember] github manifest exchange error:", err);
       return NextResponse.redirect(`${base}/ember?github=app_error`);

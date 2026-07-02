@@ -12,7 +12,7 @@
  */
 
 import { SignJWT, importPKCS8 } from "jose";
-import { createPrivateKey } from "crypto";
+import { createPrivateKey, createHmac, timingSafeEqual } from "crypto";
 import { getGithubAppConfig } from "./secrets";
 import { getGithubConnection } from "./github-store";
 
@@ -183,6 +183,56 @@ export async function getInstallation(installationId: string): Promise<{
     };
   } catch {
     return null;
+  }
+}
+
+// ─── Install state (CSRF / installation-binding guard) ──────────────────────
+//
+// GitHub's install redirect does NOT tell us WHO initiated it — the callback
+// just gets ?installation_id=. Without a check, any signed-in user could hit the
+// callback with someone else's installation id and bind it to their own account,
+// then mint tokens for that org's repos. We defend with a signed `state`: the
+// install route issues `userId.expiry.hmac` (keyed off the App private key the
+// hub already holds), GitHub echoes it back on the callback, and we verify it
+// matches the signed-in user and hasn't expired before storing the installation.
+
+const STATE_TTL_MS = 15 * 60 * 1000; // an install flow completes in minutes.
+
+async function stateKey(): Promise<Buffer> {
+  // Derive a stable HMAC key from the App private key — a secret the hub holds
+  // and the microVM never sees. No extra config to provision or rotate.
+  const cfg = await loadConfig();
+  const material = cfg?.privateKey || process.env.GITHUB_APP_PRIVATE_KEY || "";
+  if (!material) throw new Error("GitHub App not configured; cannot sign install state");
+  return createHmac("sha256", "ember/github-install-state").update(material).digest();
+}
+
+function sign(payload: string, key: Buffer): string {
+  return createHmac("sha256", key).update(payload).digest("base64url");
+}
+
+/** Mint a signed state token binding an install flow to `userId`. */
+export async function issueInstallState(userId: string): Promise<string> {
+  const key = await stateKey();
+  const payload = `${encodeURIComponent(userId)}.${Date.now() + STATE_TTL_MS}`;
+  return `${payload}.${sign(payload, key)}`;
+}
+
+/** Verify a state token came from us, hasn't expired, and matches `userId`. */
+export async function verifyInstallState(state: string, userId: string): Promise<boolean> {
+  try {
+    const parts = state.split(".");
+    if (parts.length !== 3) return false;
+    const [encUser, expiryStr, mac] = parts;
+    const key = await stateKey();
+    const expected = sign(`${encUser}.${expiryStr}`, key);
+    const a = Buffer.from(mac);
+    const b = Buffer.from(expected);
+    if (a.length !== b.length || !timingSafeEqual(a, b)) return false;
+    if (Date.now() > Number(expiryStr)) return false;
+    return decodeURIComponent(encUser) === userId;
+  } catch {
+    return false;
   }
 }
 

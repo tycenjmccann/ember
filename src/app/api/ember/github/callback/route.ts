@@ -9,7 +9,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import { getIdentity } from "@/lib/ember/identity";
 import { putGithubConnection, deleteGithubConnection } from "@/lib/ember/github-store";
-import { getInstallation } from "@/lib/ember/github-app";
+import { getInstallation, verifyInstallState } from "@/lib/ember/github-app";
 
 export const dynamic = "force-dynamic";
 
@@ -23,6 +23,7 @@ export async function GET(request: NextRequest) {
     const { userId } = getIdentity(request);
     const installationId = request.nextUrl.searchParams.get("installation_id") || "";
     const setupAction = request.nextUrl.searchParams.get("setup_action") || "";
+    const state = request.nextUrl.searchParams.get("state") || "";
 
     // A "request"/cancel with no installation → nothing to store.
     if (!installationId) {
@@ -32,6 +33,14 @@ export async function GET(request: NextRequest) {
     if (setupAction === "delete") {
       await deleteGithubConnection(userId);
       return NextResponse.redirect(`${back}?github=disconnected`);
+    }
+
+    // Bind the installation to the user who actually initiated the flow. Without
+    // this, any signed-in user could replay a callback with another org's
+    // installation id and mint tokens for repos they don't administer. The state
+    // is the signed nonce our install route issued for THIS user.
+    if (!(await verifyInstallState(state, userId))) {
+      return NextResponse.redirect(`${back}?github=state_mismatch`);
     }
 
     const meta = await getInstallation(installationId);

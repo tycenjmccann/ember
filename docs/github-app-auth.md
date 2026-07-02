@@ -104,11 +104,18 @@ identical. Org vs user is a GitHub-side install choice, not a code fork.
   - `GET` → connection status (account login, repo count) — never the token.
   - `DELETE` → disconnect (clear installation record).
 - **`src/app/api/ember/github/callback/route.ts` (new):** GitHub redirect target
-  after install; captures `installation_id` (+ `setup_action`), stores it, bounces
-  back to `/ember`.
+  after install; captures `installation_id` (+ `setup_action`), **verifies the
+  signed `state` nonce** binds the install to the signed-in user, stores it,
+  bounces back to `/ember`. Without the state check a user could replay a callback
+  with another org's `installation_id` and mint tokens for repos they don't
+  administer, so a mismatch is rejected (`?github=state_mismatch`).
+- **`src/app/api/ember/github/install/route.ts` (new):** issues the signed state
+  (`issueInstallState(userId)`, HMAC keyed off the App private key) and redirects
+  the user to GitHub's install screen carrying `?state=`.
 - **`src/app/api/ember/github/manifest/route.ts` (new, operator-only):** the App
   manifest creation flow (generate App → GitHub returns a temp code → exchange for
-  App ID + PEM → store in `ember/github-app`).
+  App ID + PEM → store in `ember/github-app`). The post-create install redirect
+  also carries a signed state.
 
 ### Turn dispatch
 - **`runtime.ts`:** add `githubToken?: string` to `CodingTurnParams`; in
@@ -126,15 +133,29 @@ identical. Org vs user is a GitHub-side install choice, not a code fork.
     write the token to a **tmpfs file** (`/dev/shm/ember-creds/github`, mirroring
     the subscription-cred materialization) and configure a **git credential
     helper** that reads it. Keeps the token out of a static, greppable config file.
+  - The helper is **scoped to `https://github.com`** — bound under
+    `credential.https://github.com.helper` AND it re-checks `protocol`/`host` from
+    git's stdin request, replying only for github.com. A bare `credential.helper`
+    is consulted for every host, so without this a task cloning an
+    attacker-controlled remote would have the token offered to it.
+  - On a turn with **no token** (user disconnected, or minting failed) on a warm
+    runtime, `_clear_git_credential_helper()` scrubs the helper config, the tmpfs
+    token file, and `GH_TOKEN`/`GITHUB_TOKEN` — so a prior turn's installation
+    token can't linger until natural expiry.
   - Still export `GH_TOKEN`/`GITHUB_TOKEN` (from the same tmpfs value) for `gh`.
   - Thread `github_token = payload.get("github_token")` at the call site
     (`main.py` ~line 2210) into `_configure_git(github_token)`.
 - Redact `github_token` in `turn_start` / any payload logging.
 
 ### Deploy + role
-- App key secret (`ember/github-app`) is read by the **hub's** role only. The
-  runtime role is unchanged (already scoped to `ember/t/*`; it no longer needs a
-  GitHub secret at all on the App path).
+- App key secret (`ember/github-app`) lives in **Secrets Manager only**, never the
+  artifact bucket — regardless of `EMBER_SECRETS_BACKEND`. The shared runtime role
+  grants `s3:GetObject` on `ember/*`, so an App key parked in S3 would be readable
+  by an untrusted agent; SM (where the runtime role's grant is scoped to
+  `ember/t/*`, excluding `ember/github-app`) is the one store the microVM cannot
+  reach. The hub role has `secretsmanager:GetSecretValue`/`CreateSecret`/
+  `PutSecretValue` on `ember/github-app*`. Dev/single-operator deploys without SM
+  use the `GITHUB_APP_ID`/`GITHUB_APP_PRIVATE_KEY` env override.
 - `deploy.py`: keep `GITHUB_PAT` optional (personal fallback). Document that the
   App path supersedes it.
 
