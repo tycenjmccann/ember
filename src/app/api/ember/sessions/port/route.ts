@@ -71,12 +71,18 @@ function parseRepoFromUrl(url?: string): string | undefined {
 // the original tree, sees the files "missing" (gitignored → not in the branch),
 // and wrongly concludes they didn't come over. The orientation rides even when
 // the user supplied a firstPrompt.
-function buildResumePrompt(opts: { branch?: string; firstPrompt?: string; hasArtifacts?: boolean }): string {
-  const { branch, firstPrompt, hasArtifacts } = opts;
+function buildResumePrompt(opts: {
+  branch?: string;
+  firstPrompt?: string;
+  hasArtifacts?: boolean;
+  hasCode?: boolean; // false for gitMode "none" — bare workspace, nothing checked out
+}): string {
+  const { branch, firstPrompt, hasArtifacts, hasCode } = opts;
   const orientation =
     "[Ember] You've been resumed in a fresh cloud microVM from a laptop session" +
     (branch ? ` (branch \`${branch}\`)` : "") +
-    ". Your code is checked out here." +
+    "." +
+    (hasCode ? " Your code is checked out here." : "") +
     (hasArtifacts
       ? " Untracked deliverables this session produced (gitignored media, " +
         "exports, datasets — anything NOT in the git branch) were shipped " +
@@ -174,7 +180,7 @@ export async function POST(request: NextRequest) {
       resumeTranscriptKey: transcriptKey,
       artifactPrefix: hasArtifacts ? buildArtifactPrefix(tenantId, sessionId) : undefined,
       defaultView,
-      pendingSeed: buildResumePrompt({ branch, firstPrompt, hasArtifacts }),
+      pendingSeed: buildResumePrompt({ branch, firstPrompt, hasArtifacts, hasCode: gitMode !== "none" }),
       createdAt: now,
       updatedAt: now,
       turns: [],
