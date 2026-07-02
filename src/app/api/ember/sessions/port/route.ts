@@ -63,14 +63,32 @@ function parseRepoFromUrl(url?: string): string | undefined {
 
 // First-prompt hint the auto-fired seed turn sends to the resumed agent. Kept
 // short — the real context lives in the resumed transcript, not in this prompt.
-function buildResumePrompt(opts: { branch?: string; firstPrompt?: string }): string {
-  const { branch, firstPrompt } = opts;
-  if (firstPrompt) return firstPrompt;
-  return (
-    "You've been resumed in the cloud from the laptop session" +
+//
+// Always prepend an ORIENTATION line: the agent doesn't otherwise know it's in a
+// fresh cloud microVM, nor that the session's untracked deliverables (gitignored
+// media/exports/datasets) were shipped out of band and staged under
+// .ember/artifacts/<same-relative-path-as-the-laptop>. Without this it inspects
+// the original tree, sees the files "missing" (gitignored → not in the branch),
+// and wrongly concludes they didn't come over. The orientation rides even when
+// the user supplied a firstPrompt.
+function buildResumePrompt(opts: { branch?: string; firstPrompt?: string; hasArtifacts?: boolean }): string {
+  const { branch, firstPrompt, hasArtifacts } = opts;
+  const orientation =
+    "[Ember] You've been resumed in a fresh cloud microVM from a laptop session" +
     (branch ? ` (branch \`${branch}\`)` : "") +
-    ". In one line, confirm where things stand, then continue where we left off."
-  );
+    ". Your code is checked out here." +
+    (hasArtifacts
+      ? " Untracked deliverables this session produced (gitignored media, " +
+        "exports, datasets — anything NOT in the git branch) were shipped " +
+        "separately and restored under `.ember/artifacts/`, each at the SAME " +
+        "path it had on the laptop (e.g. a file that was `out/render.mp4` is now " +
+        "`.ember/artifacts/out/render.mp4`). See `.ember/artifacts/INDEX.md` for " +
+        "the full manifest. If you can't find a generated/gitignored file at its " +
+        "original path, look under `.ember/artifacts/` before assuming it didn't " +
+        "transfer."
+      : "");
+  if (firstPrompt) return `${orientation}\n\n${firstPrompt}`;
+  return `${orientation} In one line, confirm where things stand, then continue where we left off.`;
 }
 
 export async function POST(request: NextRequest) {
@@ -156,7 +174,7 @@ export async function POST(request: NextRequest) {
       resumeTranscriptKey: transcriptKey,
       artifactPrefix: hasArtifacts ? buildArtifactPrefix(tenantId, sessionId) : undefined,
       defaultView,
-      pendingSeed: buildResumePrompt({ branch, firstPrompt }),
+      pendingSeed: buildResumePrompt({ branch, firstPrompt, hasArtifacts }),
       createdAt: now,
       updatedAt: now,
       turns: [],

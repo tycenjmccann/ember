@@ -1571,6 +1571,7 @@ def _install_artifacts(artifact_prefix: str, workdir: str, session_id: str | Non
 
     real_root = os.path.realpath(dest_root)
     restored = 0
+    landed: list[tuple[str, int]] = []  # (rel, bytes) for the manifest
     try:
         s3 = boto3.client("s3", region_name=os.environ.get("AWS_REGION", "us-east-1"))
         paginator = s3.get_paginator("list_objects_v2")
@@ -1580,6 +1581,8 @@ def _install_artifacts(artifact_prefix: str, workdir: str, session_id: str | Non
                 rel = key[len(artifact_prefix):]
                 if not rel or rel.endswith("/"):
                     continue  # the prefix placeholder / a dir marker
+                if rel == "INDEX.md":
+                    continue  # our own manifest, never re-download over itself
                 dest = os.path.join(dest_root, rel)
                 # Traversal guard: the resolved dest MUST stay under the artifacts root.
                 real_dest = os.path.realpath(dest)
@@ -1591,9 +1594,11 @@ def _install_artifacts(artifact_prefix: str, workdir: str, session_id: str | Non
                     with open(dest, "wb") as fh:
                         s3.download_fileobj(ARTIFACT_BUCKET, key, fh)
                     restored += 1
+                    landed.append((rel, int(obj.get("Size", 0) or 0)))
                 except Exception as exc:  # noqa: BLE001 — one bad file is non-fatal
                     logger.warning("artifact_download_failed",
                                    extra={"key": key, "error": str(exc)[:200]})
+        _write_artifacts_index(dest_root, landed)
         os.makedirs(os.path.dirname(marker), exist_ok=True)
         with open(marker, "w") as f:
             f.write(artifact_prefix)
@@ -1602,6 +1607,41 @@ def _install_artifacts(artifact_prefix: str, workdir: str, session_id: str | Non
         logger.warning("artifacts_install_failed",
                        extra={"prefix": artifact_prefix, "error": str(exc)[:200]})
     return restored
+
+
+def _write_artifacts_index(dest_root: str, landed: list) -> None:
+    """Write .ember/artifacts/INDEX.md — a ground-truth manifest of what the port
+    restored, so the resumed agent reads ONE file instead of guessing whether a
+    gitignored deliverable transferred. Each entry lists the workspace-relative
+    original path and the on-disk staged path (identical rel, under this dir).
+    Best-effort — a manifest-write failure never fails the restore."""
+    if not landed:
+        return
+    try:
+        lines = [
+            "# Ember — restored session artifacts",
+            "",
+            "These are the session's untracked deliverables (gitignored media, "
+            "exports, datasets — files NOT carried by the git branch), shipped "
+            "out of band during the port and restored here. Each is staged at the "
+            "SAME relative path it had on the laptop.",
+            "",
+            f"**{len(landed)} file(s)** under `.ember/artifacts/`:",
+            "",
+        ]
+        for rel, size in sorted(landed):
+            if size >= 1024 * 1024:
+                human = f"{size / 1024 / 1024:.1f} MB"
+            elif size >= 1024:
+                human = f"{size / 1024:.0f} KB"
+            else:
+                human = f"{size} B"
+            lines.append(f"- `{rel}`  ({human}) → `.ember/artifacts/{rel}`")
+        lines.append("")
+        with open(os.path.join(dest_root, "INDEX.md"), "w") as f:
+            f.write("\n".join(lines))
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("artifacts_index_write_failed", extra={"error": str(exc)[:200]})
 
 
 def _fetch_attachments(artifact_prefix: str, attachments: list, workdir: str) -> list[str]:
