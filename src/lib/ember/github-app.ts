@@ -12,7 +12,7 @@
  */
 
 import { SignJWT, importPKCS8 } from "jose";
-import { createPrivateKey, createHmac, timingSafeEqual } from "crypto";
+import { createPrivateKey, createHmac, timingSafeEqual, randomBytes } from "crypto";
 import { getGithubAppConfig, type GithubAppSecret } from "./secrets";
 import { getGithubConnection } from "./github-store";
 
@@ -228,13 +228,24 @@ export async function getInstallation(installationId: string): Promise<{
 
 const STATE_TTL_MS = 15 * 60 * 1000; // an install flow completes in minutes.
 
+// Last-resort HMAC material when no stable deploy secret is set. Generated once
+// per process — fine for a single-instance deploy, but multi-instance setups
+// should set EMBER_STATE_SECRET so state verifies across instances. Never the
+// App private key: the MANIFEST flow runs before that key exists (fresh deploy),
+// so keying on it would 500 the very page that creates the App.
+const _ephemeralStateSecret = randomBytes(32).toString("hex");
+
 async function stateKey(): Promise<Buffer> {
-  // Derive a stable HMAC key from the App private key — a secret the hub holds
-  // and the microVM never sees. No extra config to provision or rotate.
-  const cfg = await loadConfig();
-  const material = cfg?.privateKey || process.env.GITHUB_APP_PRIVATE_KEY || "";
-  if (!material) throw new Error("GitHub App not configured; cannot sign install state");
-  return createHmac("sha256", "ember/github-install-state").update(material).digest();
+  // A stable, secret, deploy-level value that exists BEFORE the App does. Prefer
+  // an explicit EMBER_STATE_SECRET; else reuse the Cognito client secret (present
+  // on every multi-tenant deploy, stable, never shipped to the microVM); else a
+  // per-process random (single-instance ok). The App key is deliberately NOT used
+  // — the manifest-creation flow runs when it doesn't yet exist.
+  const material =
+    process.env.EMBER_STATE_SECRET ||
+    process.env.COGNITO_CLIENT_SECRET ||
+    _ephemeralStateSecret;
+  return createHmac("sha256", "ember/github-state").update(material).digest();
 }
 
 function sign(payload: string, key: Buffer): string {

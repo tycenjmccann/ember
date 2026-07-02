@@ -72,7 +72,7 @@ export async function POST(
     // session creator — shared tenant sessions must not lend a coworker the
     // creator's repo access (mirrors the message route).
     const { token: githubToken, connected: githubAppConnected } =
-      await cloneTokenForUser(requesterId, session.repo);
+      await cloneTokenForUser(requesterId, session.repo ?? session.cloneUrl);
     if (session.resumeTranscriptKey) {
       // Full setup must COMPLETE before the resume runs. Bound it so a pathological
       // clone can't hang the request past maxDuration; if it times out the PTY's

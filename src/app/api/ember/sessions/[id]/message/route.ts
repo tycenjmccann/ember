@@ -124,7 +124,7 @@ export async function POST(
   // turn clones with the token of whoever actually sent it. `connected` tells the
   // runtime NOT to fall back to GITHUB_PAT when a connected user's mint is denied.
   const { token: githubToken, connected: githubAppConnected } =
-    await cloneTokenForUser(requesterId, session.repo);
+    await cloneTokenForUser(requesterId, session.repo ?? session.cloneUrl);
 
   // ── Streaming path (claude): relay SSE, persist on the terminal 'done' frame.
   if (wantStream) {
