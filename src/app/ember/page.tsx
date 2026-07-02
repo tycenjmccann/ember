@@ -305,9 +305,22 @@ export default function EmberPage() {
         }
         fetchSessions();
       } else {
-        const data = await res.json();
-        if (!res.ok) throw new Error(data.error || "Turn failed");
-        setActive(data.session);
+        // Buffered path (codex). A long turn (clone + cold-Mantle retries) can
+        // outlast the front-end proxy's idle timeout, which then answers with a
+        // PLAINTEXT body ("upstream request timeout") — not JSON. Parse defensively
+        // so the user sees a readable timeout, not a raw "Unexpected token 'u'".
+        const raw = await res.text();
+        let data: { error?: string; session?: EmberSession } = {};
+        try { data = JSON.parse(raw); } catch { /* non-JSON proxy/error body */ }
+        if (!res.ok) {
+          throw new Error(
+            data.error ||
+              (res.status === 502 || res.status === 504
+                ? "The turn ran longer than the gateway allows. It may still be running — reopen the session in a moment to see the reply."
+                : `Turn failed (${res.status})`)
+          );
+        }
+        if (data.session) setActive(data.session);
         fetchSessions();
       }
     } catch (err) {
@@ -330,13 +343,29 @@ export default function EmberPage() {
           fetchSessions();
         }
       } else {
-        // Failed before the turn ran (config/502/Codex error). Surface it.
-        flash((err as Error).message);
-        setActive((s) =>
-          s
-            ? { ...s, turns: [...s.turns, { role: "agent", text: `⚠ ${(err as Error).message}`, at: new Date().toISOString() }] }
-            : s
-        );
+        // Buffered turn failed at the transport (no stream to drop). A gateway
+        // timeout (502/504) doesn't stop the server — the codex turn keeps running
+        // and persists its reply — so try recovery first, exactly like the
+        // stream-drop path, before surfacing an error. A genuine pre-run failure
+        // (config/Codex exit) won't have the extra turns, so recovery no-ops and
+        // we fall through to the visible error.
+        const recovered = await recoverActiveTurn(sid, baseCount);
+        if (recovered) {
+          fetchSessions();
+        } else if (/gateway allows|502|504/.test((err as Error).message)) {
+          pendingRecover.current = { sid, baseCount };
+          setRecoverNonce((n) => n + 1);
+          flash("Still working — your reply is on its way.");
+          fetchSessions();
+        } else {
+          // Genuine pre-run failure (config / Codex error). Surface it.
+          flash((err as Error).message);
+          setActive((s) =>
+            s
+              ? { ...s, turns: [...s.turns, { role: "agent", text: `⚠ ${(err as Error).message}`, at: new Date().toISOString() }] }
+              : s
+          );
+        }
       }
     } finally {
       turnAbort.current = null;
