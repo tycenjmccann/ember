@@ -103,13 +103,16 @@ export async function POST(
         new Promise<null>((r) => setTimeout(() => r(null), 50_000)),
       ]);
       resumeReady = Boolean(warmed?.resumeReady);
-    } else if (configVersion || session.authMode === "subscription" || session.claudeSessionId) {
+    } else if (configVersion || session.authMode === "subscription" || session.claudeSessionId || githubToken || githubAppConnected) {
       // No transcript to install — just materialize config / plan creds, AND let the
       // runtime restore a durable resume hint. A plain Bedrock session that already
       // has a claudeSessionId (a chat turn ran, no port) must hit prepare too: on a
       // recycled/cold VM only prepare's _restore_resume_launch_hint rebuilds
       // /tmp/.resume-launch.sh, so the PTY lands in the live TUI instead of a bare
-      // shell. Bounded:
+      // shell. A GitHub token / App connection ALSO forces prepare: it's the only
+      // path that runs _configure_git for a terminal-only session, so a fresh
+      // non-ported repo terminal gets the credential helper (App scope) installed —
+      // and a connected user's GITHUB_PAT stripped — before the PTY opens. Bounded:
       // wait briefly so `claude` reads .mcp.json on first launch, but never block
       // the URL on a cold path (materialization continues server-side; marker dedupes).
       const prepared = await Promise.race([

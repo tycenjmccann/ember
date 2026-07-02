@@ -1315,6 +1315,7 @@ function AccountSheet({ onClose, onToast }: { onClose: () => void; onToast: (m: 
   const [secret, setSecret] = useState("");
   const [github, setGithub] = useState<{
     appConfigured: boolean;
+    isAdmin?: boolean;
     connection: { account?: string; repoSelection?: string; repoCount?: number } | null;
   }>({ appConfigured: false, connection: null });
 
@@ -1490,8 +1491,10 @@ function AccountSheet({ onClose, onToast }: { onClose: () => void; onToast: (m: 
       </div>
 
       {/* GitHub — short-lived, repo-scoped clone tokens via a GitHub App (no PAT).
-          Only shown once an operator has created the App (appConfigured). */}
-      {github.appConfigured && (
+          Shown once the App exists (anyone can connect) OR to an admin on a fresh
+          deploy, whose Connect/"Set up" link routes into the manifest-creation
+          flow — so first-time operators aren't stranded without a UI path. */}
+      {(github.appConfigured || github.isAdmin) && (
         <div className="rounded-[14px] p-3.5 mt-2.5" style={{ background: "var(--color-surface-2)" }}>
           <div className="flex items-center gap-2.5">
             <div className="w-9 h-9 rounded-[10px] flex items-center justify-center shrink-0" style={{ background: "var(--ios-fill-secondary)" }}>
@@ -1507,7 +1510,9 @@ function AccountSheet({ onClose, onToast }: { onClose: () => void; onToast: (m: 
                       ? ` · ${github.connection.repoCount} repo${github.connection.repoCount === 1 ? "" : "s"}`
                       : ""}
                   </span>
-                ) : "Not connected — clone private repos with short-lived tokens"}
+                ) : github.appConfigured
+                  ? "Not connected — clone private repos with short-lived tokens"
+                  : "Not set up — create the GitHub App to enable short-lived clone tokens"}
               </div>
             </div>
             {github.connection ? (
@@ -1522,8 +1527,8 @@ function AccountSheet({ onClose, onToast }: { onClose: () => void; onToast: (m: 
                 </button>
               </div>
             ) : (
-              <a href="/api/ember/github/install" className="press-sm text-[13px] font-semibold px-3.5 py-1.5 rounded-full text-white" style={{ background: "var(--ios-blue)" }}>
-                Connect
+              <a href="/api/ember/github/install" className="press-sm text-[13px] font-semibold px-3.5 py-1.5 rounded-full text-white whitespace-nowrap" style={{ background: "var(--ios-blue)" }}>
+                {github.appConfigured ? "Connect" : "Set up"}
               </a>
             )}
           </div>

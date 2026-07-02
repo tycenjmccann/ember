@@ -7,7 +7,7 @@
  */
 
 import { NextRequest, NextResponse } from "next/server";
-import { getIdentity } from "@/lib/ember/identity";
+import { getIdentity, isAdmin } from "@/lib/ember/identity";
 import { getGithubConnection, deleteGithubConnection } from "@/lib/ember/github-store";
 import { githubAppConfigured } from "@/lib/ember/github-app";
 
@@ -22,6 +22,10 @@ export async function GET(request: NextRequest) {
     ]);
     return NextResponse.json({
       appConfigured,
+      // Admins see a setup entry point even before the App exists (the install
+      // route sends them into the manifest-creation flow); non-admins don't, so
+      // they're not offered a path that just bounces to "ask your operator".
+      isAdmin: isAdmin(request),
       connection: conn
         ? {
             account: conn.account,

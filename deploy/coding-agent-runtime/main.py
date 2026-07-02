@@ -622,6 +622,17 @@ def _slugify_repo(repo: str) -> str:
 _GIT_CRED_PATH = os.path.join(EPHEMERAL_CREDS_DIR, "github")
 _GIT_CRED_HELPER = os.path.join(EPHEMERAL_CREDS_DIR, "git-cred-helper.sh")
 
+# Personal-deploy PAT fallback, captured ONCE at import and REMOVED from the live
+# process env. Two reasons the raw env var must not survive:
+#   1. Every agent subprocess env is built from os.environ (env={**os.environ,…})
+#      — a task could `echo $GITHUB_PAT`.
+#   2. _export_runtime_env writes it to .runtime-env.sh, which the PTY sources.
+# Stripping it here means the broad PAT reaches NEITHER surface; only
+# _configure_git re-materializes it, and only for users with no App connection
+# (App-connected users stay fenced to their selected-repo scope). The App private
+# key never lived here at all — this is only the legacy shared PAT.
+_GITHUB_PAT_FALLBACK = os.environ.pop("GITHUB_PAT", None)
+
 
 def _write_git_credential_helper(token: str) -> None:
     """Materialize the token to tmpfs and point git at a helper that reads it.
@@ -726,14 +737,16 @@ def _configure_git(github_token: str | None = None, app_connected: bool = False)
     # short-lived token below.
     _clear_insteadof_pat_rewrite()
     # Token source: the hub's short-lived GitHub App token (per turn) wins. The
-    # long-lived GITHUB_PAT env is the personal-deploy fallback — but ONLY for
-    # users with no GitHub App connection. A CONNECTED user whose scoped mint was
-    # denied (repo outside their selected repos, install revoked) must NOT clone
-    # with the operator's broad PAT: that bypasses their chosen App scope. Fail
-    # closed to the App boundary instead.
+    # long-lived PAT is the personal-deploy fallback — read from the boot-captured
+    # constant (NEVER os.environ; see _GITHUB_PAT_FALLBACK) and ONLY for users with
+    # no GitHub App connection. A CONNECTED user whose scoped mint was denied must
+    # NOT get the operator's broad PAT — that bypasses their selected-repo scope.
+    # Because the raw PAT was stripped from the process env at boot, a connected
+    # user can't reach it via a subprocess env or the PTY either — only this
+    # function re-materializes it, and only for unconnected users.
     token = github_token
     if not token and not app_connected:
-        token = os.environ.get("GITHUB_PAT")
+        token = _GITHUB_PAT_FALLBACK
     if not token:
         # No usable token — scrub any the prior turn left on this warm runtime so
         # a stale/expired token (or the PAT) can't linger.
@@ -2505,8 +2518,13 @@ async def invocations(request: Request):
 def _export_runtime_env() -> None:
     """Persist AgentCore-injected env vars to a file the interactive PTY shell
     can source. The PTY spawns as a fresh process that does NOT inherit this
-    server process's environment, so GITHUB_PAT / model ids / bucket would be
-    empty in the Terminal tab. shell-init.sh sources this file.
+    server process's environment, so model ids / bucket would be empty in the
+    Terminal tab. shell-init.sh sources this file.
+
+    GITHUB_PAT is deliberately NOT exported: it was stripped from the process env
+    at import (_GITHUB_PAT_FALLBACK) so it can't leak to the PTY or agent
+    subprocesses. Terminal git/gh authenticates via the tmpfs token the server
+    materializes per session instead (shell-init.sh reads $creds_dir/github).
 
     The EFS mount can lag the server's startup by a few seconds (writes fail
     with EACCES until it's ready), so retry in a background thread rather than
@@ -2514,7 +2532,7 @@ def _export_runtime_env() -> None:
     import threading
 
     keys = [
-        "GITHUB_PAT", "GIT_AUTHOR_EMAIL", "GIT_AUTHOR_NAME",
+        "GIT_AUTHOR_EMAIL", "GIT_AUTHOR_NAME",
         "AWS_REGION", "BEDROCK_MANTLE_REGION", "ANTHROPIC_MODEL", "CLAUDE_MODEL",
         "CODEX_MODEL", "KIRO_MODEL", "KIRO_HOME", "ARTIFACT_BUCKET", "WORKSPACE_ROOT",
     ]
