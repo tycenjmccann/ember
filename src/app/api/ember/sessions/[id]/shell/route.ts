@@ -17,6 +17,7 @@ import { getOwnedSession, DEFAULT_USER_ID } from "@/lib/ember/sessions";
 import { getIdentity } from "@/lib/ember/identity";
 import { currentConfigVersion } from "@/lib/ember/config-store";
 import { prepareCodingSession, warmCodingSession } from "@/lib/ember/runtime";
+import { cloneTokenForUser } from "@/lib/ember/github-app";
 import { resolveRuntimeArn } from "@/lib/ember/tenant-store";
 
 export const dynamic = "force-dynamic";
@@ -67,6 +68,7 @@ export async function POST(
   try {
     const userId = session.userId || DEFAULT_USER_ID;
     const configVersion = await currentConfigVersion(userId);
+    const githubToken = await cloneTokenForUser(userId, session.repo);
     if (session.resumeTranscriptKey) {
       // Full setup must COMPLETE before the resume runs. Bound it so a pathological
       // clone can't hang the request past maxDuration; if it times out the PTY's
@@ -91,6 +93,7 @@ export async function POST(
           configVersion,
           region: REGION,
           authMode: session.authMode,
+          githubToken,
         }).catch(() => null),
         new Promise<null>((r) => setTimeout(() => r(null), 50_000)),
       ]);

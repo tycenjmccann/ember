@@ -17,6 +17,7 @@ import type { NextRequest } from "next/server";
 
 export const USER_HEADER = "x-ember-user";
 export const TENANT_HEADER = "x-ember-tenant";
+export const GROUPS_HEADER = "x-ember-groups";
 
 /** The single-tenant fallback used when auth is disabled. Matches legacy rows. */
 export const DEFAULT_TENANT_ID = "default";
@@ -51,4 +52,12 @@ export function getIdentity(req: NextRequest): Identity {
   throw new Error(
     "Missing verified identity headers. A route was reached without auth middleware."
   );
+}
+
+/** True when the request's verified identity is in the Cognito `admin` group.
+ *  Auth-disabled (personal deploy) counts as admin — the sole operator. */
+export function isAdmin(req: NextRequest): boolean {
+  if (authDisabled()) return true;
+  const groups = req.headers.get(GROUPS_HEADER) || "";
+  return groups.split(",").map((g) => g.trim()).includes("admin");
 }

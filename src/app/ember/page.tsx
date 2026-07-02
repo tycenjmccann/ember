@@ -129,6 +129,25 @@ export default function EmberPage() {
       if (q.get("view") === "terminal") deepViewRef.current = "terminal";
       setSelectedId(id);
     }
+    // GitHub App connect/disconnect bounce back here with ?github=<status>.
+    const gh = q.get("github");
+    if (gh) {
+      const msg: Record<string, string> = {
+        connected: "GitHub connected — private repos clone with short-lived tokens",
+        disconnected: "GitHub disconnected",
+        cancelled: "GitHub connection cancelled",
+        not_configured: "GitHub App isn't set up yet — ask your operator",
+        forbidden: "Only an admin can create the GitHub App",
+        error: "GitHub connection failed — try again",
+        app_error: "Couldn't create the GitHub App — try again",
+      };
+      if (msg[gh]) setToast(msg[gh]);
+      // Strip the param so a refresh doesn't re-toast.
+      const url = new URL(window.location.href);
+      url.searchParams.delete("github");
+      window.history.replaceState({}, "", url.toString());
+      setTimeout(() => setToast(null), 4000);
+    }
   }, []);
 
   // Tracks which session's pending seed we've already auto-fired.
@@ -1293,12 +1312,30 @@ function AccountSheet({ onClose, onToast }: { onClose: () => void; onToast: (m: 
   const [busy, setBusy] = useState(false);
   const [open, setOpen] = useState<EmberCli | null>(null);
   const [secret, setSecret] = useState("");
+  const [github, setGithub] = useState<{
+    appConfigured: boolean;
+    connection: { account?: string; repoSelection?: string; repoCount?: number } | null;
+  }>({ appConfigured: false, connection: null });
 
   const load = useCallback(async () => {
     const res = await fetch("/api/ember/auth");
     if (res.ok) setStatus((await res.json()).status || {});
   }, []);
-  useEffect(() => { load(); }, [load]);
+  const loadGithub = useCallback(async () => {
+    const res = await fetch("/api/ember/github");
+    if (res.ok) setGithub(await res.json());
+  }, []);
+  useEffect(() => { load(); loadGithub(); }, [load, loadGithub]);
+
+  const disconnectGithub = async () => {
+    setBusy(true);
+    try {
+      await fetch("/api/ember/github", { method: "DELETE" });
+      await loadGithub();
+    } finally {
+      setBusy(false);
+    }
+  };
 
   // Claude OAuth tokens and Kiro access keys are one contiguous string; terminals
   // wrap them across lines, so a paste can inject a newline + space MID-token.
@@ -1450,6 +1487,47 @@ function AccountSheet({ onClose, onToast }: { onClose: () => void; onToast: (m: 
           );
         })}
       </div>
+
+      {/* GitHub — short-lived, repo-scoped clone tokens via a GitHub App (no PAT).
+          Only shown once an operator has created the App (appConfigured). */}
+      {github.appConfigured && (
+        <div className="rounded-[14px] p-3.5 mt-2.5" style={{ background: "var(--color-surface-2)" }}>
+          <div className="flex items-center gap-2.5">
+            <div className="w-9 h-9 rounded-[10px] flex items-center justify-center shrink-0" style={{ background: "var(--ios-fill-secondary)" }}>
+              <GitBranch className="w-[18px] h-[18px]" />
+            </div>
+            <div className="flex-1 min-w-0">
+              <div className="text-[14px] font-semibold">GitHub</div>
+              <div className="text-[11.5px] text-[var(--color-text-muted)]">
+                {github.connection ? (
+                  <span className="text-[var(--ios-green)] font-medium">
+                    ● Connected{github.connection.account ? ` · ${github.connection.account}` : ""}
+                    {github.connection.repoSelection === "selected" && github.connection.repoCount != null
+                      ? ` · ${github.connection.repoCount} repo${github.connection.repoCount === 1 ? "" : "s"}`
+                      : ""}
+                  </span>
+                ) : "Not connected — clone private repos with short-lived tokens"}
+              </div>
+            </div>
+            {github.connection ? (
+              <div className="flex items-center gap-2">
+                <a href="/api/ember/github/install" className="press-sm text-[13px] font-medium px-3 py-1.5 rounded-full text-[var(--color-text-secondary)]" style={{ background: "var(--ios-fill-tertiary)" }}>
+                  Configure
+                </a>
+                <button onClick={disconnectGithub} disabled={busy}
+                  className="press-sm text-[13px] font-medium px-3 py-1.5 rounded-full text-[var(--ios-red)] disabled:opacity-50"
+                  style={{ background: "var(--ios-fill-tertiary)" }}>
+                  Disconnect
+                </button>
+              </div>
+            ) : (
+              <a href="/api/ember/github/install" className="press-sm text-[13px] font-semibold px-3.5 py-1.5 rounded-full text-white" style={{ background: "var(--ios-blue)" }}>
+                Connect
+              </a>
+            )}
+          </div>
+        </div>
+      )}
 
       <p className="text-[11px] text-[var(--color-text-muted)] mt-4 px-1 leading-relaxed">
         Easiest path: the <span className="font-mono">port-session</span> MCP — run{" "}

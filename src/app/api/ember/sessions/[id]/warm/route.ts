@@ -13,6 +13,7 @@ import { getOwnedSession, DEFAULT_USER_ID } from "@/lib/ember/sessions";
 import { getIdentity } from "@/lib/ember/identity";
 import { warmCodingSession, codingRuntimeConfigured } from "@/lib/ember/runtime";
 import { currentConfigVersion } from "@/lib/ember/config-store";
+import { cloneTokenForUser } from "@/lib/ember/github-app";
 
 export const dynamic = "force-dynamic";
 export const maxDuration = 120;
@@ -37,6 +38,7 @@ export async function POST(
   const region = request.nextUrl.searchParams.get("region") || undefined;
   const userId = session.userId || DEFAULT_USER_ID;
   const configVersion = await currentConfigVersion(userId);
+  const githubToken = await cloneTokenForUser(userId, session.repo);
   try {
     await warmCodingSession({
       sessionId: session.sessionId,
@@ -54,6 +56,7 @@ export async function POST(
       configVersion,
       region,
       authMode: session.authMode,
+      githubToken,
     });
     return NextResponse.json({ warmed: true });
   } catch (err) {

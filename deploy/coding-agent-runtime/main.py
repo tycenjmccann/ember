@@ -616,7 +616,40 @@ def _slugify_repo(repo: str) -> str:
     return re.sub(r"[^A-Za-z0-9._-]", "-", slug) or "default"
 
 
-def _configure_git() -> None:
+# Where the GitHub token is materialized for git's credential helper. tmpfs
+# (RAM-backed, non-persistent), same dir as the subscription creds — never the
+# shared EFS, and never baked into ~/.gitconfig where a task could `cat` it.
+_GIT_CRED_PATH = os.path.join(EPHEMERAL_CREDS_DIR, "github")
+_GIT_CRED_HELPER = os.path.join(EPHEMERAL_CREDS_DIR, "git-cred-helper.sh")
+
+
+def _write_git_credential_helper(token: str) -> None:
+    """Materialize the token to tmpfs and point git at a helper that reads it.
+
+    Keeps the secret OUT of ~/.gitconfig (a static, world-readable-to-the-agent
+    file). The helper echoes username/password for github.com on demand; git
+    invokes it per fetch/push and never persists the value."""
+    os.makedirs(EPHEMERAL_CREDS_DIR, exist_ok=True)
+    with open(_GIT_CRED_PATH, "w", encoding="utf-8") as f:
+        f.write(token)
+    os.chmod(_GIT_CRED_PATH, 0o600)
+    # A tiny credential helper: any github.com prompt → x-access-token + the token.
+    helper = (
+        "#!/bin/sh\n"
+        'test "$1" = get || exit 0\n'
+        'echo username=x-access-token\n'
+        f'echo "password=$(cat {_GIT_CRED_PATH})"\n'
+    )
+    with open(_GIT_CRED_HELPER, "w", encoding="utf-8") as f:
+        f.write(helper)
+    os.chmod(_GIT_CRED_HELPER, 0o700)
+    subprocess.run(
+        ["git", "config", "--global", "--replace-all", "credential.helper", _GIT_CRED_HELPER],
+        check=False,
+    )
+
+
+def _configure_git(github_token: str | None = None) -> None:
     # Session storage mounts under a uid that may differ from the runtime user,
     # so Git refuses to operate ("dubious ownership"). Trust the workspace tree.
     subprocess.run(
@@ -628,23 +661,21 @@ def _configure_git() -> None:
         ["git", "config", "--global", "--add", "safe.directory", "*"],
         check=False,
     )
-    pat = os.environ.get("GITHUB_PAT")
-    if not pat:
-        return
-    subprocess.run(
-        ["git", "config", "--global",
-         f"url.https://x-access-token:{pat}@github.com/.insteadOf",
-         "https://github.com/"],
-        check=False,
-    )
     subprocess.run(["git", "config", "--global", "user.email",
                     os.environ.get("GIT_AUTHOR_EMAIL", "agent@ember.example.com")], check=False)
     subprocess.run(["git", "config", "--global", "user.name",
                     os.environ.get("GIT_AUTHOR_NAME", "AgentCore Hub Agent")], check=False)
-    # Expose the PAT to the GitHub CLI so the agent can enumerate/inspect repos
-    # (e.g. `gh repo list`, `gh api`) — not just clone a known URL.
-    os.environ.setdefault("GH_TOKEN", pat)
-    os.environ.setdefault("GITHUB_TOKEN", pat)
+    # Token source: the hub's short-lived GitHub App token (per turn) wins; the
+    # long-lived GITHUB_PAT env is the personal-deploy fallback.
+    token = github_token or os.environ.get("GITHUB_PAT")
+    if not token:
+        return
+    _write_git_credential_helper(token)
+    # Expose the token to the GitHub CLI so the agent can enumerate/inspect repos
+    # (e.g. `gh repo list`, `gh api`) — not just clone a known URL. Set (not
+    # setdefault) so a fresh per-turn App token overrides a stale one.
+    os.environ["GH_TOKEN"] = token
+    os.environ["GITHUB_TOKEN"] = token
 
 
 def _valid_repo(repo: str) -> bool:
@@ -2138,6 +2169,9 @@ async def invocations(request: Request):
     # the user uploaded in the composer. Downloaded into .ember/artifacts/ and
     # appended to the prompt so the CLI can open them with its file tools.
     attachments = payload.get("attachments") or []
+    # Short-lived GitHub App clone token minted by the hub (falls back to the
+    # GITHUB_PAT env when absent). Never logged.
+    github_token = payload.get("github_token")
 
     # On resume, recover the repo the conversation was started in (so we land in
     # the same cwd Claude Code scoped the session to) when the caller omits it.
@@ -2207,7 +2241,7 @@ async def invocations(request: Request):
 
     # Workspace setup IS fatal — no workdir, no turn.
     try:
-        _configure_git()
+        _configure_git(github_token)
         # Self-contained: no origin — rebuild a standalone repo from the laptop's
         # `bundle --all` (the no-remote / not-a-repo port). The bundle IS the only
         # source of the code, so this replaces the clone entirely.

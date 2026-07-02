@@ -35,6 +35,84 @@ export function secretName(tenantId: string, userId: string, cli: EmberCli): str
   return `ember/t/${tenantId}/auth/${userId}/${cli}`;
 }
 
+// The GitHub App's credentials — a single deploy-level secret (the App is the
+// operator's, shared across tenants). Held ONLY in the hub; never sent to a
+// microVM. See github-app.ts.
+const GITHUB_APP_SECRET = "ember/github-app";
+const GITHUB_APP_S3_KEY = "ember/github-app.json";
+
+export interface GithubAppSecret {
+  appId: string;
+  privateKey: string;
+  slug?: string;
+  webhookSecret?: string;
+}
+
+/** Read the GitHub App config from the configured backend, or null if unset. */
+export async function getGithubAppConfig(): Promise<GithubAppSecret | null> {
+  // An explicit env override wins (useful for dev / single-deploy operators who
+  // prefer env to a stored secret). Newlines in the PEM are escaped as \n.
+  const envId = process.env.GITHUB_APP_ID;
+  const envKey = process.env.GITHUB_APP_PRIVATE_KEY;
+  if (envId && envKey) {
+    return { appId: envId, privateKey: envKey.replace(/\\n/g, "\n") };
+  }
+  try {
+    if (secretsBackend() === "secretsmanager") {
+      const { SecretsManagerClient, GetSecretValueCommand } = await import(
+        "@aws-sdk/client-secrets-manager"
+      );
+      const sm = new SecretsManagerClient({ region: REGION });
+      const resp = await sm.send(new GetSecretValueCommand({ SecretId: GITHUB_APP_SECRET }));
+      return resp.SecretString ? (JSON.parse(resp.SecretString) as GithubAppSecret) : null;
+    }
+    if (!ARTIFACT_BUCKET) return null;
+    const { S3Client, GetObjectCommand } = await import("@aws-sdk/client-s3");
+    const s3 = new S3Client({ region: REGION });
+    const obj = await s3.send(
+      new GetObjectCommand({ Bucket: ARTIFACT_BUCKET, Key: GITHUB_APP_S3_KEY })
+    );
+    const body = await obj.Body?.transformToString();
+    return body ? (JSON.parse(body) as GithubAppSecret) : null;
+  } catch {
+    // Missing/forbidden → App simply not configured (fall back to PAT).
+    return null;
+  }
+}
+
+/** Store the GitHub App config (operator setup / manifest callback). */
+export async function putGithubAppConfig(cfg: GithubAppSecret): Promise<void> {
+  const SecretString = JSON.stringify(cfg);
+  if (secretsBackend() === "secretsmanager") {
+    const { SecretsManagerClient, CreateSecretCommand, PutSecretValueCommand } = await import(
+      "@aws-sdk/client-secrets-manager"
+    );
+    const sm = new SecretsManagerClient({ region: REGION });
+    try {
+      await sm.send(new CreateSecretCommand({ Name: GITHUB_APP_SECRET, SecretString }));
+    } catch (e) {
+      if ((e as { name?: string }).name === "ResourceExistsException") {
+        await sm.send(new PutSecretValueCommand({ SecretId: GITHUB_APP_SECRET, SecretString }));
+      } else {
+        throw e;
+      }
+    }
+    return;
+  }
+  if (!ARTIFACT_BUCKET) throw new Error("ARTIFACT_BUCKET not configured");
+  const { S3Client, PutObjectCommand } = await import("@aws-sdk/client-s3");
+  const s3 = new S3Client({ region: REGION });
+  await s3.send(
+    new PutObjectCommand({
+      Bucket: ARTIFACT_BUCKET,
+      Key: GITHUB_APP_S3_KEY,
+      Body: SecretString,
+      ContentType: "application/json",
+      ServerSideEncryption: "AES256",
+    })
+  );
+}
+
 /** Store a credential. Returns nothing; throws on hard failure. */
 export async function putSecret(
   tenantId: string,

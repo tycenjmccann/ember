@@ -1,0 +1,222 @@
+/**
+ * Ember — GitHub App installation tokens.
+ *
+ * The safe replacement for the shared long-lived GITHUB_PAT. The App's private
+ * key lives ONLY here (the hub), in the secrets backend under `ember/github-app`;
+ * it NEVER enters the microVM. Per clone we sign a short-lived App JWT, exchange
+ * it for an installation access token (~1h, optionally scoped to specific repos),
+ * and hand THAT to the runtime in the invoke payload. The agent can only ever see
+ * the expiring, narrow token — not the master key.
+ *
+ * See docs/github-app-auth.md for the full design + trust boundary.
+ */
+
+import { SignJWT, importPKCS8 } from "jose";
+import { createPrivateKey } from "crypto";
+import { getGithubAppConfig } from "./secrets";
+import { getGithubConnection } from "./github-store";
+
+const GITHUB_API = process.env.GITHUB_API_URL || "https://api.github.com";
+
+export interface GithubAppConfig {
+  appId: string;
+  privateKey: string; // PEM (PKCS#8 or PKCS#1)
+}
+
+export interface InstallationToken {
+  token: string;
+  expiresAt: string; // ISO 8601
+}
+
+/** True when the App is configured (App ID + private key present in the backend). */
+let _configChecked = false;
+let _config: GithubAppConfig | null = null;
+
+async function loadConfig(): Promise<GithubAppConfig | null> {
+  if (_configChecked) return _config;
+  _config = await getGithubAppConfig();
+  _configChecked = true;
+  return _config;
+}
+
+export async function githubAppConfigured(): Promise<boolean> {
+  return Boolean(await loadConfig());
+}
+
+/** Invalidate the cached config (after an operator (re)creates the App). */
+export function resetGithubAppConfigCache(): void {
+  _configChecked = false;
+  _config = null;
+}
+
+// GitHub App JWTs live at most 10 min; use 9 to leave clock-skew margin. GitHub
+// also rejects an `iat` in the future, so back-date it 60s.
+async function appJwt(cfg: GithubAppConfig): Promise<string> {
+  // PKCS#1 ("BEGIN RSA PRIVATE KEY") isn't accepted by importPKCS8; GitHub hands
+  // out PKCS#1, so convert. jose only imports PKCS#8 — we normalize below.
+  const key = await importPrivateKey(cfg.privateKey);
+  const nowSec = Math.floor(Date.now() / 1000);
+  return new SignJWT({})
+    .setProtectedHeader({ alg: "RS256" })
+    .setIssuedAt(nowSec - 60)
+    .setExpirationTime(nowSec + 9 * 60)
+    .setIssuer(cfg.appId)
+    .sign(key);
+}
+
+// GitHub distributes the App key as PKCS#1 (`BEGIN RSA PRIVATE KEY`). jose's
+// importPKCS8 wants PKCS#8 (`BEGIN PRIVATE KEY`). Convert PKCS#1 → PKCS#8 via
+// Node's crypto so operators can paste the key exactly as GitHub gave it.
+async function importPrivateKey(pem: string) {
+  const normalized = pem.includes("BEGIN RSA PRIVATE KEY")
+    ? createPrivateKey(pem).export({ type: "pkcs8", format: "pem" }).toString()
+    : pem;
+  return importPKCS8(normalized, "RS256");
+}
+
+// Cache minted tokens per (installation + repo scope) until 5 min before expiry.
+// A warm session can fire many turns; minting each time would be needless GitHub
+// API load and latency.
+const REFRESH_MARGIN_MS = 5 * 60 * 1000;
+const _tokenCache = new Map<string, InstallationToken>();
+
+function cacheKey(installationId: string, repositories?: string[]): string {
+  return `${installationId}::${(repositories || []).slice().sort().join(",")}`;
+}
+
+/**
+ * Mint (or reuse a cached) installation access token. `repositories` (short
+ * names, e.g. ["ember"]) narrows the token to just those repos when provided; a
+ * whole-installation token is issued otherwise. Throws if the App isn't
+ * configured or GitHub rejects the request — callers fall back to GITHUB_PAT.
+ */
+export async function mintInstallationToken(
+  installationId: string,
+  repositories?: string[]
+): Promise<InstallationToken> {
+  const cfg = await loadConfig();
+  if (!cfg) throw new Error("GitHub App is not configured (ember/github-app secret missing)");
+
+  const ck = cacheKey(installationId, repositories);
+  const cached = _tokenCache.get(ck);
+  if (cached && Date.parse(cached.expiresAt) - Date.now() > REFRESH_MARGIN_MS) {
+    return cached;
+  }
+
+  const jwt = await appJwt(cfg);
+  const body: Record<string, unknown> = {};
+  if (repositories?.length) body.repositories = repositories;
+
+  const res = await fetch(`${GITHUB_API}/app/installations/${installationId}/access_tokens`, {
+    method: "POST",
+    headers: {
+      Authorization: `Bearer ${jwt}`,
+      Accept: "application/vnd.github+json",
+      "X-GitHub-Api-Version": "2022-11-28",
+      "Content-Type": "application/json",
+    },
+    body: Object.keys(body).length ? JSON.stringify(body) : undefined,
+  });
+
+  if (!res.ok) {
+    const text = await res.text().catch(() => "");
+    throw new Error(`installation token mint failed (${res.status}): ${text.slice(0, 200)}`);
+  }
+
+  const json = (await res.json()) as { token: string; expires_at: string };
+  const minted: InstallationToken = { token: json.token, expiresAt: json.expires_at };
+  _tokenCache.set(ck, minted);
+  return minted;
+}
+
+/**
+ * Best-effort clone token for a user's session. Returns undefined (never throws)
+ * when the App isn't configured, the user hasn't connected, or GitHub declines —
+ * the runtime then falls back to the GITHUB_PAT env path. `repo` scopes the token
+ * to just that repo when the install was a selective one.
+ */
+export async function cloneTokenForUser(
+  userId: string,
+  repo?: string
+): Promise<string | undefined> {
+  try {
+    if (!(await githubAppConfigured())) return undefined;
+    const conn = await getGithubConnection(userId);
+    if (!conn?.installationId) return undefined;
+    // Scope to the single repo when we can name it (owner/name → name). A
+    // whole-installation token otherwise (e.g. "list my repos" with no repo yet).
+    const shortName = repo?.split("/").filter(Boolean).pop();
+    const scope =
+      conn.repoSelection === "selected" && shortName ? [shortName] : undefined;
+    const { token } = await mintInstallationToken(conn.installationId, scope);
+    return token;
+  } catch {
+    return undefined;
+  }
+}
+
+/** Fetch an installation's account + repo-selection metadata (for the connect
+ *  callback). Uses the App JWT. Returns null on any failure. */
+export async function getInstallation(installationId: string): Promise<{
+  account?: string;
+  repoSelection?: "all" | "selected";
+} | null> {
+  try {
+    const cfg = await loadConfig();
+    if (!cfg) return null;
+    const jwt = await appJwt(cfg);
+    const res = await fetch(`${GITHUB_API}/app/installations/${installationId}`, {
+      headers: {
+        Authorization: `Bearer ${jwt}`,
+        Accept: "application/vnd.github+json",
+        "X-GitHub-Api-Version": "2022-11-28",
+      },
+    });
+    if (!res.ok) return null;
+    const json = (await res.json()) as {
+      account?: { login?: string };
+      repository_selection?: "all" | "selected";
+    };
+    return {
+      account: json.account?.login,
+      repoSelection: json.repository_selection,
+    };
+  } catch {
+    return null;
+  }
+}
+
+/** Exchange a manifest `code` for a created App's credentials (operator setup). */
+export async function exchangeManifestCode(code: string): Promise<{
+  appId: string;
+  privateKey: string;
+  slug: string;
+  htmlUrl: string;
+  webhookSecret?: string;
+}> {
+  const res = await fetch(`${GITHUB_API}/app-manifests/${encodeURIComponent(code)}/conversions`, {
+    method: "POST",
+    headers: {
+      Accept: "application/vnd.github+json",
+      "X-GitHub-Api-Version": "2022-11-28",
+    },
+  });
+  if (!res.ok) {
+    const text = await res.text().catch(() => "");
+    throw new Error(`manifest conversion failed (${res.status}): ${text.slice(0, 200)}`);
+  }
+  const json = (await res.json()) as {
+    id: number;
+    slug: string;
+    html_url: string;
+    pem: string;
+    webhook_secret?: string;
+  };
+  return {
+    appId: String(json.id),
+    privateKey: json.pem,
+    slug: json.slug,
+    htmlUrl: json.html_url,
+    webhookSecret: json.webhook_secret,
+  };
+}

@@ -93,6 +93,10 @@ export interface CodingTurnParams {
   // downloads them into the workspace's .ember/artifacts/ and appends their
   // on-disk paths to the prompt so the CLI can open them with its file tools.
   attachments?: string[];
+  // Short-lived GitHub App installation token for private clone/push, minted by
+  // the hub per turn. The runtime prefers it over the shared GITHUB_PAT env. Never
+  // logged; expires ~1h so leakage from a task is tightly bounded.
+  githubToken?: string;
 }
 
 function buildTurnPayload(params: CodingTurnParams): Record<string, unknown> {
@@ -118,6 +122,7 @@ function buildTurnPayload(params: CodingTurnParams): Record<string, unknown> {
   if (params.resumeBundleKey) payload.resume_bundle = params.resumeBundleKey;
   if (params.artifactPrefix) payload.artifact_prefix = params.artifactPrefix;
   if (params.attachments?.length) payload.attachments = params.attachments;
+  if (params.githubToken) payload.github_token = params.githubToken;
   return payload;
 }
 
@@ -233,6 +238,7 @@ export async function warmCodingSession(params: {
   configVersion?: string;
   region?: string;
   authMode?: EmberAuthMode;
+  githubToken?: string;
 }): Promise<{ resumeReady: boolean }> {
   const runtimeArn = await runtimeArnFor(params.tenantId);
   const region = params.region || REGION;
@@ -253,6 +259,7 @@ export async function warmCodingSession(params: {
   if (params.userId) payload.user_id = params.userId;
   if (params.configVersion) payload.config_version = params.configVersion;
   if (params.authMode) payload.auth_mode = params.authMode;
+  if (params.githubToken) payload.github_token = params.githubToken;
 
   const command = new InvokeAgentRuntimeCommand({
     agentRuntimeArn: runtimeArn,

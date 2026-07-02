@@ -152,8 +152,13 @@ needs `ec2:CreateSubnet`, `ec2:*NatGateway*`, `ec2:*RouteTable*`, `ec2:AllocateA
   on a private root dir — so a session can physically reach only its tenant's bytes.
 - Offboarding (`deploy/offboard-tenant.sh <id>`) removes users, purges sessions,
   deletes the tenant's secrets + S3 prefix, and tears down its silo.
-- **Still open:** short-lived, scoped GitHub tokens (GitHub App installation tokens)
-  instead of the single shared PAT.
+- **GitHub App installation tokens** *(shipped)* — short-lived (~1h), repo-scoped
+  clone tokens replace the single shared PAT. The App private key lives only in
+  the hub (`ember/github-app` secret); the microVM never sees it — each clone gets
+  a fresh minted token, materialized to tmpfs via a git credential helper (never
+  baked into `~/.gitconfig`). Users connect once ("Install & pick repos"); no
+  re-auth after. `GITHUB_PAT` remains the personal-deploy fallback. See
+  [github-app-auth.md](./github-app-auth.md).
 
 ### 4. Audit + observability  *(compliance)*
 - OTel → CloudWatch tracing already exists. Add an **immutable audit log** (every
