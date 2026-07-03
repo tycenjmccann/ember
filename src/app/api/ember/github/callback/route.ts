@@ -69,19 +69,24 @@ export async function GET(request: NextRequest) {
     // that they know it. `state` alone can't do this: during its lifetime a user
     // could start their own flow then swap in another org's installation id. With
     // OAuth-on-install, GitHub appends a `code`; we exchange it for a user token
-    // and confirm the installation is in THAT user's /user/installations. Only an
-    // App created before this change (no OAuth creds) falls back to state-only.
-    let verifiedAccount: string | undefined;
-    if (await githubAppHasOAuth()) {
-      if (!code) {
-        return NextResponse.redirect(`${back}?github=ownership_unverified`);
-      }
-      const owned = await verifyInstallationOwnership(code, installationId);
-      if (!owned) {
-        return NextResponse.redirect(`${back}?github=ownership_unverified`);
-      }
-      verifiedAccount = owned.login;
+    // and confirm the installation is in THAT user's /user/installations.
+    //
+    // Fail CLOSED: an App with no OAuth creds cannot prove ownership, so we refuse
+    // the connect rather than downgrade to state-only binding (which would let a
+    // user bind an installation id they merely know). The manifest flow always
+    // requests OAuth, so this only rejects a hand-created App missing client creds
+    // — the operator must add them (docs/github-app-auth.md) before users connect.
+    if (!(await githubAppHasOAuth())) {
+      return NextResponse.redirect(`${back}?github=oauth_required`);
     }
+    if (!code) {
+      return NextResponse.redirect(`${back}?github=ownership_unverified`);
+    }
+    const owned = await verifyInstallationOwnership(code, installationId);
+    if (!owned) {
+      return NextResponse.redirect(`${back}?github=ownership_unverified`);
+    }
+    const verifiedAccount: string | undefined = owned.login;
 
     const meta = await getInstallation(installationId);
     await putGithubConnection(
