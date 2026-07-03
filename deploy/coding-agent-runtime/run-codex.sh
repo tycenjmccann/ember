@@ -118,7 +118,11 @@ ATTEMPTS="${CODEX_ENGINE_RETRIES:-6}"
 TMP_OUT="$(mktemp)"
 for i in $(seq 1 "$ATTEMPTS"); do
   set +e
-  codex "$@" < /dev/null | tee "$TMP_OUT"
+  # `stdbuf -oL` line-buffers tee's stdout: without it tee block-buffers the pipe
+  # to the caller, so codex's per-step JSONL is held until exit and the streaming
+  # turn arrives all-at-once (defeating live progress + keep-alive). codex itself
+  # flushes each frame; only tee's pipe buffering needed loosening.
+  codex "$@" < /dev/null | stdbuf -oL tee "$TMP_OUT"
   rc=${PIPESTATUS[0]}
   set -e
   if [ "$rc" -eq 0 ] && ! grep -q "Engine not found" "$TMP_OUT"; then

@@ -105,6 +105,10 @@ CODEX_SUB_MODEL = os.environ.get("CODEX_SUB_MODEL", "gpt-5.1-codex")
 # the account default win (kiro's default is its own opus-class model).
 KIRO_MODEL = os.environ.get("KIRO_MODEL", "")
 
+# Strips ANSI escape / color sequences from a CLI's raw terminal output (kiro
+# prints its reply with them) so streamed SSE text renders clean in the browser.
+_ANSI_RE = re.compile(r"\x1b\[[0-9;?]*[ -/]*[@-~]")
+
 _CODING_PROC_NAMES = ("claude", "codex", "kiro", "kiro-cli", "node")
 COLLECTOR_BIN = "/usr/bin/otelcol-contrib"
 COLLECTOR_CFG = "/app/otel-collector-config.yaml"
@@ -1044,6 +1048,71 @@ def _install_resume_transcript(s3_key: str, session_id: str, workdir: str,
         return False
 
 
+def _sanitize_codex_rollout(raw: bytes) -> bytes:
+    """Make a laptop-recorded codex rollout safe to resume against Bedrock Mantle.
+
+    Codex records reasoning items with provider-bound `encrypted_content`. A
+    rollout recorded on a laptop (model_provider "openai") carries OpenAI-encrypted
+    blobs; replaying them to Mantle's Responses API fails hard with
+    `validation_error: encrypted content missing recognized prefix (expected
+    rsn_/smry_)` — codex exits 1 and the whole resume dies. We drop reasoning items
+    whose encrypted blob doesn't carry a Mantle-recognized prefix (portable ones,
+    e.g. a prior cloud turn's rsn_/smry_ content, are kept).
+
+    We also drop a trailing unpaired `function_call` (no matching
+    function_call_output) — the port tool-call is often the last row the laptop
+    wrote before shipping, and the Responses API rejects a dangling call on replay.
+
+    Cross-provider only: the pristine S3 copy is untouched, so a pull-home resume
+    against the laptop's own OpenAI key still has its native encrypted reasoning."""
+    lines = raw.split(b"\n")
+    parsed: list[tuple[bytes, dict | None]] = []
+    output_ids: set[str] = set()
+    for ln in lines:
+        s = ln.strip()
+        if not s:
+            parsed.append((ln, None)); continue
+        try:
+            obj = json.loads(s)
+        except Exception:  # noqa: BLE001 — keep non-JSON lines verbatim
+            parsed.append((ln, None)); continue
+        parsed.append((ln, obj))
+        p = obj.get("payload") or {}
+        if obj.get("type") == "response_item" and p.get("type") == "function_call_output":
+            cid = p.get("call_id")
+            if cid:
+                output_ids.add(cid)
+
+    def _encrypted_portable(p: dict) -> bool:
+        blobs: list[str] = []
+        if p.get("encrypted_content"):
+            blobs.append(p["encrypted_content"])
+        for c in (p.get("content") or []):
+            if isinstance(c, dict) and c.get("encrypted_content"):
+                blobs.append(c["encrypted_content"])
+        if not blobs:
+            return True  # no encrypted payload → nothing provider-bound to reject
+        return all(str(b).startswith(("rsn_", "smry_")) for b in blobs)
+
+    kept: list[bytes] = []
+    dropped_reasoning = dropped_calls = 0
+    for ln, obj in parsed:
+        if obj and obj.get("type") == "response_item":
+            p = obj.get("payload") or {}
+            t = p.get("type")
+            if t == "reasoning" and not _encrypted_portable(p):
+                dropped_reasoning += 1; continue
+            if t == "function_call" and p.get("call_id") not in output_ids:
+                dropped_calls += 1; continue
+        kept.append(ln)
+
+    if not (dropped_reasoning or dropped_calls):
+        return raw
+    logger.info("codex_rollout_sanitized",
+                extra={"dropped_reasoning": dropped_reasoning, "dropped_calls": dropped_calls})
+    return b"\n".join(kept)
+
+
 def _install_codex_resume_transcript(s3_key: str, session_id: str,
                                      codex_home: str | None = None) -> bool:
     """Codex analog of _install_resume_transcript. Download a ported codex rollout
@@ -1054,6 +1123,10 @@ def _install_codex_resume_transcript(s3_key: str, session_id: str,
     need the original YYYY/MM/DD path. Idempotent: if a rollout for this uuid is
     already present (e.g. a prior turn grew it), keep that grown copy.
 
+    The downloaded bytes are sanitized (_sanitize_codex_rollout) before landing on
+    disk: a laptop-recorded rollout's OpenAI-encrypted reasoning would otherwise
+    make the first Mantle resume fail with a validation_error.
+
     codex_home is the PER-SESSION home (_codex_home_for) so two Ember sessions
     resuming the same uuid don't share one rollout."""
     home = codex_home or CODEX_HOME
@@ -1061,7 +1134,22 @@ def _install_codex_resume_transcript(s3_key: str, session_id: str,
         return False
     existing = _find_codex_rollout(session_id, home)
     if existing:
-        return True  # already on disk (possibly grown by a prior cloud turn)
+        # Already on disk (possibly grown by a prior cloud turn). Self-heal a
+        # rollout installed before the sanitizer existed: re-sanitize in place so
+        # a session poisoned by a pre-fix warm can resume. No-op once clean (the
+        # sanitizer returns the bytes unchanged), and portable rsn_/smry_ reasoning
+        # a cloud turn added is preserved.
+        try:
+            with open(existing, "rb") as f:
+                cur = f.read()
+            fixed = _sanitize_codex_rollout(cur)
+            if fixed != cur:
+                with open(existing, "wb") as f:
+                    f.write(fixed)
+                logger.info("codex_rollout_resanitized", extra={"session": session_id})
+        except Exception as exc:  # noqa: BLE001 — non-fatal
+            logger.warning("codex_rollout_resanitize_failed", extra={"error": str(exc)[:200]})
+        return True
     # Codex locates a session by parsing BOTH a timestamp and the uuid out of the
     # filename (rollout-<YYYY-MM-DDThh-mm-ss>-<uuid>.jsonl), so the name must match
     # that shape or the scan skips it. Place it under today's YYYY/MM/DD like codex
@@ -1076,7 +1164,7 @@ def _install_codex_resume_transcript(s3_key: str, session_id: str,
         s3 = boto3.client("s3", region_name=os.environ.get("AWS_REGION", "us-east-1"))
         obj = s3.get_object(Bucket=ARTIFACT_BUCKET, Key=s3_key)
         with open(dest, "wb") as f:
-            f.write(obj["Body"].read())
+            f.write(_sanitize_codex_rollout(obj["Body"].read()))
         logger.info("codex_resume_transcript_installed", extra={"session": session_id})
         return True
     except Exception as exc:  # noqa: BLE001 — non-fatal; fall back to a cold turn
@@ -1952,7 +2040,21 @@ def _run_codex(prompt: str, workdir: str, codex_session_id: str | None,
     proc = subprocess.run(args, cwd=workdir, env=env, capture_output=True,
                           text=True, timeout=TURN_TIMEOUT_S, stdin=subprocess.DEVNULL)
     if proc.returncode != 0:
-        raise RuntimeError(f"codex exited {proc.returncode}: {proc.stderr.strip()[:600]}")
+        # codex exec --json writes its real failure to STDOUT (a {"type":"error"}
+        # / {"type":"turn.failed"} JSONL frame), not stderr — stderr only carries
+        # run-codex.sh's banner. Surface the last error frame so the turn error is
+        # diagnosable instead of an opaque "codex exited 1: <banner>".
+        detail = ""
+        for line in reversed(proc.stdout.splitlines()):
+            try:
+                o = json.loads(line)
+            except json.JSONDecodeError:
+                continue
+            if o.get("type") in ("error", "turn.failed"):
+                detail = str(o.get("message") or (o.get("error") or {}).get("message") or "")[:400]
+                break
+        banner = proc.stderr.strip()[:200]
+        raise RuntimeError(f"codex exited {proc.returncode}: {detail or banner}")
     # codex exec --json emits JSONL. Pull the thread_id (resume handle) and the
     # final assistant text. New shape:
     #   {"type":"thread.started","thread_id":"..."}
@@ -1977,6 +2079,161 @@ def _run_codex(prompt: str, workdir: str, codex_session_id: str | None,
     if not found_text:
         text = proc.stdout.strip()
     return {"response": text, "claude_session_id": thread_id}
+
+
+def _stream_codex(prompt: str, workdir: str, codex_session_id: str | None,
+                  repo: str | None = None, auth_mode: str = "bedrock",
+                  user_id: str | None = None, runtime_session_id: str | None = None,
+                  tenant_id: str | None = None, codex_home: str | None = None):
+    """Generator yielding SSE lines for a Codex turn as it runs.
+
+    codex exec --json emits per-STEP JSONL (not token deltas): thread.started,
+    item.started/completed (command_execution, reasoning, agent_message), and a
+    final turn.completed/turn.failed. We map those to the same {type:text|done|
+    error} SSE frames _stream_claude uses:
+      • agent_message text            → 'text' (the reply itself)
+      • command_execution / reasoning → 'text' as a dim status line so the user
+                                        sees live progress instead of a spinner
+      • turn.completed                → 'done' carrying the full reply + thread_id
+    Streaming also keeps the connection alive, so a long codex turn no longer
+    trips the front-end proxy's idle timeout (the old buffered-path failure)."""
+    def sse(obj: dict) -> str:
+        return f"data: {json.dumps(obj)}\n\n"
+
+    env = {**os.environ, "WORKSPACE_DIR": workdir}
+    if codex_home:
+        env["CODEX_HOME"] = codex_home
+    if auth_mode == "subscription":
+        if not _materialize_codex_auth(user_id, tenant_id):
+            exc = ("subscription mode selected but no Codex auth uploaded — "
+                   "run the login step (codex login) on your laptop first")
+            yield sse({"type": "error", "error": exc})
+            yield sse({"type": "done", "response": f"⚠ {exc}", "claude_session_id": codex_session_id})
+            return
+        env["CODEX_AUTH_MODE"] = "subscription"
+        env["CODEX_SUB_MODEL"] = CODEX_SUB_MODEL
+    args = ["/app/run-codex.sh", prompt]
+    if codex_session_id:
+        args.append(codex_session_id)
+
+    proc = subprocess.Popen(args, cwd=workdir, env=env, stdout=subprocess.PIPE,
+                            stderr=subprocess.PIPE, text=True, stdin=subprocess.DEVNULL, bufsize=1)
+    thread_id: str | None = codex_session_id
+    reply_parts: list[str] = []          # only agent_message text = the actual reply
+    emitted_any_reply = False            # did we stream reply text (vs only status)?
+    fail_detail: str | None = None
+    try:
+        for line in proc.stdout:  # line-buffered: yields as codex emits each frame
+            line = line.strip()
+            if not line:
+                continue
+            try:
+                obj = json.loads(line)
+            except json.JSONDecodeError:
+                continue
+            t = obj.get("type")
+            if t == "thread.started" and obj.get("thread_id"):
+                thread_id = obj["thread_id"]
+                continue
+            if t in ("error", "turn.failed"):
+                fail_detail = str(obj.get("message") or (obj.get("error") or {}).get("message") or "")[:400]
+                continue
+            # item.started/completed carry the step payload (older builds: msg).
+            item = obj.get("item") or obj.get("msg") or {}
+            itype = item.get("type")
+            if itype == "agent_message":
+                # The reply. completed frame has the whole message; stream it once.
+                if t == "item.completed":
+                    msg = item.get("text") or item.get("message") or ""
+                    if msg:
+                        reply_parts.append(msg)
+                        emitted_any_reply = True
+                        yield sse({"type": "text", "text": msg})
+            elif itype == "command_execution" and t == "item.started":
+                cmd = str(item.get("command") or "").strip()
+                if cmd:
+                    yield sse({"type": "text", "text": f"\n`$ {cmd[:200]}`\n"})
+            elif itype == "reasoning" and t == "item.completed":
+                note = str(item.get("text") or "").strip()
+                if note:
+                    yield sse({"type": "text", "text": f"\n_{note[:300]}_\n"})
+        proc.wait(timeout=30)
+    except Exception as exc:  # noqa: BLE001
+        yield sse({"type": "error", "error": str(exc)[:600]})
+        return
+    if proc.returncode not in (0, None) or fail_detail:
+        banner = ((proc.stderr.read() or "")[:200] if proc.stderr else "")
+        err = fail_detail or banner or f"codex exited {proc.returncode}"
+        yield sse({"type": "error", "error": f"codex: {err}"})
+        yield sse({"type": "done", "response": f"⚠ codex: {err}",
+                   "claude_session_id": thread_id})
+        return
+    _remember_session(thread_id, repo)
+    if thread_id:
+        _write_resume_launch_hint(workdir, thread_id, runtime_session_id,
+                                  cli="codex", codex_home=codex_home)
+    yield sse({"type": "done",
+               "response": "".join(reply_parts) if emitted_any_reply else "",
+               "claude_session_id": thread_id})
+
+
+def _stream_kiro(prompt: str, workdir: str, kiro_session_id: str | None,
+                 repo: str | None = None, user_id: str | None = None,
+                 runtime_session_id: str | None = None, tenant_id: str | None = None,
+                 kiro_home: str | None = None):
+    """Generator yielding SSE lines for a Kiro turn as it runs.
+
+    Kiro chat has no JSON event stream — it prints the reply to stdout as it
+    generates. We strip ANSI, stream stdout line-by-line as 'text' frames (live
+    output, no buffering → no proxy idle-timeout), then learn the conversation
+    id from the newest conversations_v2 row and emit the terminal 'done'."""
+    def sse(obj: dict) -> str:
+        return f"data: {json.dumps(obj)}\n\n"
+
+    cred = _fetch_subscription_cred(user_id, "kiro", tenant_id) or {}
+    api_key = cred.get("token") or cred.get("api_key") or cred.get("access_key")
+    if not api_key:
+        exc = ("no Kiro access key uploaded — run the login step on your laptop "
+               "(login_cli kiro). Kiro has no Bedrock fallback.")
+        yield sse({"type": "error", "error": exc})
+        yield sse({"type": "done", "response": f"⚠ {exc}", "claude_session_id": kiro_session_id})
+        return
+    home = kiro_home or KIRO_HOME
+    os.makedirs(home, exist_ok=True)
+    env = {**os.environ, "KIRO_HOME": home, "XDG_DATA_HOME": home, "KIRO_API_KEY": api_key}
+
+    args = ["kiro-cli", "chat", "--no-interactive", "--trust-all-tools"]
+    if KIRO_MODEL:
+        args += ["--model", KIRO_MODEL]
+    if kiro_session_id:
+        args += ["--resume-id", kiro_session_id]
+    args.append(prompt)
+
+    proc = subprocess.Popen(args, cwd=workdir, env=env, stdout=subprocess.PIPE,
+                            stderr=subprocess.PIPE, text=True, stdin=subprocess.DEVNULL, bufsize=1)
+    full_text: list[str] = []
+    try:
+        for line in proc.stdout:
+            clean = _ANSI_RE.sub("", line)
+            if not clean.strip():
+                continue
+            full_text.append(clean)
+            yield sse({"type": "text", "text": clean})
+        proc.wait(timeout=30)
+    except Exception as exc:  # noqa: BLE001
+        yield sse({"type": "error", "error": str(exc)[:600]})
+        return
+    if proc.returncode not in (0, None):
+        err = ((proc.stderr.read() or "")[:400] if proc.stderr else "") or f"kiro exited {proc.returncode}"
+        yield sse({"type": "error", "error": f"kiro: {err}"})
+        yield sse({"type": "done", "response": f"⚠ kiro: {err}", "claude_session_id": kiro_session_id})
+        return
+    conv_id = kiro_session_id or _kiro_newest_id(workdir, home)
+    if conv_id:
+        _write_resume_launch_hint(workdir, conv_id, runtime_session_id,
+                                  cli="kiro", kiro_home=kiro_home)
+    yield sse({"type": "done", "response": "".join(full_text).strip(),
+               "claude_session_id": conv_id})
 
 
 def _run_kiro(prompt: str, workdir: str, kiro_session_id: str | None,
@@ -2345,13 +2602,21 @@ async def invocations(request: Request):
         # seed into a bare shell; leave it pending for a retry).
         return JSONResponse({"warmed": True, "workspace": workdir, "cli": cli, "resume_ready": resume_ready})
 
-    # Streaming path (claude): yield SSE as the turn runs. The runtime forwards
+    # Streaming path (all CLIs): yield SSE as the turn runs. The runtime forwards
     # an async/sync generator response as text/event-stream through InvokeAgentRuntime.
-    if stream and cli == "claude":
-        return StreamingResponse(
-            _stream_claude(prompt, workdir, claude_session_id, repo, auth_mode, user_id, session_id, tenant_id),
-            media_type="text/event-stream",
-        )
+    # Each generator maps its CLI's live output to the same {type:text|done|error}
+    # frames; streaming also keeps the connection alive past the front-end proxy's
+    # idle timeout (the old buffered-codex "upstream request timeout" failure).
+    if stream:
+        gen = None
+        if cli == "claude":
+            gen = _stream_claude(prompt, workdir, claude_session_id, repo, auth_mode, user_id, session_id, tenant_id)
+        elif cli == "codex":
+            gen = _stream_codex(prompt, workdir, claude_session_id, repo, auth_mode, user_id, session_id, tenant_id, codex_home)
+        elif cli == "kiro":
+            gen = _stream_kiro(prompt, workdir, claude_session_id, repo, user_id, session_id, tenant_id, kiro_home)
+        if gen is not None:
+            return StreamingResponse(gen, media_type="text/event-stream")
 
     try:
         if cli == "codex":
