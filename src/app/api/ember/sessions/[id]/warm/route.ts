@@ -13,6 +13,7 @@ import { getOwnedSession, DEFAULT_USER_ID } from "@/lib/ember/sessions";
 import { getIdentity } from "@/lib/ember/identity";
 import { warmCodingSession, codingRuntimeConfigured } from "@/lib/ember/runtime";
 import { currentConfigVersion } from "@/lib/ember/config-store";
+import { cloneTokenForUser } from "@/lib/ember/github-app";
 
 export const dynamic = "force-dynamic";
 export const maxDuration = 120;
@@ -24,7 +25,7 @@ export async function POST(
   if (!codingRuntimeConfigured()) {
     return NextResponse.json({ error: "Coding runtime not configured" }, { status: 503 });
   }
-  const { tenantId } = getIdentity(request);
+  const { userId: requesterId, tenantId } = getIdentity(request);
   const session = await getOwnedSession(params.id, tenantId);
   if (!session) {
     return NextResponse.json({ error: "Session not found" }, { status: 404 });
@@ -37,6 +38,9 @@ export async function POST(
   const region = request.nextUrl.searchParams.get("region") || undefined;
   const userId = session.userId || DEFAULT_USER_ID;
   const configVersion = await currentConfigVersion(userId);
+  // Bind to the verified requester, not the creator — shared tenant sessions.
+  const { token: githubToken, connected: githubAppConnected } =
+    await cloneTokenForUser(requesterId, session.repo ?? session.cloneUrl);
   try {
     await warmCodingSession({
       sessionId: session.sessionId,
@@ -54,6 +58,8 @@ export async function POST(
       configVersion,
       region,
       authMode: session.authMode,
+      githubToken,
+      githubAppConnected,
     });
     return NextResponse.json({ warmed: true });
   } catch (err) {

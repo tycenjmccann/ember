@@ -13,6 +13,7 @@ import { getOwnedSession, putSession, DEFAULT_USER_ID } from "@/lib/ember/sessio
 import { getIdentity } from "@/lib/ember/identity";
 import { artifactPrefix } from "@/lib/ember/s3keys";
 import { invokeCodingTurn, invokeCodingTurnStream, codingRuntimeConfigured } from "@/lib/ember/runtime";
+import { cloneTokenForUser } from "@/lib/ember/github-app";
 import { currentConfigVersion } from "@/lib/ember/config-store";
 import { sseData } from "@/lib/sse";
 import type { EmberTurn } from "@/lib/ember/types";
@@ -32,7 +33,7 @@ export async function POST(
     );
   }
 
-  const { tenantId } = getIdentity(request);
+  const { userId: requesterId, tenantId } = getIdentity(request);
   const session = await getOwnedSession(params.id, tenantId);
   if (!session) {
     return NextResponse.json({ error: "Session not found" }, { status: 404 });
@@ -115,6 +116,18 @@ export async function POST(
   // the runtime's restore is marker-guarded + no-ops when the prefix is empty.
   const sessionArtifactPrefix = artifactPrefix(tenantId, session.sessionId);
 
+  // Short-lived GitHub App clone token (undefined if the App isn't configured or
+  // the user hasn't connected — the runtime falls back to GITHUB_PAT). Minted per
+  // turn so an expiry never strands a warm session.
+  //
+  // Bound to the VERIFIED REQUESTER, never session.userId: tenant sessions are
+  // shared (getOwnedSession only checks the tenant boundary), so minting off the
+  // creator's installation would hand a coworker the creator's repo access. Each
+  // turn clones with the token of whoever actually sent it. `connected` tells the
+  // runtime NOT to fall back to GITHUB_PAT when a connected user's mint is denied.
+  const { token: githubToken, connected: githubAppConnected } =
+    await cloneTokenForUser(requesterId, session.repo ?? session.cloneUrl);
+
   // ── Streaming path (all CLIs): relay SSE, persist on the terminal 'done' frame.
   if (wantStream) {
     let upstream: ReadableStream<Uint8Array>;
@@ -122,7 +135,7 @@ export async function POST(
       upstream = await invokeCodingTurnStream({
         sessionId: session.sessionId, prompt, cli: session.cli, repo: session.repo,
         claudeSessionId: session.claudeSessionId, userId, tenantId, configVersion, region,
-        authMode: session.authMode, attachments, artifactPrefix: sessionArtifactPrefix, ...resumeFields,
+        authMode: session.authMode, attachments, artifactPrefix: sessionArtifactPrefix, githubToken, githubAppConnected, ...resumeFields,
       });
     } catch (err) {
       return NextResponse.json({ error: (err as Error).message }, { status: 502 });
@@ -192,7 +205,7 @@ export async function POST(
     const result = await invokeCodingTurn({
       sessionId: session.sessionId, prompt, cli: session.cli, repo: session.repo,
       claudeSessionId: session.claudeSessionId, userId, tenantId, configVersion, region,
-      authMode: session.authMode, attachments, artifactPrefix: sessionArtifactPrefix, ...resumeFields,
+      authMode: session.authMode, attachments, artifactPrefix: sessionArtifactPrefix, githubToken, githubAppConnected, ...resumeFields,
     });
 
     const agentTurn: EmberTurn = { role: "agent", text: result.response, at: new Date().toISOString() };

@@ -620,7 +620,107 @@ def _slugify_repo(repo: str) -> str:
     return re.sub(r"[^A-Za-z0-9._-]", "-", slug) or "default"
 
 
-def _configure_git() -> None:
+# Where the GitHub token is materialized for git's credential helper. tmpfs
+# (RAM-backed, non-persistent), same dir as the subscription creds — never the
+# shared EFS, and never baked into ~/.gitconfig where a task could `cat` it.
+_GIT_CRED_PATH = os.path.join(EPHEMERAL_CREDS_DIR, "github")
+_GIT_CRED_HELPER = os.path.join(EPHEMERAL_CREDS_DIR, "git-cred-helper.sh")
+
+# Personal-deploy PAT fallback, captured ONCE at import and REMOVED from the live
+# process env. Two reasons the raw env var must not survive:
+#   1. Every agent subprocess env is built from os.environ (env={**os.environ,…})
+#      — a task could `echo $GITHUB_PAT`.
+#   2. _export_runtime_env writes it to .runtime-env.sh, which the PTY sources.
+# Stripping it here means the broad PAT reaches NEITHER surface; only
+# _configure_git re-materializes it, and only for users with no App connection
+# (App-connected users stay fenced to their selected-repo scope). The App private
+# key never lived here at all — this is only the legacy shared PAT.
+_GITHUB_PAT_FALLBACK = os.environ.pop("GITHUB_PAT", None)
+
+
+def _write_git_credential_helper(token: str) -> None:
+    """Materialize the token to tmpfs and point git at a helper that reads it.
+
+    Keeps the secret OUT of ~/.gitconfig (a static, world-readable-to-the-agent
+    file). The helper answers ONLY for github.com and never persists the value —
+    git invokes it per fetch/push, passing the request's protocol/host on stdin.
+
+    The host guard matters: a bare `credential.helper` is consulted for EVERY
+    host, so without it git would offer the GitHub token to any HTTPS remote a
+    task cloned (e.g. an attacker-controlled `evil.test`). We parse stdin and
+    reply only when protocol=https AND host=github.com."""
+    os.makedirs(EPHEMERAL_CREDS_DIR, exist_ok=True)
+    with open(_GIT_CRED_PATH, "w", encoding="utf-8") as f:
+        f.write(token)
+    os.chmod(_GIT_CRED_PATH, 0o600)
+    # Read the key=value request off stdin; only emit creds for https github.com.
+    helper = (
+        "#!/bin/sh\n"
+        'test "$1" = get || exit 0\n'
+        "proto=; host=\n"
+        'while IFS="=" read -r k v; do\n'
+        '  [ -z "$k" ] && break\n'
+        '  case "$k" in protocol) proto=$v ;; host) host=$v ;; esac\n'
+        "done\n"
+        '{ [ "$proto" = https ] && [ "$host" = github.com ]; } || exit 0\n'
+        "echo username=x-access-token\n"
+        f'echo "password=$(cat {_GIT_CRED_PATH})"\n'
+    )
+    with open(_GIT_CRED_HELPER, "w", encoding="utf-8") as f:
+        f.write(helper)
+    os.chmod(_GIT_CRED_HELPER, 0o700)
+    # Bind under credential.https://github.com.* too, so the helper is not even
+    # consulted for other hosts (defense in depth atop the in-helper host check).
+    subprocess.run(
+        ["git", "config", "--global", "--replace-all",
+         "credential.https://github.com.helper", _GIT_CRED_HELPER],
+        check=False,
+    )
+
+
+def _clear_git_credential_helper() -> None:
+    """Remove any GitHub token this runtime materialized on a prior turn.
+
+    A warm runtime is reused across turns and users. If an earlier turn wrote an
+    App token but the current turn has none (user disconnected GitHub, or minting
+    failed), leaving the helper + tmpfs token + GH_TOKEN in place would let the
+    agent keep using the stale installation token until it expired. Wipe them."""
+    subprocess.run(
+        ["git", "config", "--global", "--unset-all", "credential.https://github.com.helper"],
+        check=False,
+    )
+    _clear_insteadof_pat_rewrite()
+    for path in (_GIT_CRED_PATH, _GIT_CRED_HELPER):
+        try:
+            os.remove(path)
+        except FileNotFoundError:
+            pass
+    os.environ.pop("GH_TOKEN", None)
+    os.environ.pop("GITHUB_TOKEN", None)
+
+
+def _clear_insteadof_pat_rewrite() -> None:
+    """Drop any `url.https://x-access-token:*@github.com/.insteadOf` entry.
+
+    Older builds (and the shell/codex launchers when GITHUB_PAT is set) rewrite
+    every `https://github.com/...` to a PAT-bearing URL. That rewrite happens
+    BEFORE git's credential lookup, so it silently overrides our credential
+    helper — a clone would keep using the long-lived PAT even when a short-lived
+    App token was minted. Remove the whole url.*insteadOf subsection so the
+    helper is the only auth path."""
+    # Enumerate matching keys, then unset each (git has no wildcard unset).
+    res = subprocess.run(
+        ["git", "config", "--global", "--get-regexp",
+         r"^url\..*x-access-token.*\.insteadof$"],
+        capture_output=True, text=True, check=False,
+    )
+    for line in res.stdout.splitlines():
+        key = line.split(" ", 1)[0].strip()
+        if key:
+            subprocess.run(["git", "config", "--global", "--unset-all", key], check=False)
+
+
+def _configure_git(github_token: str | None = None, app_connected: bool = False) -> None:
     # Session storage mounts under a uid that may differ from the runtime user,
     # so Git refuses to operate ("dubious ownership"). Trust the workspace tree.
     subprocess.run(
@@ -632,23 +732,36 @@ def _configure_git() -> None:
         ["git", "config", "--global", "--add", "safe.directory", "*"],
         check=False,
     )
-    pat = os.environ.get("GITHUB_PAT")
-    if not pat:
-        return
-    subprocess.run(
-        ["git", "config", "--global",
-         f"url.https://x-access-token:{pat}@github.com/.insteadOf",
-         "https://github.com/"],
-        check=False,
-    )
     subprocess.run(["git", "config", "--global", "user.email",
                     os.environ.get("GIT_AUTHOR_EMAIL", "agent@ember.example.com")], check=False)
     subprocess.run(["git", "config", "--global", "user.name",
                     os.environ.get("GIT_AUTHOR_NAME", "AgentCore Hub Agent")], check=False)
-    # Expose the PAT to the GitHub CLI so the agent can enumerate/inspect repos
-    # (e.g. `gh repo list`, `gh api`) — not just clone a known URL.
-    os.environ.setdefault("GH_TOKEN", pat)
-    os.environ.setdefault("GITHUB_TOKEN", pat)
+    # Always clear any legacy PAT insteadOf rewrite: it would override the
+    # credential helper and re-expose the long-lived PAT even when we mint a
+    # short-lived token below.
+    _clear_insteadof_pat_rewrite()
+    # Token source: the hub's short-lived GitHub App token (per turn) wins. The
+    # long-lived PAT is the personal-deploy fallback — read from the boot-captured
+    # constant (NEVER os.environ; see _GITHUB_PAT_FALLBACK) and ONLY for users with
+    # no GitHub App connection. A CONNECTED user whose scoped mint was denied must
+    # NOT get the operator's broad PAT — that bypasses their selected-repo scope.
+    # Because the raw PAT was stripped from the process env at boot, a connected
+    # user can't reach it via a subprocess env or the PTY either — only this
+    # function re-materializes it, and only for unconnected users.
+    token = github_token
+    if not token and not app_connected:
+        token = _GITHUB_PAT_FALLBACK
+    if not token:
+        # No usable token — scrub any the prior turn left on this warm runtime so
+        # a stale/expired token (or the PAT) can't linger.
+        _clear_git_credential_helper()
+        return
+    _write_git_credential_helper(token)
+    # Expose the token to the GitHub CLI so the agent can enumerate/inspect repos
+    # (e.g. `gh repo list`, `gh api`) — not just clone a known URL. Set (not
+    # setdefault) so a fresh per-turn App token overrides a stale one.
+    os.environ["GH_TOKEN"] = token
+    os.environ["GITHUB_TOKEN"] = token
 
 
 def _valid_repo(repo: str) -> bool:
@@ -2395,6 +2508,13 @@ async def invocations(request: Request):
     # the user uploaded in the composer. Downloaded into .ember/artifacts/ and
     # appended to the prompt so the CLI can open them with its file tools.
     attachments = payload.get("attachments") or []
+    # Short-lived GitHub App clone token minted by the hub (falls back to the
+    # GITHUB_PAT env when absent AND the user isn't App-connected). Never logged.
+    github_token = payload.get("github_token")
+    # True when the requester has a GitHub App installation. If set, a missing
+    # token means the scoped mint was DENIED — do not fall back to GITHUB_PAT
+    # (would escalate past the user's App scope). See _configure_git.
+    github_app_connected = bool(payload.get("github_app_connected"))
 
     # On resume, recover the repo the conversation was started in (so we land in
     # the same cwd Claude Code scoped the session to) when the caller omits it.
@@ -2445,6 +2565,12 @@ async def invocations(request: Request):
     # success/failure but always 200 so the /shell best-effort caller never errors
     # (a stale-mount VM will be replaced; the next turn retries).
     if prepare:
+        # A terminal-only session reaches the VM ONLY through prepare (no chat turn
+        # runs _configure_git), so install/refresh/clear the GitHub credential
+        # helper here too — otherwise Terminal `git`/`gh` on a private repo has no
+        # App token, or keeps a prior turn's stale/expired one. Passing None (user
+        # disconnected / mint failed) scrubs it.
+        _configure_git(github_token, app_connected=github_app_connected)
         # A kiro session opened straight in Terminal (no headless turn / ported
         # transcript yet) returns here before any _write_resume_launch_hint call,
         # so the PTY would fall back to the shared deploy-default KIRO_HOME and put
@@ -2464,7 +2590,7 @@ async def invocations(request: Request):
 
     # Workspace setup IS fatal — no workdir, no turn.
     try:
-        _configure_git()
+        _configure_git(github_token, app_connected=github_app_connected)
         # Self-contained: no origin — rebuild a standalone repo from the laptop's
         # `bundle --all` (the no-remote / not-a-repo port). The bundle IS the only
         # source of the code, so this replaces the clone entirely.
@@ -2657,8 +2783,13 @@ async def invocations(request: Request):
 def _export_runtime_env() -> None:
     """Persist AgentCore-injected env vars to a file the interactive PTY shell
     can source. The PTY spawns as a fresh process that does NOT inherit this
-    server process's environment, so GITHUB_PAT / model ids / bucket would be
-    empty in the Terminal tab. shell-init.sh sources this file.
+    server process's environment, so model ids / bucket would be empty in the
+    Terminal tab. shell-init.sh sources this file.
+
+    GITHUB_PAT is deliberately NOT exported: it was stripped from the process env
+    at import (_GITHUB_PAT_FALLBACK) so it can't leak to the PTY or agent
+    subprocesses. Terminal git/gh authenticates via the tmpfs token the server
+    materializes per session instead (shell-init.sh reads $creds_dir/github).
 
     The EFS mount can lag the server's startup by a few seconds (writes fail
     with EACCES until it's ready), so retry in a background thread rather than
@@ -2666,7 +2797,7 @@ def _export_runtime_env() -> None:
     import threading
 
     keys = [
-        "GITHUB_PAT", "GIT_AUTHOR_EMAIL", "GIT_AUTHOR_NAME",
+        "GIT_AUTHOR_EMAIL", "GIT_AUTHOR_NAME",
         "AWS_REGION", "BEDROCK_MANTLE_REGION", "ANTHROPIC_MODEL", "CLAUDE_MODEL",
         "CODEX_MODEL", "KIRO_MODEL", "KIRO_HOME", "ARTIFACT_BUCKET", "WORKSPACE_ROOT",
     ]

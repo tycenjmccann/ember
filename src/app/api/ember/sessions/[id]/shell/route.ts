@@ -17,6 +17,7 @@ import { getOwnedSession, DEFAULT_USER_ID } from "@/lib/ember/sessions";
 import { getIdentity } from "@/lib/ember/identity";
 import { currentConfigVersion } from "@/lib/ember/config-store";
 import { prepareCodingSession, warmCodingSession } from "@/lib/ember/runtime";
+import { cloneTokenForUser } from "@/lib/ember/github-app";
 import { resolveRuntimeArn } from "@/lib/ember/tenant-store";
 
 export const dynamic = "force-dynamic";
@@ -40,7 +41,7 @@ export async function POST(
     );
   }
 
-  const { tenantId } = getIdentity(request);
+  const { userId: requesterId, tenantId } = getIdentity(request);
   const session = await getOwnedSession(params.id, tenantId);
   if (!session) {
     return NextResponse.json({ error: "Session not found" }, { status: 404 });
@@ -67,6 +68,11 @@ export async function POST(
   try {
     const userId = session.userId || DEFAULT_USER_ID;
     const configVersion = await currentConfigVersion(userId);
+    // GitHub token binds to the VERIFIED REQUESTER opening the terminal, not the
+    // session creator — shared tenant sessions must not lend a coworker the
+    // creator's repo access (mirrors the message route).
+    const { token: githubToken, connected: githubAppConnected } =
+      await cloneTokenForUser(requesterId, session.repo ?? session.cloneUrl);
     if (session.resumeTranscriptKey) {
       // Full setup must COMPLETE before the resume runs. Bound it so a pathological
       // clone can't hang the request past maxDuration; if it times out the PTY's
@@ -91,19 +97,25 @@ export async function POST(
           configVersion,
           region: REGION,
           authMode: session.authMode,
+          githubToken,
+          githubAppConnected,
         }).catch(() => null),
         new Promise<null>((r) => setTimeout(() => r(null), 50_000)),
       ]);
       resumeReady = Boolean(warmed?.resumeReady);
-    } else if (configVersion || session.authMode === "subscription" || session.claudeSessionId) {
-      // No transcript to install — just materialize config / plan creds, AND let the
-      // runtime restore a durable resume hint. A plain Bedrock session that already
-      // has a claudeSessionId (a chat turn ran, no port) must hit prepare too: on a
-      // recycled/cold VM only prepare's _restore_resume_launch_hint rebuilds
-      // /tmp/.resume-launch.sh, so the PTY lands in the live TUI instead of a bare
-      // shell. Bounded:
-      // wait briefly so `claude` reads .mcp.json on first launch, but never block
-      // the URL on a cold path (materialization continues server-side; marker dedupes).
+    } else {
+      // No transcript to install — still ALWAYS prepare a non-ported terminal.
+      // Prepare is the only path that runs _configure_git before the PTY opens, so
+      // it's what installs git auth for a terminal-only session: the App-scoped
+      // credential helper for a connected user, or the personal-deploy GITHUB_PAT
+      // fallback (materialized to the tmpfs token file shell-init reads) otherwise.
+      // Skipping it would leave a fresh Bedrock terminal with no git/gh auth until
+      // a chat turn ran. It also materializes config and lets the runtime restore
+      // the durable resume hint (_restore_resume_launch_hint rebuilds
+      // /tmp/.resume-launch.sh on a recycled/cold VM so the PTY lands in the live
+      // TUI, not a bare shell). Bounded: wait briefly so `claude` reads .mcp.json on
+      // first launch, but never block the URL on a cold path (materialization
+      // continues server-side; the marker dedupes).
       const prepared = await Promise.race([
         prepareCodingSession({
           sessionId: session.sessionId,
@@ -113,6 +125,8 @@ export async function POST(
           configVersion,
           region: REGION,
           authMode: session.authMode,
+          githubToken,
+          githubAppConnected,
         }).catch(() => null),
         new Promise<null>((r) => setTimeout(() => r(null), 4000)),
       ]);

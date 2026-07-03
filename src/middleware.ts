@@ -27,7 +27,7 @@ import {
   sessionCookieOptions,
   refreshCookieOptions,
 } from "@/lib/auth/session";
-import { USER_HEADER, TENANT_HEADER } from "@/lib/ember/identity";
+import { USER_HEADER, TENANT_HEADER, GROUPS_HEADER } from "@/lib/ember/identity";
 
 // Paths that must remain reachable without a session.
 const PUBLIC_PREFIXES = ["/api/auth/", "/login", "/_next/", "/favicon", "/apple-touch-icon", "/ember-icon", "/manifest"];
@@ -41,6 +41,7 @@ function stripIdentityHeaders(req: NextRequest): Headers {
   const h = new Headers(req.headers);
   h.delete(USER_HEADER);
   h.delete(TENANT_HEADER);
+  h.delete(GROUPS_HEADER);
   return h;
 }
 
@@ -116,6 +117,7 @@ export async function middleware(req: NextRequest) {
   const headers = stripIdentityHeaders(req);
   headers.set(USER_HEADER, claims.userId);
   headers.set(TENANT_HEADER, claims.tenantId);
+  if (claims.groups?.length) headers.set(GROUPS_HEADER, claims.groups.join(","));
   const res = NextResponse.next({ request: { headers } });
   // Persist the freshly minted id-token so subsequent requests skip the refresh.
   if (refreshedIdToken) {
