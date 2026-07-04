@@ -514,13 +514,22 @@ export default function EmberPage() {
           fetchSessions();
         } else {
           // Genuine pre-run failure (config / CLI error). Surface it in the
-          // session's overlay so it appears in the right chat, then persist.
+          // session's overlay so it appears in the right chat. The /message
+          // route's pre-stream 502 returns BEFORE persisting anything, so this
+          // overlay is the only record of the failed prompt + error.
           flash((err as Error).message);
           patchLive(sid, (turns) => [...turns, { role: "agent", text: `⚠ ${(err as Error).message}`, at: new Date().toISOString() }]);
-          const errTurns = liveTurns.current.get(sid);
-          if (errTurns) setActive((s) => (s && s.sessionId === sid ? { ...s, turns: errTurns } : s));
-          liveTurns.current.delete(sid);
-          bumpLive();
+          if (activeIdRef.current === sid) {
+            // Still on this session — fold the overlay into `active` and clear it.
+            const errTurns = liveTurns.current.get(sid);
+            if (errTurns) setActive((s) => (s && s.sessionId === sid ? { ...s, turns: errTurns } : s));
+            liveTurns.current.delete(sid);
+            bumpLive();
+          }
+          // Switched away → KEEP the overlay (like the completion path). Deleting
+          // it would drop the optimistic user turn AND the error, and nothing is
+          // persisted server-side, so the failed turn would vanish entirely. The
+          // selection effect adopts it on switch-back.
         }
       }
     } finally {
