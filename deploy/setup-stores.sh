@@ -144,7 +144,10 @@ fi
 # gate here, so the origin allowlist is a browser convenience, not the control —
 # scope it to the deploy URL when known, else allow any origin. Applied
 # unconditionally so existing buckets get backfilled, not just freshly created ones.
+# Strip any trailing slash: browser Origin headers never carry one, and S3
+# requires an exact match, so "https://app/" would reject a valid "https://app".
 CORS_ORIGIN="${DEPLOYMENT_URL:-*}"
+CORS_ORIGIN="${CORS_ORIGIN%/}"
 aws s3api put-bucket-cors --bucket "$ARTIFACT_BUCKET" --cors-configuration "{
   \"CORSRules\": [{
     \"AllowedMethods\": [\"GET\", \"PUT\", \"HEAD\"],
