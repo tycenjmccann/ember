@@ -214,6 +214,14 @@
   0%, 60%, 100% { transform: translateY(0); opacity: 0.5; }
   30% { transform: translateY(-4px); opacity: 1; }
 }
+/* Compact variant for the sidebar "Working" badge (background session running). */
+.typing--sm { gap: 3px; }
+.typing--sm span { width: 4px; height: 4px; background: var(--ios-blue); }
+@keyframes typing-sm {
+  0%, 60%, 100% { transform: translateY(0); opacity: 0.5; }
+  30% { transform: translateY(-2px); opacity: 1; }
+}
+.typing--sm span { animation-name: typing-sm; }
 
 /* ── Session warmth dots (the brand's hero moment, in the product) ──────────
    warm  = ember-500, glowing + breathing (a coal breathed back to life)

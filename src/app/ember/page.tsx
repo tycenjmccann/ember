@@ -1,6 +1,6 @@
 "use client";
 
-import { useState, useEffect, useCallback, useRef } from "react";
+import { useState, useEffect, useCallback, useMemo, useRef } from "react";
 import { Plus, Cloud, ArrowUp, Square, Trash2, GitBranch, MessageSquare, TerminalSquare, FileBox, Paperclip, Settings, Upload, Check, ChevronDown, ChevronLeft, X, KeyRound, Server, UserCircle } from "lucide-react";
 import dynamic from "next/dynamic";
 import { sseData } from "@/lib/sse";
@@ -17,10 +17,26 @@ const Lightbox = dynamic(() => import("@/components/ember/Lightbox"), { ssr: fal
 import type {
   EmberSession,
   EmberSessionSummary,
+  EmberTurn,
   EmberCli,
   EmberAuthMode,
   SessionWarmth,
 } from "@/lib/ember/types";
+
+// One in-flight turn per session. The chat used to hold a single `active`
+// session + single `sending`/abort/inflight set, so a turn's streamed deltas
+// were written to whatever session was on screen — switch chats mid-stream and
+// the other reply bled into the wrong window. Now every turn-scoped value is
+// keyed by sessionId: sessions stream independently and you can fire a new turn
+// in one while another is still running.
+interface LiveTurnCtrl {
+  base: number;          // turn count before this turn — recovery's ready threshold
+  displayPrompt: string; // handed to /stop so a killed turn still persists
+  acc: string;           // accumulated agent text so far (for /stop)
+  abort: AbortController;
+  stopped: boolean;      // Stop pressed → skip the mobile drop-recovery path
+  streamStarted: boolean; // SSE body began → a drop is recoverable, not a pre-run fail
+}
 
 const WARMTH_DOT: Record<SessionWarmth, string> = {
   warm: "warmth-dot warmth-dot--warm",   // ember-500, glow + breathe
@@ -44,17 +60,38 @@ export default function EmberPage() {
   const [selectedId, setSelectedId] = useState<string | null>(null);
   const [active, setActive] = useState<EmberSession | null>(null);
   const [draft, setDraft] = useState("");
-  const [sending, setSending] = useState(false);
-  const [stopping, setStopping] = useState(false);
-  // Aborts the in-flight turn's fetch/stream on Stop; the ref lets the Stop
-  // button reach the live controller. `stoppedRef` marks an abort as deliberate
-  // so the stream-drop recovery path (for mobile backgrounding) is skipped.
-  const turnAbort = useRef<AbortController | null>(null);
-  const stoppedRef = useRef(false);
-  // The live turn's display prompt + accumulated reply text, so Stop can hand
-  // them to the /stop route for server-side persistence (the killed /message
-  // request never gets to write them).
-  const inflight = useRef<{ displayPrompt: string; acc: string }>({ displayPrompt: "", acc: "" });
+  // Sessions with a turn currently running (drives per-session composer/Stop/
+  // typing UI + the "don't double-fire" guard). A Set so many sessions can run
+  // at once; state (not a ref) so the UI re-renders as turns start/finish.
+  const [sendingIds, setSendingIds] = useState<Set<string>>(() => new Set());
+  const [stoppingIds, setStoppingIds] = useState<Set<string>>(() => new Set());
+  // Per-session in-flight turn control (abort handle, stop flag, partial text).
+  // Keyed by sessionId so a turn is never confused with another session's.
+  const liveCtrl = useRef<Map<string, LiveTurnCtrl>>(new Map());
+  // Per-session live/optimistic turns while a turn streams. The render overlays
+  // the SELECTED session's entry onto `active`; deltas only ever mutate their
+  // own session's array, so switching chats can't cross streams. Bumping
+  // liveNonce forces a re-render when a map entry mutates (refs don't trigger
+  // React on their own).
+  const liveTurns = useRef<Map<string, EmberTurn[]>>(new Map());
+  const [liveNonce, setLiveNonce] = useState(0);
+  const bumpLive = useCallback(() => setLiveNonce((n) => n + 1), []);
+  const setSendingFor = useCallback((sid: string, on: boolean) => {
+    setSendingIds((prev) => {
+      const next = new Set(prev);
+      if (on) next.add(sid);
+      else next.delete(sid);
+      return next;
+    });
+  }, []);
+  const setStoppingFor = useCallback((sid: string, on: boolean) => {
+    setStoppingIds((prev) => {
+      const next = new Set(prev);
+      if (on) next.add(sid);
+      else next.delete(sid);
+      return next;
+    });
+  }, []);
   const [showNew, setShowNew] = useState(false);
   const [showConfig, setShowConfig] = useState(false);
   const [showAccount, setShowAccount] = useState(false);
@@ -85,7 +122,7 @@ export default function EmberPage() {
   // background/lock). The server finishes + persists the turn regardless; we
   // re-sync from it while the tab is visible until the reply lands. Bumping
   // recoverNonce (re-)arms the polling effect even when the tab never lost focus.
-  const pendingRecover = useRef<{ sid: string; baseCount: number } | null>(null);
+  const pendingRecover = useRef<Map<string, { baseCount: number }>>(new Map());
   const [recoverNonce, setRecoverNonce] = useState(0);
 
   const fetchSessions = useCallback(async () => {
@@ -108,12 +145,16 @@ export default function EmberPage() {
       const turns = d?.session?.turns;
       if (!Array.isArray(turns) || turns.length < baseCount + 2) return false;
       if (turns[turns.length - 1]?.role !== "agent") return false;
+      // Server is now authoritative for this session — drop the live overlay so
+      // the recovered turns (not the stale optimistic ones) render.
+      liveTurns.current.delete(sid);
+      bumpLive();
       setActive((prev) => (prev && prev.sessionId === sid ? d.session : prev));
       return true;
     } catch {
       return false;
     }
-  }, []);
+  }, [bumpLive]);
 
   useEffect(() => {
     fetchSessions();
@@ -168,11 +209,33 @@ export default function EmberPage() {
       .then((r) => (r.ok ? r.json() : null))
       .then((d) => {
         if (!d) return;
-        setActive(d.session);
-        setView(override ?? d.session.defaultView ?? "chat");
+        const server = d.session as EmberSession;
+        // If a turn is still streaming in this session, its live overlay is the
+        // source of truth — don't clobber it with the (staler) server turns.
+        // If a turn COMPLETED while we were away, its overlay was kept (persist
+        // may still be in flight): adopt whichever has more turns, then clear it.
+        const overlay = liveTurns.current.get(server.sessionId);
+        if (overlay && !sendingIds.has(server.sessionId)) {
+          if (overlay.length > server.turns.length) server.turns = overlay;
+          liveTurns.current.delete(server.sessionId);
+          bumpLive();
+        }
+        setActive(server);
+        setView(override ?? server.defaultView ?? "chat");
       })
       .catch(() => {});
+    // sendingIds/bumpLive intentionally omitted — this effect must run on
+    // selection change only, not when a background turn's sending flag flips.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [selectedId]);
+
+  // Live mirror of the on-screen session id, readable inside async turn loops
+  // without the stale `active` closure (a turn started in A must know when the
+  // user has since switched to B — e.g. to not steal focus back to A's input).
+  const activeIdRef = useRef<string | null>(null);
+  useEffect(() => {
+    activeIdRef.current = active?.sessionId ?? null;
+  }, [active?.sessionId]);
 
   const onStreamScroll = useCallback(() => {
     const el = scrollRef.current;
@@ -186,10 +249,22 @@ export default function EmberPage() {
     setStuck(true);
   }, []);
 
-  const lastText = active?.turns[active.turns.length - 1]?.text;
+  // Turns to render for the on-screen session: its live overlay while a turn
+  // streams (optimistic user msg + growing agent reply), else the persisted
+  // turns. Keying the overlay by sessionId is what keeps a background session's
+  // stream out of this view. liveNonce forces recompute as the overlay mutates.
+  const displayTurns = useMemo(() => {
+    if (!active) return [];
+    const live = liveTurns.current.get(active.sessionId);
+    return live ?? active.turns;
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [active, liveNonce]);
+  const activeSending = active ? sendingIds.has(active.sessionId) : false;
+
+  const lastText = displayTurns[displayTurns.length - 1]?.text;
   useEffect(() => {
     if (stuck) streamEnd.current?.scrollIntoView({ behavior: "smooth" });
-  }, [active?.turns.length, lastText, sending, stuck]);
+  }, [displayTurns.length, lastText, activeSending, stuck]);
 
   useEffect(() => {
     scrollToLatest("auto");
@@ -275,43 +350,64 @@ export default function EmberPage() {
   };
 
   const send = async () => {
-    if (!active || sending) return;
+    if (!active || activeSending) return;
     if (!draft.trim() && attachments.length === 0) return;
     const prompt = draft.trim();
     setDraft("");
     await runTurn(prompt);
   };
 
+  // Mutate a session's live-turn overlay in place, then bump the render nonce.
+  // Only the turn that owns `sid` ever calls this for its own session, so two
+  // concurrent turns never touch each other's array.
+  const patchLive = useCallback((sid: string, fn: (turns: EmberTurn[]) => EmberTurn[]) => {
+    const cur = liveTurns.current.get(sid) ?? [];
+    liveTurns.current.set(sid, fn(cur));
+    bumpLive();
+  }, [bumpLive]);
+
   const runTurn = async (prompt: string, displayAs?: string) => {
-    if (!active || sending) return;
+    if (!active) return;
+    const sid = active.sessionId;
+    // One turn per session (not one globally) — a turn already running in THIS
+    // session blocks a resend, but other sessions are free to run concurrently.
+    if (sendingIds.has(sid)) return;
     // Snapshot + clear pending attachments for this turn.
     const turnAttachments = attachments;
     if (!prompt && turnAttachments.length === 0) return;
-    const sid = active.sessionId;
     // Turn count before this turn — the server will hold baseCount+2 (user +
     // agent) once it persists, which is how recovery knows the reply is ready.
-    const baseCount = active.turns.length;
-    setSending(true);
+    // Seed the live overlay from the session's persisted turns.
+    const baseTurns = active.turns;
+    const baseCount = baseTurns.length;
     setAttachments([]); // consumed by this turn
     const optimisticAttach = turnAttachments.length
       ? turnAttachments.map((a) => ({ path: a.path, name: a.name, contentType: a.contentType, url: a.previewUrl }))
       : undefined;
-    setActive((s) =>
-      s ? { ...s, turns: [...s.turns, { role: "user", text: displayAs ?? prompt, at: new Date().toISOString(), ...(optimisticAttach ? { attachments: optimisticAttach } : {}) }] } : s
-    );
-    // True only once the SSE body started arriving — distinguishes a recoverable
-    // mid-stream drop (the turn is running server-side) from a real failure
-    // before the turn began (502/config error, buffered Codex error), which must
-    // surface as before rather than spin in "Reconnecting…" forever.
-    let streamStarted = false;
+    // Optimistic user message → into the overlay for THIS session only.
+    const userTurn: EmberTurn = {
+      role: "user",
+      text: displayAs ?? prompt,
+      at: new Date().toISOString(),
+      ...(optimisticAttach ? { attachments: optimisticAttach } : {}),
+    };
+    liveTurns.current.set(sid, [...baseTurns, userTurn]);
+    bumpLive();
     const abort = new AbortController();
-    turnAbort.current = abort;
-    stoppedRef.current = false;
-    inflight.current = { displayPrompt: displayAs ?? prompt, acc: "" };
+    const ctrl: LiveTurnCtrl = {
+      base: baseCount,
+      displayPrompt: displayAs ?? prompt,
+      acc: "",
+      abort,
+      stopped: false,
+      streamStarted: false,
+    };
+    liveCtrl.current.set(sid, ctrl);
+    setSendingFor(sid, true);
     try {
       const canStream = true; // every CLI streams (claude/codex/kiro)
       const res = await fetch(
-        `/api/ember/sessions/${active.sessionId}/message${canStream ? "?stream=1" : ""}`,
+        `/api/ember/sessions/${sid}/message${canStream ? "?stream=1" : ""}`,
         {
           method: "POST",
           headers: { "Content-Type": "application/json" },
@@ -325,10 +421,9 @@ export default function EmberPage() {
       );
 
       if (canStream && res.body && res.headers.get("content-type")?.includes("event-stream")) {
-        streamStarted = true;
-        setActive((s) =>
-          s ? { ...s, turns: [...s.turns, { role: "agent", text: "", at: new Date().toISOString() }] } : s
-        );
+        ctrl.streamStarted = true;
+        // Empty agent turn to grow — appended to THIS session's overlay.
+        patchLive(sid, (turns) => [...turns, { role: "agent", text: "", at: new Date().toISOString() }]);
         let acc = "";
         for await (const data of sseData(res.body)) {
           let obj: { type?: string; text?: string; response?: string; error?: string };
@@ -336,20 +431,34 @@ export default function EmberPage() {
           if (obj.type === "text") acc += obj.text || "";
           else if (obj.type === "done") acc = obj.response || acc;
           else if (obj.type === "error") acc += `\n⚠ ${obj.error}`;
-          inflight.current.acc = acc;
-          setActive((s) => {
-            if (!s) return s;
-            const turns = s.turns.slice();
-            turns[turns.length - 1] = { role: "agent", text: acc, at: turns[turns.length - 1].at };
-            return { ...s, turns };
+          ctrl.acc = acc;
+          patchLive(sid, (turns) => {
+            const next = turns.slice();
+            const last = next[next.length - 1];
+            next[next.length - 1] = { role: "agent", text: acc, at: last?.at ?? new Date().toISOString() };
+            return next;
           });
         }
+        // Turn complete. If the user is still on this session, adopt the finished
+        // overlay as its turns and drop the overlay (no flicker — displayTurns
+        // falls back to active.turns). If they've switched away, KEEP the completed
+        // overlay: the server persist runs concurrently with this completion, so a
+        // switch-back fetch could momentarily race ahead of the write and show the
+        // session without its reply. The selection effect reconciles the overlay
+        // against the server and clears it once the server has caught up.
+        const finalTurns = liveTurns.current.get(sid) ?? baseTurns;
+        if (activeIdRef.current === sid) {
+          setActive((s) => (s && s.sessionId === sid ? { ...s, turns: finalTurns } : s));
+          liveTurns.current.delete(sid);
+        }
+        bumpLive();
         fetchSessions();
       } else {
-        // Buffered path (codex). A long turn (clone + cold-Mantle retries) can
-        // outlast the front-end proxy's idle timeout, which then answers with a
-        // PLAINTEXT body ("upstream request timeout") — not JSON. Parse defensively
-        // so the user sees a readable timeout, not a raw "Unexpected token 'u'".
+        // Buffered path (proxy timeout fallback). A long turn (clone + cold-Mantle
+        // retries) can outlast the front-end proxy's idle timeout, which then
+        // answers with a PLAINTEXT body ("upstream request timeout") — not JSON.
+        // Parse defensively so the user sees a readable timeout, not a raw
+        // "Unexpected token 'u'".
         const raw = await res.text();
         let data: { error?: string; session?: EmberSession } = {};
         try { data = JSON.parse(raw); } catch { /* non-JSON proxy/error body */ }
@@ -361,16 +470,21 @@ export default function EmberPage() {
                 : `Turn failed (${res.status})`)
           );
         }
-        if (data.session) setActive(data.session);
+        if (data.session) {
+          const server = data.session;
+          setActive((s) => (s && s.sessionId === sid ? server : s));
+        }
+        liveTurns.current.delete(sid);
+        bumpLive();
         fetchSessions();
       }
     } catch (err) {
-      if (stoppedRef.current) {
+      if (ctrl.stopped) {
         // Deliberate Stop (Ctrl-C) — NOT a dropped stream. The /stop route killed
         // the turn AND persisted the interrupted user msg + partial reply + the
         // stop marker server-side; stopTurn() adopts that authoritative session.
         // Nothing to do here (don't run the mobile-drop recovery).
-      } else if (streamStarted) {
+      } else if (ctrl.streamStarted) {
         // The stream dropped after starting — most often a phone backgrounding/
         // locking mid-turn. The server keeps running the turn and persists the
         // reply regardless, so don't strand a dead "Network Error" bubble: try to
@@ -378,40 +492,42 @@ export default function EmberPage() {
         // re-sync (recoverNonce) that polls while the tab is visible.
         const recovered = await recoverActiveTurn(sid, baseCount);
         if (!recovered) {
-          pendingRecover.current = { sid, baseCount };
+          pendingRecover.current.set(sid, { baseCount });
           setRecoverNonce((n) => n + 1);
           flash("Reconnecting — your reply is still coming.");
           fetchSessions();
         }
       } else {
         // Buffered turn failed at the transport (no stream to drop). A gateway
-        // timeout (502/504) doesn't stop the server — the codex turn keeps running
+        // timeout (502/504) doesn't stop the server — the turn keeps running
         // and persists its reply — so try recovery first, exactly like the
         // stream-drop path, before surfacing an error. A genuine pre-run failure
-        // (config/Codex exit) won't have the extra turns, so recovery no-ops and
+        // (config/CLI exit) won't have the extra turns, so recovery no-ops and
         // we fall through to the visible error.
         const recovered = await recoverActiveTurn(sid, baseCount);
         if (recovered) {
           fetchSessions();
         } else if (/gateway allows|502|504/.test((err as Error).message)) {
-          pendingRecover.current = { sid, baseCount };
+          pendingRecover.current.set(sid, { baseCount });
           setRecoverNonce((n) => n + 1);
           flash("Still working — your reply is on its way.");
           fetchSessions();
         } else {
-          // Genuine pre-run failure (config / Codex error). Surface it.
+          // Genuine pre-run failure (config / CLI error). Surface it in the
+          // session's overlay so it appears in the right chat, then persist.
           flash((err as Error).message);
-          setActive((s) =>
-            s
-              ? { ...s, turns: [...s.turns, { role: "agent", text: `⚠ ${(err as Error).message}`, at: new Date().toISOString() }] }
-              : s
-          );
+          patchLive(sid, (turns) => [...turns, { role: "agent", text: `⚠ ${(err as Error).message}`, at: new Date().toISOString() }]);
+          const errTurns = liveTurns.current.get(sid);
+          if (errTurns) setActive((s) => (s && s.sessionId === sid ? { ...s, turns: errTurns } : s));
+          liveTurns.current.delete(sid);
+          bumpLive();
         }
       }
     } finally {
-      turnAbort.current = null;
-      setSending(false);
-      requestAnimationFrame(() => inputRef.current?.focus());
+      liveCtrl.current.delete(sid);
+      setSendingFor(sid, false);
+      // Only steal focus back if the user is still looking at this session.
+      if (activeIdRef.current === sid) requestAnimationFrame(() => inputRef.current?.focus());
     }
   };
 
@@ -419,16 +535,21 @@ export default function EmberPage() {
   // server to halt the headless CLI (StopRuntimeSession), which also kicks off a
   // background re-warm so the next message lands on a hot VM. Partial work stays
   // on disk; the conversation resumes on the next turn.
-  const stopTurn = async () => {
-    if (!active || !sending || stopping) return;
-    setStopping(true);
-    const sid = active.sessionId;
-    const { displayPrompt, acc } = inflight.current;
+  // Stop the turn running in `sid` (defaults to the on-screen session). Keyed by
+  // session so the Stop button only ever halts the chat you're looking at, never
+  // a turn running in the background.
+  const stopTurn = async (sid?: string) => {
+    const target = sid ?? active?.sessionId;
+    if (!target) return;
+    const ctrl = liveCtrl.current.get(target);
+    if (!ctrl || !sendingIds.has(target) || stoppingIds.has(target)) return;
+    setStoppingFor(target, true);
+    const { displayPrompt, acc } = ctrl;
     try {
       // Tell the server to stop: it kills the CLI, PERSISTS the interrupted turn
       // (the killed /message request can't), and starts the re-warm. Adopt the
       // returned authoritative session so the history survives a reload.
-      const res = await fetch(`/api/ember/sessions/${sid}/stop`, {
+      const res = await fetch(`/api/ember/sessions/${target}/stop`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ displayPrompt, partial: acc }),
@@ -440,18 +561,22 @@ export default function EmberPage() {
       // surface the failure instead of silently suppressing it.
       const data = res && res.ok ? await res.json().catch(() => null) : null;
       if (data?.stopped) {
-        stoppedRef.current = true;
+        ctrl.stopped = true;
         if (data.session) {
-          setActive((s) => (s && s.sessionId === sid ? data.session : s));
+          const server = data.session;
+          setActive((s) => (s && s.sessionId === target ? server : s));
         }
+        // Server is authoritative now — drop the live overlay for this session.
+        liveTurns.current.delete(target);
+        bumpLive();
         // Abort the local stream so runTurn's loop unwinds into the stopped branch.
-        turnAbort.current?.abort();
+        ctrl.abort.abort();
         fetchSessions();
       } else {
         flash(data?.error ? `Couldn't stop: ${data.error}` : "Couldn't stop the turn — still running.");
       }
     } finally {
-      setStopping(false);
+      setStoppingFor(target, false);
     }
   };
 
@@ -461,7 +586,7 @@ export default function EmberPage() {
   // wait on a future focus event. Re-armed by recoverNonce; gives up after a
   // bounded window so a turn that truly never persists doesn't poll forever.
   useEffect(() => {
-    if (!pendingRecover.current) return;
+    if (pendingRecover.current.size === 0) return;
     let stopped = false;
     let timer: ReturnType<typeof setTimeout> | undefined;
     const deadline = Date.now() + 10 * 60_000; // match the runtime's ~max turn
@@ -474,16 +599,18 @@ export default function EmberPage() {
     };
 
     async function attempt() {
-      const p = pendingRecover.current;
-      if (stopped || !p) return finish();
+      if (stopped || pendingRecover.current.size === 0) return finish();
       if (document.visibilityState !== "visible") return; // resume on next focus
-      if (await recoverActiveTurn(p.sid, p.baseCount)) {
-        pendingRecover.current = null;
-        fetchSessions();
-        return finish();
+      // Poll every session with a dropped turn — each recovers independently.
+      for (const [sid, { baseCount }] of Array.from(pendingRecover.current.entries())) {
+        if (await recoverActiveTurn(sid, baseCount)) {
+          pendingRecover.current.delete(sid);
+          fetchSessions();
+        }
       }
+      if (pendingRecover.current.size === 0) return finish();
       if (Date.now() > deadline) {
-        pendingRecover.current = null;
+        pendingRecover.current.clear();
         flash("Couldn't reconnect — reopen the session to see the latest.");
         return finish();
       }
@@ -584,7 +711,16 @@ export default function EmberPage() {
                   <div className="min-w-0 flex-1">
                     <div className="flex items-center gap-2">
                       <span className="text-[15px] font-semibold truncate flex-1">{s.title}</span>
-                      <span className="text-[11px] text-[var(--color-text-muted)] shrink-0">{WARMTH_LABEL[s.warmth]}</span>
+                      {sendingIds.has(s.sessionId) ? (
+                        // A turn is streaming in this session — show it even when
+                        // you're viewing a different chat, so a background run is visible.
+                        <span className="flex items-center gap-1 text-[11px] font-medium text-[var(--ios-blue)] shrink-0">
+                          <span className="typing typing--sm"><span /><span /><span /></span>
+                          Working
+                        </span>
+                      ) : (
+                        <span className="text-[11px] text-[var(--color-text-muted)] shrink-0">{WARMTH_LABEL[s.warmth]}</span>
+                      )}
                     </div>
                     <div className="flex items-center gap-1.5 mt-0.5 text-[12px] text-[var(--color-text-secondary)]">
                       <CliBadge cli={s.cli} className="text-[10px] !px-1.5 !py-0" />
@@ -746,14 +882,14 @@ export default function EmberPage() {
               data-testid="cc-stream"
               className="h-full overflow-y-auto ios-scroll overscroll-contain px-3.5 md:px-6 py-5 flex flex-col gap-2.5"
             >
-              {active.turns.length === 0 && (
+              {displayTurns.length === 0 && (
                 <div className="mx-auto mt-6 max-w-sm text-center">
                   <p className="text-[13px] text-[var(--color-text-secondary)] leading-relaxed px-4 py-3 rounded-2xl inline-block" style={{ background: "var(--ios-fill-tertiary)" }}>
                     First task clones the repo (warm after). Try: “add a CONTRIBUTING.md, commit on a branch, open a PR.”
                   </p>
                 </div>
               )}
-              {active.turns.map((t, i) =>
+              {displayTurns.map((t, i) =>
                 t.role === "user" ? (
                   <div key={i} className="msg-in self-end max-w-[85%] md:max-w-[70%] flex flex-col items-end gap-1.5">
                     {t.attachments && t.attachments.length > 0 && (
@@ -796,9 +932,9 @@ export default function EmberPage() {
                   </div>
                 )
               )}
-              {sending && (
+              {activeSending && (
                 <div className="msg-in self-start bubble-agent px-4 py-3 mt-1.5">
-                  {active.turns.length <= 1 ? (
+                  {displayTurns.length <= 1 ? (
                     // Cold first turn: clone+warm can take 10–50s → kindling.
                     <span className="flex items-center gap-2.5">
                       <KindlingLoader size="inline" />
@@ -862,7 +998,7 @@ export default function EmberPage() {
                     along with the next message straight to the Claude session. */}
                 <button
                   onClick={() => attachInput.current?.click()}
-                  disabled={attaching || sending}
+                  disabled={attaching || activeSending}
                   className="press-sm w-[34px] h-[34px] mb-0.5 rounded-full flex items-center justify-center flex-shrink-0 disabled:opacity-40"
                   style={{ background: "var(--color-surface-2)", border: "0.5px solid var(--color-border)" }}
                   aria-label="Attach a file"
@@ -881,7 +1017,7 @@ export default function EmberPage() {
                       }
                     }}
                     rows={1}
-                    placeholder={sending ? "Working…" : "Message"}
+                    placeholder={activeSending ? "Working…" : "Message"}
                     autoFocus
                     autoComplete="off"
                     autoCorrect="off"
@@ -893,10 +1029,10 @@ export default function EmberPage() {
                 </div>
                 {/* While a turn runs: a Stop button (chat Ctrl-C) replaces send/mic.
                     Otherwise mic when the composer is empty, send when there's text. */}
-                {sending ? (
+                {activeSending ? (
                   <button
-                    onClick={stopTurn}
-                    disabled={stopping}
+                    onClick={() => stopTurn()}
+                    disabled={active ? stoppingIds.has(active.sessionId) : false}
                     data-testid="cc-stop"
                     className="press-sm w-[34px] h-[34px] mb-0.5 rounded-full text-white flex items-center justify-center transition-all flex-shrink-0 disabled:opacity-50"
                     style={{ background: "var(--ios-red)" }}
