@@ -420,8 +420,11 @@ export default function EmberPage() {
     if (!prompt && turnAttachments.length === 0) return;
     // Turn count before this turn — the server will hold baseCount+2 (user +
     // agent) once it persists, which is how recovery knows the reply is ready.
-    // Seed the live overlay from the session's persisted turns.
-    const baseTurns = active.turns;
+    // Seed from the overlay when one exists (a just-completed reply the selection
+    // effect hasn't reconciled yet), else the persisted turns — i.e. exactly what
+    // displayTurns renders. Seeding from active.turns alone could drop that reply,
+    // since a switch-back fetch can return the pre-persist server snapshot.
+    const baseTurns = liveTurns.current.get(sid) ?? active.turns;
     const baseCount = baseTurns.length;
     setAttachments([]); // consumed by this turn
     const optimisticAttach = turnAttachments.length
