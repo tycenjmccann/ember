@@ -25,6 +25,16 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 # specific server. One shared image serves every engineer's synced config.
 RUN pip install --no-cache-dir uv
 
+# AWS CLI v2 — so an agent can run `aws ...` directly (parity with a laptop),
+# not just boto3. The runtime already carries creds via the execution role, so
+# the CLI is authed out of the box. arm64 to match the base image. Installed to
+# /usr/local so both the /invocations subprocess and the PTY shell see it.
+RUN curl -fsSL "https://awscli.amazonaws.com/awscli-exe-linux-aarch64.zip" -o /tmp/awscliv2.zip \
+    && unzip -q /tmp/awscliv2.zip -d /tmp \
+    && /tmp/aws/install \
+    && rm -rf /tmp/awscliv2.zip /tmp/aws \
+    && aws --version
+
 # GitHub CLI — lets the agent enumerate/inspect repos it has access to
 # (authenticated via GH_TOKEN, which the server exports from GITHUB_PAT).
 RUN curl -fsSL https://cli.github.com/packages/githubcli-archive-keyring.gpg \
