@@ -89,6 +89,12 @@ export default function EmberPage() {
   // session must STAY busy (block a resend, hold its overlay) until recovery
   // resolves — else a resend clobbers the pending overlay and the still-armed
   // recovery later deletes the resend's overlay too.
+  // Sessions whose live overlay holds an error the server WON'T have: an
+  // in-stream `error` frame appends "⚠ …" to the partial agent text client-side,
+  // but the route persists only the partial (no marker), so overlay and server
+  // end up the SAME length. Length-based reconciliation would then drop the ⚠ on
+  // switch-back; this set makes the selection effect prefer the overlay instead.
+  const liveError = useRef<Set<string>>(new Set());
   const [recoveringIds, setRecoveringIds] = useState<Set<string>>(() => new Set());
   const setRecoveringFor = useCallback((sid: string, on: boolean) => {
     setRecoveringIds((prev) => {
@@ -162,6 +168,7 @@ export default function EmberPage() {
       // Server is now authoritative for this session — drop the live overlay so
       // the recovered turns (not the stale optimistic ones) render.
       liveTurns.current.delete(sid);
+      liveError.current.delete(sid);
       bumpLive();
       setActive((prev) => (prev && prev.sessionId === sid ? d.session : prev));
       return true;
@@ -233,8 +240,14 @@ export default function EmberPage() {
         const overlay = liveTurns.current.get(server.sessionId);
         const busy = sendingIds.has(server.sessionId) || recoveringIds.has(server.sessionId);
         if (overlay && !busy) {
-          if (overlay.length > server.turns.length) server.turns = overlay;
+          // Adopt the overlay if it has more turns OR carries an in-stream error
+          // the server never persisted (same length, but the ⚠ marker only lives
+          // in the overlay). Otherwise the server is authoritative.
+          if (overlay.length > server.turns.length || liveError.current.has(server.sessionId)) {
+            server.turns = overlay;
+          }
           liveTurns.current.delete(server.sessionId);
+          liveError.current.delete(server.sessionId);
           bumpLive();
         }
         setActive(server);
@@ -387,6 +400,13 @@ export default function EmberPage() {
     bumpLive();
   }, [bumpLive]);
 
+  // Drop a session's overlay AND its error flag together — the flag must never
+  // outlive the overlay it describes, or it would force-adopt a later turn's.
+  const dropOverlay = useCallback((sid: string) => {
+    liveTurns.current.delete(sid);
+    liveError.current.delete(sid);
+  }, []);
+
   const runTurn = async (prompt: string, displayAs?: string) => {
     if (!active) return;
     const sid = active.sessionId;
@@ -453,7 +473,7 @@ export default function EmberPage() {
           try { obj = JSON.parse(data); } catch { continue; }
           if (obj.type === "text") acc += obj.text || "";
           else if (obj.type === "done") acc = obj.response || acc;
-          else if (obj.type === "error") acc += `\n⚠ ${obj.error}`;
+          else if (obj.type === "error") { acc += `\n⚠ ${obj.error}`; liveError.current.add(sid); }
           ctrl.acc = acc;
           patchLive(sid, (turns) => {
             const next = turns.slice();
@@ -471,8 +491,9 @@ export default function EmberPage() {
         // against the server and clears it once the server has caught up.
         const finalTurns = liveTurns.current.get(sid) ?? baseTurns;
         if (activeIdRef.current === sid) {
+          // ⚠ (if any) is now folded into active.turns, so the flag can go too.
           setActive((s) => (s && s.sessionId === sid ? { ...s, turns: finalTurns } : s));
-          liveTurns.current.delete(sid);
+          dropOverlay(sid);
         }
         bumpLive();
         fetchSessions();
@@ -497,7 +518,7 @@ export default function EmberPage() {
           const server = data.session;
           setActive((s) => (s && s.sessionId === sid ? server : s));
         }
-        liveTurns.current.delete(sid);
+        dropOverlay(sid);
         bumpLive();
         fetchSessions();
       }
@@ -548,7 +569,7 @@ export default function EmberPage() {
             // Still on this session — fold the overlay into `active` and clear it.
             const errTurns = liveTurns.current.get(sid);
             if (errTurns) setActive((s) => (s && s.sessionId === sid ? { ...s, turns: errTurns } : s));
-            liveTurns.current.delete(sid);
+            dropOverlay(sid);
             bumpLive();
           }
           // Switched away → KEEP the overlay (like the completion path). Deleting
@@ -601,7 +622,7 @@ export default function EmberPage() {
           setActive((s) => (s && s.sessionId === target ? server : s));
         }
         // Server is authoritative now — drop the live overlay for this session.
-        liveTurns.current.delete(target);
+        dropOverlay(target);
         bumpLive();
         // Abort the local stream so runTurn's loop unwinds into the stopped branch.
         ctrl.abort.abort();
