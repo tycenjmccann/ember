@@ -84,6 +84,20 @@ export default function EmberPage() {
       return next;
     });
   }, []);
+  // Sessions whose stream dropped and are polling for the persisted reply. Kept
+  // separate from sendingIds because the turn's `finally` clears sending, but the
+  // session must STAY busy (block a resend, hold its overlay) until recovery
+  // resolves — else a resend clobbers the pending overlay and the still-armed
+  // recovery later deletes the resend's overlay too.
+  const [recoveringIds, setRecoveringIds] = useState<Set<string>>(() => new Set());
+  const setRecoveringFor = useCallback((sid: string, on: boolean) => {
+    setRecoveringIds((prev) => {
+      const next = new Set(prev);
+      if (on) next.add(sid);
+      else next.delete(sid);
+      return next;
+    });
+  }, []);
   const setStoppingFor = useCallback((sid: string, on: boolean) => {
     setStoppingIds((prev) => {
       const next = new Set(prev);
@@ -210,12 +224,15 @@ export default function EmberPage() {
       .then((d) => {
         if (!d) return;
         const server = d.session as EmberSession;
-        // If a turn is still streaming in this session, its live overlay is the
-        // source of truth — don't clobber it with the (staler) server turns.
-        // If a turn COMPLETED while we were away, its overlay was kept (persist
-        // may still be in flight): adopt whichever has more turns, then clear it.
+        // If a turn is still streaming OR recovering a dropped stream in this
+        // session, its live overlay is the source of truth — don't clobber it
+        // with the (staler) server turns; the stream loop / recovery poll owns
+        // clearing it. If a turn COMPLETED while we were away, its overlay was
+        // kept (persist may still be in flight): adopt whichever has more turns,
+        // then clear it.
         const overlay = liveTurns.current.get(server.sessionId);
-        if (overlay && !sendingIds.has(server.sessionId)) {
+        const busy = sendingIds.has(server.sessionId) || recoveringIds.has(server.sessionId);
+        if (overlay && !busy) {
           if (overlay.length > server.turns.length) server.turns = overlay;
           liveTurns.current.delete(server.sessionId);
           bumpLive();
@@ -259,7 +276,11 @@ export default function EmberPage() {
     return live ?? active.turns;
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [active, liveNonce]);
-  const activeSending = active ? sendingIds.has(active.sessionId) : false;
+  // "Busy" = actively streaming OR recovering a dropped turn. Both block a
+  // resend and keep the composer in its working state.
+  const activeSending = active
+    ? sendingIds.has(active.sessionId) || recoveringIds.has(active.sessionId)
+    : false;
 
   const lastText = displayTurns[displayTurns.length - 1]?.text;
   useEffect(() => {
@@ -371,7 +392,9 @@ export default function EmberPage() {
     const sid = active.sessionId;
     // One turn per session (not one globally) — a turn already running in THIS
     // session blocks a resend, but other sessions are free to run concurrently.
-    if (sendingIds.has(sid)) return;
+    // A session still recovering a dropped turn also counts as busy: resending
+    // now would clobber the pending overlay and confuse the armed recovery.
+    if (sendingIds.has(sid) || recoveringIds.has(sid)) return;
     // Snapshot + clear pending attachments for this turn.
     const turnAttachments = attachments;
     if (!prompt && turnAttachments.length === 0) return;
@@ -493,6 +516,7 @@ export default function EmberPage() {
         const recovered = await recoverActiveTurn(sid, baseCount);
         if (!recovered) {
           pendingRecover.current.set(sid, { baseCount });
+          setRecoveringFor(sid, true); // stay busy until the reply lands
           setRecoverNonce((n) => n + 1);
           flash("Reconnecting — your reply is still coming.");
           fetchSessions();
@@ -509,6 +533,7 @@ export default function EmberPage() {
           fetchSessions();
         } else if (/gateway allows|502|504/.test((err as Error).message)) {
           pendingRecover.current.set(sid, { baseCount });
+          setRecoveringFor(sid, true); // stay busy until the reply lands
           setRecoverNonce((n) => n + 1);
           flash("Still working — your reply is on its way.");
           fetchSessions();
@@ -614,11 +639,13 @@ export default function EmberPage() {
       for (const [sid, { baseCount }] of Array.from(pendingRecover.current.entries())) {
         if (await recoverActiveTurn(sid, baseCount)) {
           pendingRecover.current.delete(sid);
+          setRecoveringFor(sid, false); // reply landed → session free again
           fetchSessions();
         }
       }
       if (pendingRecover.current.size === 0) return finish();
       if (Date.now() > deadline) {
+        for (const sid of Array.from(pendingRecover.current.keys())) setRecoveringFor(sid, false);
         pendingRecover.current.clear();
         flash("Couldn't reconnect — reopen the session to see the latest.");
         return finish();
@@ -720,9 +747,10 @@ export default function EmberPage() {
                   <div className="min-w-0 flex-1">
                     <div className="flex items-center gap-2">
                       <span className="text-[15px] font-semibold truncate flex-1">{s.title}</span>
-                      {sendingIds.has(s.sessionId) ? (
-                        // A turn is streaming in this session — show it even when
-                        // you're viewing a different chat, so a background run is visible.
+                      {sendingIds.has(s.sessionId) || recoveringIds.has(s.sessionId) ? (
+                        // A turn is streaming (or recovering a dropped stream) in
+                        // this session — show it even when you're viewing a
+                        // different chat, so a background run is visible.
                         <span className="flex items-center gap-1 text-[11px] font-medium text-[var(--ios-blue)] shrink-0">
                           <span className="typing typing--sm"><span /><span /><span /></span>
                           Working
@@ -1041,7 +1069,7 @@ export default function EmberPage() {
                 {activeSending ? (
                   <button
                     onClick={() => stopTurn()}
-                    disabled={active ? stoppingIds.has(active.sessionId) : false}
+                    disabled={active ? (stoppingIds.has(active.sessionId) || !sendingIds.has(active.sessionId)) : false}
                     data-testid="cc-stop"
                     className="press-sm w-[34px] h-[34px] mb-0.5 rounded-full text-white flex items-center justify-center transition-all flex-shrink-0 disabled:opacity-50"
                     style={{ background: "var(--ios-red)" }}
