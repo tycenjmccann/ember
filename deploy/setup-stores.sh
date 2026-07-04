@@ -137,6 +137,25 @@ else
     '{"Rules":[{"ApplyServerSideEncryptionByDefault":{"SSEAlgorithm":"AES256"}}]}' >/dev/null
 fi
 
+# CORS — the web app uploads composer attachments via a presigned PUT straight
+# from the browser to S3 (see /api/ember/sessions/[id]/artifacts). That's a
+# cross-origin request from the App Runner domain, so without a CORS rule the
+# preflight fails and every upload silently breaks. Presigned URLs are the auth
+# gate here, so the origin allowlist is a browser convenience, not the control —
+# scope it to the deploy URL when known, else allow any origin. Applied
+# unconditionally so existing buckets get backfilled, not just freshly created ones.
+CORS_ORIGIN="${DEPLOYMENT_URL:-*}"
+aws s3api put-bucket-cors --bucket "$ARTIFACT_BUCKET" --cors-configuration "{
+  \"CORSRules\": [{
+    \"AllowedMethods\": [\"GET\", \"PUT\", \"HEAD\"],
+    \"AllowedOrigins\": [\"${CORS_ORIGIN}\"],
+    \"AllowedHeaders\": [\"*\"],
+    \"ExposeHeaders\": [\"ETag\"],
+    \"MaxAgeSeconds\": 3000
+  }]
+}" >/dev/null
+echo "  [cors] PUT/GET allowed from ${CORS_ORIGIN}"
+
 # ─── 2b. Migrate legacy config/auth artifacts under the tenant prefix ─────────
 # Phase 2 moved every S3 key under ember/t/<tenantId>/… so a per-tenant runtime
 # role can be IAM-scoped to its own subtree. Config bundles + subscription creds
