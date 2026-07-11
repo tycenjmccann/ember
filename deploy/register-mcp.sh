@@ -14,18 +14,19 @@
 #
 # Idempotent: re-running --write updates the existing server in place.
 #
-# The server name MUST be "port-session" (the default): the MCP's own code
-# hard-codes that token in the slash-command prefix it prints for follow-up
-# steps (/mcp__port-session__pull / sync-config) AND in the sync-config
-# self-exclusion. Renaming it here would make those printed commands dangle and
-# would no longer exclude the handoff server from a config sync. Override via
-# MCP_SERVER_NAME only if you also update src/index.ts + src/config.ts.
+# The server name MUST be "ember" (the default): the MCP's own code hard-codes
+# that token in the slash-command prefix it prints for follow-up steps
+# (/mcp__ember__pull / sync-config), the web UI's copy-command button, AND the
+# sync-config self-exclusion. Renaming it here would make those printed/emitted
+# commands dangle and would no longer exclude the handoff server from a config
+# sync. Override via MCP_SERVER_NAME only if you also update src/index.ts +
+# src/config.ts + the web app's PullCommandButton.
 
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]:-$0}")/.." && pwd)"
 WRITE=0
-SERVER_NAME="${MCP_SERVER_NAME:-port-session}"
+SERVER_NAME="${MCP_SERVER_NAME:-ember}"
 CLAUDE_JSON="${CLAUDE_CONFIG_FILE:-$HOME/.claude.json}"
 
 for arg in "$@"; do

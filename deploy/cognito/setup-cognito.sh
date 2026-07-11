@@ -126,7 +126,7 @@ CLIENT_SECRET=$(aws cognito-idp describe-user-pool-client \
 # ── 5. Public CLI app client (PKCE, NO secret) for the port-session MCP ───────
 # The MCP runs on a laptop, so it can't hold a client secret — it uses a PUBLIC
 # client with the authorization-code + PKCE flow and a loopback redirect. This is
-# what `/mcp__port-session__auth` drives: opens the Hosted UI, captures the code
+# what `/mcp__ember__auth` drives: opens the Hosted UI, captures the code
 # on http://localhost:<port>/callback, exchanges it with PKCE (no secret).
 CLI_CLIENT_NAME="ember-cli"
 # Loopback ports the MCP may bind; all registered so whichever is free works.

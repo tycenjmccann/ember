@@ -22,7 +22,7 @@ export function PullCommandButton({ sessionId, className }: PullCommandButtonPro
     if (timerRef.current) clearTimeout(timerRef.current);
   }, []);
 
-  const command = `/mcp__port-session__pull ${sessionId}`;
+  const command = `/mcp__ember__pull ${sessionId}`;
 
   const handleCopy = useCallback(async () => {
     try {

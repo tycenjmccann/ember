@@ -15,7 +15,7 @@
  * Nothing set → no header. Correct for a personal deploy (EMBER_AUTH_DISABLED=1).
  * Against an auth'd deploy the call 401s; emberFetch (below) catches that, runs
  * the Hosted-UI login automatically, and retries — so the user never hand-runs
- * `/mcp__port-session__auth` (it stays available for signing in ahead of time).
+ * `/mcp__ember__auth` (it stays available for signing in ahead of time).
  *
  * The token is sent ONLY to EMBER_URL — never to presigned S3 URLs (their SigV4
  * must not see a third-party bearer). Only the helpers here add it.
