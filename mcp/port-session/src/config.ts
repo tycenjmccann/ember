@@ -280,7 +280,9 @@ async function sanitizeClaudeMcp(res: GatherResult): Promise<Record<string, unkn
   const servers = (doc.mcpServers || {}) as Record<string, ServerDesc>;
   const out: Record<string, unknown> = {};
   for (const [name, raw] of Object.entries(servers)) {
-    if (name === "port-session") continue; // the laptop-only handoff tool itself
+    // Skip the laptop-only handoff tool itself, under either its current
+    // ("ember") or legacy ("port-session") registration name.
+    if (name === "ember" || name === "port-session") continue;
     const verdict = classifyServer(name, raw);
     res.classified.push(verdict);
     for (const k of verdict.redactedEnv || []) res.redactedEnv.push(`${name}.${k}`);

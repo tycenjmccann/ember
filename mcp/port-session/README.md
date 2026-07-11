@@ -22,7 +22,7 @@ PORT  "port this to the cloud, I'm catching the train"
   5. return a deep link  (+ the /pull command for later)
         ▼  open on phone → claude --resume <id>, continue
 
-PULL  "I'm back at my desk"  →  /mcp__port-session__pull cc-...
+PULL  "I'm back at my desk"  →  /mcp__ember__pull cc-...
   1. POST /sessions/[id]/checkpoint → cloud uploads the GROWN transcript to S3
   2. download it → overwrite the local ~/.claude/projects/<slug>/<id>.jsonl
      (prior local copy backed up to .bak-<stamp>)
@@ -58,7 +58,7 @@ Add to your global MCP config (`~/.claude.json` → `mcpServers`):
 ```json
 {
   "mcpServers": {
-    "port-session": {
+    "ember": {
       "command": "node",
       "args": ["/absolute/path/to/ember/mcp/port-session/dist/index.js"],
       "env": {
@@ -91,7 +91,7 @@ expires.
 Want to sign in ahead of time (or switch accounts)? Run it explicitly:
 
 ```
-/mcp__port-session__auth
+/mcp__ember__auth
 ```
 
 Token source order (first wins):
@@ -105,7 +105,7 @@ all unset — calls go through unauthenticated, as before.
 
 ## Tools
 
-### `port_session_to_cloud`  (slash: `/mcp__port-session__port`)
+### `port_session_to_cloud`  (slash: `/mcp__ember__port`)
 
 | Arg | Default | Notes |
 |---|---|---|
@@ -135,7 +135,7 @@ ran and, for `selfContained`, how to push to a real remote later when you want t
 Slash command's one comma arg: `view, title, first prompt, new branch` (all optional).
 Returns a deep link `<EMBER_URL>/ember?session=<id>` + the `/pull` command for the return leg.
 
-### `pull_session_from_cloud`  (slash: `/mcp__port-session__pull`)
+### `pull_session_from_cloud`  (slash: `/mcp__ember__pull`)
 
 | Arg | Default | Notes |
 |---|---|---|
@@ -144,7 +144,7 @@ Returns a deep link `<EMBER_URL>/ember?session=<id>` + the `/pull` command for t
 
 Brings the cloud's work home and prints `/exit` + `claude --resume <id>`.
 
-### `sync_cli_config`  (slash: `/mcp__port-session__sync-config`)
+### `sync_cli_config`  (slash: `/mcp__ember__sync-config`)
 
 **One-time setup** (re-run when your local config changes) — mirror this laptop's
 coding-CLI configuration to Ember so every future cloud session is a clone of
@@ -182,7 +182,7 @@ The sync output prints all three buckets so you know exactly what will and won't
 work, and how to fix the rest. `port-session` itself is always excluded. Secret env
 is never uploaded (Codex `config.toml` ships verbatim — check it for inline secrets).
 
-### `authenticate`  (slash: `/mcp__port-session__auth`)
+### `authenticate`  (slash: `/mcp__ember__auth`)
 
 **Optional / manual** — sign-in is normally automatic (any tool that hits a
 `401` triggers this same flow and retries). Run it explicitly only to sign in

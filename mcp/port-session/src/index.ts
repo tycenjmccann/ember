@@ -185,7 +185,7 @@ const AUTH_TOOL = {
 server.setRequestHandler(ListToolsRequestSchema, async () => ({ tools: [TOOL, PULL_TOOL, SYNC_TOOL, LOGIN_TOOL, AUTH_TOOL] }));
 
 // Slash-command surface: a `port` prompt shows up as
-// /mcp__port-session__port. Selecting it tells Claude to call the tool now.
+// /mcp__ember__port. Selecting it tells Claude to call the tool now.
 const PORT_PROMPT = {
   name: "port",
   description: "Port this coding session to Ember (commit + push, then resume in the cloud).",
