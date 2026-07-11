@@ -1764,8 +1764,8 @@ function AccountSheet({ onClose, onToast }: { onClose: () => void; onToast: (m: 
       )}
 
       <p className="text-[11px] text-[var(--color-text-muted)] mt-4 px-1 leading-relaxed">
-        Easiest path: the <span className="font-mono">port-session</span> MCP — run{" "}
-        <span className="font-mono">/mcp__port-session__login claude</span> (or <span className="font-mono">codex</span>) from your laptop and it pushes the credential here automatically.
+        Easiest path: the <span className="font-mono">ember</span> MCP — run{" "}
+        <span className="font-mono">/mcp__ember__login claude</span> (or <span className="font-mono">codex</span>) from your laptop and it pushes the credential here automatically.
       </p>
     </Sheet>
   );
