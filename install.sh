@@ -8,10 +8,11 @@
 #   3. Role        — coding runtime IAM execution role   (setup-coding-runtime-role.sh)
 #   4. Network     — VPC private subnets + NAT egress + EFS (setup-coding-efs.sh)
 #   5. Runtime     — build/push ARM64 image + deploy AgentCore runtime
-#   6. Web         — build/push web image + App Runner service
+#   6. Web         — build/push web image + ECS Express Mode service
+#                    (WEB_DEPLOY=apprunner keeps updating a legacy App Runner one)
 #   7. Persist     — write .env.local with every resolved id/URL
 #
-# Result: a public App Runner URL serving the Ember UI over a coding runtime
+# Result: a public HTTPS URL serving the Ember UI over a coding runtime
 # that lives entirely in your account. Pure-infra cost ~$15-30/mo; LLM is the
 # only real variable cost (and $0 marginal if you connect your own Claude/ChatGPT
 # plan — see the in-app /cost calculator).
@@ -20,7 +21,7 @@
 #   export AWS_PROFILE=<your-profile>     # creds for the target account
 #   ./install.sh                          # full install
 #   ./install.sh --skip-runtime           # web only (runtime already deployed)
-#   ./install.sh --runtime-only           # backend only, no App Runner web
+#   ./install.sh --runtime-only           # backend only, no web tier
 #   ./install.sh --with-mcp               # also wire the port-session MCP into ~/.claude.json
 #
 # Optional env (sensible defaults, override in .env.local or the shell):
@@ -148,9 +149,17 @@ if [ "$RUNTIME_ONLY" -eq 1 ]; then
   exit 0
 fi
 
-# ─── 6. Web (App Runner) ──────────────────────────────────────────────────────
-step "6/7  Build web image + deploy App Runner"
-"$ROOT/deploy/apprunner/deploy.sh"
+# ─── 6. Web (ECS Express Mode; App Runner legacy) ─────────────────────────────
+# ECS Express Mode is the default: App Runner is closed to NEW AWS customers
+# (end of support 2026-04-30). Existing App Runner deploys keep working — set
+# WEB_DEPLOY=apprunner to keep updating one in place.
+if [ "${WEB_DEPLOY:-ecs-express}" = "apprunner" ]; then
+  step "6/7  Build web image + deploy App Runner (legacy)"
+  "$ROOT/deploy/apprunner/deploy.sh"
+else
+  step "6/7  Build web image + deploy ECS Express Mode"
+  "$ROOT/deploy/ecs-express/deploy.sh"
+fi
 
 # ─── 7. Smoke test ────────────────────────────────────────────────────────────
 # Run ONE real coding turn so a broken deploy fails loudly here (with the cause)
@@ -170,7 +179,7 @@ fi
 step "Done"
 # shellcheck disable=SC1091
 source "$ROOT/.env.local" 2>/dev/null || true
-echo "  Ember is live → ${DEPLOYMENT_URL:-(see App Runner console)}"
+echo "  Ember is live → ${DEPLOYMENT_URL:-(see ECS console)}"
 
 # Laptop ⇄ cloud MCP: --with-mcp builds + merges it into ~/.claude.json with
 # EMBER_URL pre-filled; otherwise print the ready-to-paste block + how to add it.

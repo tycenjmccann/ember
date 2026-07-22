@@ -69,8 +69,14 @@ npm install
 
 `install.sh` is idempotent and stands up everything end to end — DynamoDB + S3, the IAM
 execution role, VPC private subnets with a NAT gateway for runtime egress + an EFS workspace,
-the AgentCore coding runtime (Claude Code + Codex + Kiro), and a public App Runner URL. It prints
-the live URL at the end.
+the AgentCore coding runtime (Claude Code + Codex + Kiro), and a public web URL served by
+**Amazon ECS Express Mode** (Fargate + ALB, one API call). It prints the live URL at the end.
+
+> **Why not App Runner?** App Runner is [closed to new AWS customers](https://docs.aws.amazon.com/apprunner/latest/dg/apprunner-availability-change.html)
+> (end of support 2026-04-30). ECS Express Mode is AWS's named successor. Existing App
+> Runner deploys keep working — run with `WEB_DEPLOY=apprunner ./install.sh` to keep
+> updating one, and see [`deploy/ecs-express/README.md`](deploy/ecs-express/README.md)
+> for the migration path.
 
 > **Account guard.** Set `EXPECTED_ACCOUNT_ID` in `.env.local` and the deploy refuses to
 > run against any other account — protection against a wrong profile.
@@ -116,7 +122,7 @@ marginal if you connect your own plan.** Rough monthly, using current AWS rates:
 
 | Piece | Rate | Small team |
 |---|---|---|
-| App Runner (1 vCPU / 2 GB) | $0.064/vCPU-hr + $0.007/GB-hr | ~$15–25 (pauseable to ~$0) |
+| ECS Express Mode / Fargate (1 vCPU / 2 GB) + ALB | ~$0.04/hr Fargate + ~$16/mo ALB | ~$45–50 |
 | AgentCore runtime | $0.0895/vCPU-hr, idle CPU free | ~$0.05–0.12 per active session-hour |
 | DynamoDB + S3 | on-demand | cents |
 | **LLM (Bedrock)** | per token | $2–20 / heavy session |
@@ -133,7 +139,7 @@ AWS_PROFILE=<your-profile> npm run dev          # http://localhost:3000
 ```
 
 > The app uses Next.js `output: standalone`. For local production runs use
-> `npm run dev`; production is served by the App Runner container (`Dockerfile`).
+> `npm run dev`; production is served by the same container (`Dockerfile`) on ECS Express Mode.
 
 ## What's in the repo
 
@@ -144,7 +150,7 @@ AWS_PROFILE=<your-profile> npm run dev          # http://localhost:3000
 | `src/app/api/ember/` | API routes: sessions CRUD, message (stream + buffered), shell presign, warm, checkpoint, port, config, auth. |
 | `src/lib/ember/` | Runtime client, DynamoDB session store, S3 config/auth/secrets stores, tenant silo registry, request identity, shell wire protocol. |
 | `src/middleware.ts` | The auth gate — verifies the Cognito JWT and stamps `tenantId`/`userId` on every request. |
-| `deploy/` | `install.sh` building blocks: stores, IAM role, VPC/EFS, runtime, App Runner; `provision-tenant.sh` / `offboard-tenant.sh` for per-tenant silos; `cognito/` setup + admin-user CLI. |
+| `deploy/` | `install.sh` building blocks: stores, IAM role, VPC/EFS, runtime, `ecs-express/` web tier (App Runner legacy in `apprunner/`); `provision-tenant.sh` / `offboard-tenant.sh` for per-tenant silos; `cognito/` setup + admin-user CLI. |
 | `deploy/coding-agent-runtime/` | The AgentCore runtime image + deploy (Claude Code + Codex + Kiro, EFS workspace, OTel). |
 | `mcp/port-session/` | Local stdio MCP server — `port`, `pull`, `sync-config`, `login` tools. |
 | `docs/ENTERPRISE.md` | Multi-tenant architecture + the VPC/SSO/audit hardening path for company-wide rollout. |
@@ -190,7 +196,7 @@ employee); sessions, config, and credentials are scoped to them. Set it up:
 ```bash
 deploy/cognito/setup-cognito.sh                 # provision pool + client + domain
 # add COGNITO_* output to deploy/.env.local, then:
-deploy/apprunner/deploy.sh
+deploy/ecs-express/deploy.sh
 deploy/cognito/admin-user.sh add you@co.com --tenant acme --admin
 ```
 

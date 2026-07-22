@@ -2,6 +2,10 @@
 #
 # deploy/apprunner/deploy.sh — Idempotent App Runner deployment for Ember.
 #
+# LEGACY: App Runner is closed to NEW AWS customers (end of support 2026-04-30).
+# Kept for existing services only — new deploys should use
+# deploy/ecs-express/deploy.sh (the install.sh default).
+#
 # Creates (if needed):
 #   1. ECR repo: ember-web
 #   2. AppRunnerECRAccessRole (App Runner pulls from ECR)

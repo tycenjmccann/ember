@@ -35,7 +35,7 @@ what this answers. Post-Ona, every platform/security team is asking it.
 ## Multi-tenant architecture
 
 A tenant = a company (`custom:tenantId`); a user = an employee (Cognito `sub`).
-The **control plane is pooled** (one App Runner app, one DynamoDB table, one
+The **control plane is pooled** (one web service, one DynamoDB table, one
 bucket — all scoped by tenant), and the **compute plane is silo-on-demand**: a
 tenant runs on the shared pool runtime until you provision it a dedicated one.
 
@@ -131,12 +131,12 @@ runtime runs in-VPC with a private-IP-only ENI.
 needs `ec2:CreateSubnet`, `ec2:*NatGateway*`, `ec2:*RouteTable*`, `ec2:AllocateAddress`.
 
 **Further hardening (optional):**
-- Put App Runner behind a **VPC connector**; reach DynamoDB/S3/Bedrock over **VPC
+- Run the ECS Express service in **your VPC subnets**; reach DynamoDB/S3/Bedrock over **VPC
   endpoints (PrivateLink)** so AWS-service traffic skips the public internet (this
   reduces NAT traffic but does NOT replace it — GitHub still needs real egress).
 - Restrict the runtime's egress to an allowlist of approved Git hosts / package
   registries via your proxy or NAT-fronted firewall.
-- Private App Runner ingress + WAF, or front with an internal ALB.
+- Private ingress (internal ALB) + WAF on the ECS Express service.
 
 ### 3. Per-tenant credential + storage isolation  *(shipped)*
 - All artifacts (config bundles, ported transcripts, bundles, checkpoints) live
