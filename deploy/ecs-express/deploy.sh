@@ -204,8 +204,11 @@ echo "  [6/6] ECS Express Mode service: $SERVICE_NAME"
 # place. Match the service-name segment EXACTLY — a prefix match could hit a
 # sibling service and, since serviceArns ordering isn't guaranteed, update the
 # wrong one.
-EXISTING_ARN=$(SERVICE_NAME="$SERVICE_NAME" aws ecs list-services --cluster "$CLUSTER" --region "$AWS_REGION" --output json 2>/dev/null \
-  | python3 -c "
+# NB: the SERVICE_NAME assignment must sit on the python3 side of the pipe — a
+# prefix on `aws` doesn't reach the second command, and the 2>/dev/null||true
+# would silently swallow the KeyError, making every re-run "create" a duplicate.
+EXISTING_ARN=$(aws ecs list-services --cluster "$CLUSTER" --region "$AWS_REGION" --output json 2>/dev/null \
+  | SERVICE_NAME="$SERVICE_NAME" python3 -c "
 import json, os, sys
 want = os.environ['SERVICE_NAME']
 for arn in json.load(sys.stdin).get('serviceArns', []):
