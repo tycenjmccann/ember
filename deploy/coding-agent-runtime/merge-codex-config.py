@@ -48,7 +48,7 @@ def main() -> None:
         # table is the user's and must survive. (Re-strip on every merge so we
         # don't duplicate our own keys.)
         if in_top_level and re.match(
-            r"^\s*(model|model_provider|model_context_window|model_max_output_tokens)\s*=", line
+            r"^\s*(model|model_provider|model_context_window|model_max_output_tokens|web_search)\s*=", line
         ):
             continue
         kept.append(line)
@@ -70,7 +70,10 @@ def main() -> None:
         # warns and falls back to conservative defaults. Declare the limits
         # explicitly (GPT-5.5: 400k context, 128k max output).
         f'model_context_window = 400000\n'
-        f'model_max_output_tokens = 128000\n\n'
+        f'model_max_output_tokens = 128000\n'
+        # Bedrock Mantle's Responses API does not support the web_search built-in
+        # tool. Disable it explicitly so Codex never sends it to the model.
+        f'web_search = "disabled"\n\n'
         f'[model_providers.bedrock-mantle]\n'
         f'name = "Amazon Bedrock Mantle (OpenAI-compatible)"\n'
         f'base_url = "{base_url}"\n'
