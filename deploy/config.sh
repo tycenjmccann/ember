@@ -22,7 +22,7 @@ fi
 export AWS_REGION="${AWS_REGION:-us-east-1}"
 export ACCOUNT_ID="${AWS_ACCOUNT_ID:-$(aws sts get-caller-identity --query Account --output text)}"
 
-# App Runner deployment URL (set after first deploy, used by CI and tests)
+# Web deployment URL (set after first deploy, used by CI and tests)
 export DEPLOYMENT_URL="${DEPLOYMENT_URL:-}"
 
 # GitHub
@@ -33,7 +33,7 @@ export FLEET_REPO_URL="${FLEET_REPO_URL:-https://github.com/${GITHUB_OWNER}/embe
 export AGENTCORE_ROLE_ARN="${AGENTCORE_ROLE_ARN:-arn:aws:iam::${ACCOUNT_ID}:role/ember-agentcore-role}"
 export LAMBDA_ROLE_ARN="${LAMBDA_ROLE_ARN:-arn:aws:iam::${ACCOUNT_ID}:role/ember-lambda-role}"
 
-# S3 — single bucket shared by App Runner, Lambdas, and runtime agents
+# S3 — single bucket shared by the web tier, Lambdas, and runtime agents
 export ARTIFACT_BUCKET="${ARTIFACT_BUCKET:-ember-artifacts-${ACCOUNT_ID}-${AWS_REGION}}"
 
 # DynamoDB tables

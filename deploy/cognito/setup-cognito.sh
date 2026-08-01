@@ -204,7 +204,7 @@ done
 cat <<EOF
 
 ── Cognito ready ──────────────────────────────────────────────────────────────
-Add these to deploy/.env.local (gitignored), then run deploy/apprunner/deploy.sh:
+Add these to deploy/.env.local (gitignored), then run deploy/ecs-express/deploy.sh:
 
 COGNITO_USER_POOL_ID="${POOL_ID}"
 COGNITO_CLIENT_ID="${CLIENT_ID}"
@@ -213,7 +213,7 @@ COGNITO_DOMAIN="${COGNITO_DOMAIN}"
 COGNITO_CLI_CLIENT_ID="${CLI_CLIENT_ID}"
 
 Callback URL registered: ${CALLBACK_URLS}
-(If DEPLOYMENT_URL was unset/localhost, rerun this after the first App Runner
+(If DEPLOYMENT_URL was unset/localhost, rerun this after the first web
 deploy so the real URL is registered as a callback.)
 
 Create your first admin:
