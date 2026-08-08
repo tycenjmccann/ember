@@ -44,6 +44,12 @@ export EMBER_TABLE="${EMBER_TABLE:-ember-sessions}"
 
 # Ember — the standalone coding-agent runtime (set after deploy.py prints the ARN)
 export CODING_AGENT_RUNTIME_ARN="${CODING_AGENT_RUNTIME_ARN:-}"
+# How much AWS access the runtime's execution role grants the agent:
+#   locked (default) | readonly | poweruser | admin
+# Widens setup-coding-runtime-role.sh with an AWS-managed policy. The runtime
+# runs untrusted agent output, so anything beyond `locked` trusts the agent with
+# real account access — scope by account if that matters. See that script's docs.
+export CODING_RUNTIME_ACCESS="${CODING_RUNTIME_ACCESS:-locked}"
 # Default MCP gateway wired into Ember CLIs (shared Jira/S3/Skill tools).
 export MCP_GATEWAY_URL="${MCP_GATEWAY_URL:-}"
 export MCP_GATEWAY_NAME="${MCP_GATEWAY_NAME:-ember_gateway}"
