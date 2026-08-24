@@ -18,7 +18,7 @@ export const REFRESH_COOKIE = "ember_refresh_token";
 /** id-token cookie lifetime — matches the id-token validity on the app client. */
 export const SESSION_MAX_AGE_S = 24 * 60 * 60;
 /** Refresh-token cookie lifetime — the cap on "stay logged in" (10y). */
-export const REFRESH_MAX_AGE_S = 3650 * 24 * 60 * 60;
+const REFRESH_MAX_AGE_S = 3650 * 24 * 60 * 60;
 
 export function sessionCookieOptions(maxAgeS: number = SESSION_MAX_AGE_S) {
   return {

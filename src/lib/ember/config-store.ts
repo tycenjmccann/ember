@@ -36,7 +36,7 @@ export interface ConfigVersion {
   createdAt: string;
 }
 
-export interface UserConfig {
+interface UserConfig {
   userId: string;
   versions: ConfigVersion[];
   currentVersion?: string;

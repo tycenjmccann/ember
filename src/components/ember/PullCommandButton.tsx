@@ -69,5 +69,3 @@ export function PullCommandButton({ sessionId, className }: PullCommandButtonPro
     </button>
   );
 }
-
-export default PullCommandButton;

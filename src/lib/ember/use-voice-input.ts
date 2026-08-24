@@ -47,7 +47,7 @@ function getCtor(): SpeechRecognitionCtor | null {
   return w.SpeechRecognition || w.webkitSpeechRecognition || null;
 }
 
-export interface VoiceInput {
+interface VoiceInput {
   /** True when this browser can do on-device dictation. */
   supported: boolean;
   /** True while actively listening. */

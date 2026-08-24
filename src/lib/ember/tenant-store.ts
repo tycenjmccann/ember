@@ -15,7 +15,7 @@
  */
 
 import { DynamoDBClient } from "@aws-sdk/client-dynamodb";
-import { DynamoDBDocumentClient, GetCommand, PutCommand } from "@aws-sdk/lib-dynamodb";
+import { DynamoDBDocumentClient, GetCommand } from "@aws-sdk/lib-dynamodb";
 import { DEFAULT_TENANT_ID } from "./identity";
 
 const REGION = process.env.AWS_REGION || "us-east-1";
@@ -28,7 +28,7 @@ const ddb = DynamoDBDocumentClient.from(new DynamoDBClient({ region: REGION }), 
 
 const keyFor = (tenantId: string) => `tenant:${tenantId}`;
 
-export interface TenantSilo {
+interface TenantSilo {
   tenantId: string;
   // Dedicated AgentCore runtime ARN. Absent → the tenant uses the shared runtime.
   runtimeArn?: string;
@@ -44,7 +44,7 @@ export interface TenantSilo {
 const cache = new Map<string, { arn: string; at: number }>();
 const CACHE_TTL_MS = 60_000;
 
-export async function getTenantSilo(tenantId: string): Promise<TenantSilo | null> {
+async function getTenantSilo(tenantId: string): Promise<TenantSilo | null> {
   try {
     const res = await ddb.send(
       new GetCommand({ TableName: TABLE, Key: { sessionId: keyFor(tenantId) } })
@@ -63,16 +63,6 @@ export async function getTenantSilo(tenantId: string): Promise<TenantSilo | null
     // shared runtime (caller handles the empty string). Returning null does that.
     return null;
   }
-}
-
-export async function putTenantSilo(silo: TenantSilo): Promise<void> {
-  await ddb.send(
-    new PutCommand({
-      TableName: TABLE,
-      Item: { sessionId: keyFor(silo.tenantId), ...silo },
-    })
-  );
-  cache.delete(silo.tenantId);
 }
 
 /**

@@ -34,12 +34,12 @@ const ddb = DynamoDBDocumentClient.from(new DynamoDBClient({ region: REGION }), 
 
 const keyFor = (userId: string) => `auth:${userId}`;
 
-export interface CliAuthMeta {
+interface CliAuthMeta {
   connectedAt: string;
   label?: string; // e.g. "Claude Pro" / the ChatGPT account email if present
 }
 
-export interface UserAuthStatus {
+interface UserAuthStatus {
   claude?: CliAuthMeta;
   codex?: CliAuthMeta;
   kiro?: CliAuthMeta;
