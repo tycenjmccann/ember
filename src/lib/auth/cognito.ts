@@ -32,7 +32,7 @@ export function cognitoConfig(): CognitoConfig | null {
   return { region, userPoolId, clientId, cliClientId, domain: domain.replace(/\/$/, "") };
 }
 
-export function issuerUrl(cfg: CognitoConfig): string {
+function issuerUrl(cfg: CognitoConfig): string {
   return `https://cognito-idp.${cfg.region}.amazonaws.com/${cfg.userPoolId}`;
 }
 

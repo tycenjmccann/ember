@@ -23,7 +23,7 @@ import { DEFAULT_TENANT_ID } from "./identity";
 import type { EmberCli } from "./types";
 
 /** Per-tenant root. Everything an IAM policy would scope hangs off this. */
-export function tenantRoot(tenantId: string = DEFAULT_TENANT_ID): string {
+function tenantRoot(tenantId: string = DEFAULT_TENANT_ID): string {
   return `ember/t/${tenantId}`;
 }
 
@@ -36,7 +36,7 @@ export function authKey(tenantId: string, userId: string, cli: EmberCli): string
 }
 
 /** Prefix the ported transcript + git bundle for a session live under. */
-export function resumePrefix(tenantId: string, sessionId: string): string {
+function resumePrefix(tenantId: string, sessionId: string): string {
   return `${tenantRoot(tenantId)}/resume/${sessionId}/`;
 }
 
@@ -65,7 +65,7 @@ export function artifactKey(tenantId: string, sessionId: string, rel: string): s
 /** Prefix a pulled-home session's transcript + checkpointed artifacts live under.
  *  Keyed by the conversation's RESUME id (the transcript filename id), which is
  *  what the runtime checkpoints under — NOT the Ember session id. */
-export function checkpointPrefix(tenantId: string, resumeId: string): string {
+function checkpointPrefix(tenantId: string, resumeId: string): string {
   return `${tenantRoot(tenantId)}/checkpoint/${resumeId}/`;
 }
 

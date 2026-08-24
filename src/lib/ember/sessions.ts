@@ -17,7 +17,6 @@ import {
   GetCommand,
   PutCommand,
   QueryCommand,
-  DeleteCommand,
 } from "@aws-sdk/lib-dynamodb";
 import type {
   EmberSession,
@@ -26,7 +25,7 @@ import type {
 } from "./types";
 import { DEFAULT_TENANT_ID, DEFAULT_USER_ID } from "./identity";
 
-export { DEFAULT_USER_ID, DEFAULT_TENANT_ID } from "./identity";
+export { DEFAULT_USER_ID } from "./identity";
 
 const REGION = process.env.AWS_REGION || "us-east-1";
 const TABLE = process.env.EMBER_TABLE || "ember-sessions";
@@ -88,10 +87,6 @@ export async function putSession(session: EmberSession): Promise<void> {
   // builds an EmberSession without one (and re-indexes legacy rows on rewrite).
   if (!session.tenantId) session.tenantId = DEFAULT_TENANT_ID;
   await ddb.send(new PutCommand({ TableName: TABLE, Item: session }));
-}
-
-export async function deleteSession(sessionId: string): Promise<void> {
-  await ddb.send(new DeleteCommand({ TableName: TABLE, Key: { sessionId } }));
 }
 
 // Grace before DynamoDB TTL expires a tombstoned row (and thereby triggers the
