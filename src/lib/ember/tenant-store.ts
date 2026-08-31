@@ -15,7 +15,7 @@
  */
 
 import { DynamoDBClient } from "@aws-sdk/client-dynamodb";
-import { DynamoDBDocumentClient, GetCommand, PutCommand } from "@aws-sdk/lib-dynamodb";
+import { DynamoDBDocumentClient, GetCommand } from "@aws-sdk/lib-dynamodb";
 import { DEFAULT_TENANT_ID } from "./identity";
 
 const REGION = process.env.AWS_REGION || "us-east-1";
@@ -63,16 +63,6 @@ export async function getTenantSilo(tenantId: string): Promise<TenantSilo | null
     // shared runtime (caller handles the empty string). Returning null does that.
     return null;
   }
-}
-
-export async function putTenantSilo(silo: TenantSilo): Promise<void> {
-  await ddb.send(
-    new PutCommand({
-      TableName: TABLE,
-      Item: { sessionId: keyFor(silo.tenantId), ...silo },
-    })
-  );
-  cache.delete(silo.tenantId);
 }
 
 /**
