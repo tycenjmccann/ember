@@ -80,5 +80,3 @@ export const CodeBlock = memo(function CodeBlock({
     </div>
   );
 });
-
-export default CodeBlock;
