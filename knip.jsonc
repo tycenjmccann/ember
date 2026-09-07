@@ -1,0 +1,21 @@
+{
+  "$schema": "https://unpkg.com/knip@5/schema.json",
+  "workspaces": {
+    // Root Next.js 14 App Router workspace; the Next.js plugin is auto-enabled because `next` is a dependency and supplies app/** page/layout/route/middleware entry points plus segment-config exports.
+    ".": {
+      // Explicit entry/config files per sweep requirement R1; knip plugins also cover these, hence redundant configuration hints, but they stay explicit for reviewer clarity.
+      "entry": ["src/middleware.ts", "next.config.mjs", "tailwind.config.js", "postcss.config.js"],
+      // Root tsconfig excludes `mcp`, so root project files are restricted to application source under src.
+      "project": ["src/**/*.{ts,tsx}"],
+      // @tailwindcss/typography is required from tailwind.config.js; @smithy/node-http-handler is a transitive package named only in next.config.mjs serverComponentsExternalPackages, not a direct dependency.
+      "ignoreDependencies": ["@tailwindcss/typography", "@smithy/node-http-handler"]
+    },
+    // Independent MCP package with its own package.json, lockfile, tsconfig, and `type: module`; src/index.ts is the stdio MCP server built to dist/index.js for the package bin.
+    "mcp/port-session": {
+      // Stdio MCP server entrypoint built to dist/index.js and exposed via the package `bin` field.
+      "entry": ["src/index.ts"],
+      // MCP workspace project files are scoped to its TypeScript source tree.
+      "project": ["src/**/*.ts"]
+    }
+  }
+}
