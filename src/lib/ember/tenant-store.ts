@@ -28,7 +28,7 @@ const ddb = DynamoDBDocumentClient.from(new DynamoDBClient({ region: REGION }), 
 
 const keyFor = (tenantId: string) => `tenant:${tenantId}`;
 
-export interface TenantSilo {
+interface TenantSilo {
   tenantId: string;
   // Dedicated AgentCore runtime ARN. Absent → the tenant uses the shared runtime.
   runtimeArn?: string;
@@ -44,7 +44,7 @@ export interface TenantSilo {
 const cache = new Map<string, { arn: string; at: number }>();
 const CACHE_TTL_MS = 60_000;
 
-export async function getTenantSilo(tenantId: string): Promise<TenantSilo | null> {
+async function getTenantSilo(tenantId: string): Promise<TenantSilo | null> {
   try {
     const res = await ddb.send(
       new GetCommand({ TableName: TABLE, Key: { sessionId: keyFor(tenantId) } })

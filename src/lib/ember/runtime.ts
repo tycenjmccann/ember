@@ -46,7 +46,7 @@ function client(region: string): BedrockAgentCoreClient {
   return c;
 }
 
-export interface CodingTurnResult {
+interface CodingTurnResult {
   response: string;
   claudeSessionId?: string;
   cli: EmberCli;
@@ -57,7 +57,7 @@ export function codingRuntimeConfigured(): boolean {
   return Boolean(CODING_RUNTIME_ARN);
 }
 
-export interface CodingTurnParams {
+interface CodingTurnParams {
   sessionId: string; // runtimeSessionId — selects the warm microVM
   prompt: string;
   cli: EmberCli;

@@ -23,13 +23,13 @@ export const GROUPS_HEADER = "x-ember-groups";
 export const DEFAULT_TENANT_ID = "default";
 export const DEFAULT_USER_ID = "default";
 
-export interface Identity {
+interface Identity {
   userId: string;
   tenantId: string;
 }
 
 /** True when the deploy intentionally runs without auth (personal/dev mode). */
-export function authDisabled(): boolean {
+function authDisabled(): boolean {
   return process.env.EMBER_AUTH_DISABLED === "1";
 }
 

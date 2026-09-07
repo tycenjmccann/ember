@@ -25,7 +25,7 @@ import type {
 } from "./types";
 import { DEFAULT_TENANT_ID, DEFAULT_USER_ID } from "./identity";
 
-export { DEFAULT_USER_ID, DEFAULT_TENANT_ID } from "./identity";
+export { DEFAULT_USER_ID } from "./identity";
 
 const REGION = process.env.AWS_REGION || "us-east-1";
 const TABLE = process.env.EMBER_TABLE || "ember-sessions";

@@ -19,7 +19,7 @@ import { useEffect, useId, useRef, useState } from "react";
 
 const PHASES_DEFAULT = ["warming workspace", "resuming session"];
 
-export interface KindlingLoaderProps {
+interface KindlingLoaderProps {
   /** Flip true when the session is live — locks the pile to full glow + breathe. */
   lit?: boolean;
   /** Phase labels to cycle through under the pile (omit for none). */

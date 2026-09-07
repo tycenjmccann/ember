@@ -18,7 +18,7 @@ export enum ShellChannel {
 
 const MAX_FRAME = 64 * 1024;
 
-export interface DecodedFrame {
+interface DecodedFrame {
   channel: number;
   payload: Uint8Array;
 }
@@ -57,8 +57,4 @@ export function encodeResize(width: number, height: number): Uint8Array {
 
 export function encodeHeartbeat(): Uint8Array {
   return frame(ShellChannel.HEARTBEAT, new Uint8Array(0));
-}
-
-export function encodeClose(): Uint8Array {
-  return frame(ShellChannel.CLOSE, new Uint8Array(0));
 }

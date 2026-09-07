@@ -8,7 +8,7 @@
 
 import { cognitoConfig, type CognitoConfig } from "./cognito";
 
-export interface OAuthEnv extends CognitoConfig {
+interface OAuthEnv extends CognitoConfig {
   clientSecret?: string; // confidential client
   redirectUri: string; // <DEPLOYMENT_URL>/api/auth/callback
 }
@@ -48,7 +48,7 @@ export function logoutUrl(env: OAuthEnv, returnTo: string): string {
   return `${env.domain}/logout?${q.toString()}`;
 }
 
-export interface TokenSet {
+interface TokenSet {
   id_token: string;
   access_token: string;
   refresh_token?: string; // absent on refresh_token grant — reuse the stored one

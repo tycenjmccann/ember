@@ -23,7 +23,7 @@ import type { EmberCli } from "./types";
 const REGION = process.env.AWS_REGION || "us-east-1";
 const ARTIFACT_BUCKET = process.env.ARTIFACT_BUCKET || "";
 
-export type SecretsBackend = "s3" | "secretsmanager";
+type SecretsBackend = "s3" | "secretsmanager";
 
 export function secretsBackend(): SecretsBackend {
   return process.env.EMBER_SECRETS_BACKEND === "secretsmanager" ? "secretsmanager" : "s3";
@@ -31,7 +31,7 @@ export function secretsBackend(): SecretsBackend {
 
 /** Secrets Manager secret name for a credential. Tenant-scoped so a per-tenant
  *  role can be fenced to `ember/t/<tenantId>/*`. Mirrors the S3 key minus the .json. */
-export function secretName(tenantId: string, userId: string, cli: EmberCli): string {
+function secretName(tenantId: string, userId: string, cli: EmberCli): string {
   return `ember/t/${tenantId}/auth/${userId}/${cli}`;
 }
 

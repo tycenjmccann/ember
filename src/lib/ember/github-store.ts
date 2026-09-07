@@ -21,7 +21,7 @@ const ddb = DynamoDBDocumentClient.from(new DynamoDBClient({ region: REGION }), 
 
 const keyFor = (userId: string) => `github:${userId}`;
 
-export interface GithubConnection {
+interface GithubConnection {
   installationId: string;
   account?: string; // the org/user login the App is installed on
   repoSelection?: "all" | "selected";

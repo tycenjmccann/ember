@@ -19,7 +19,7 @@ import { getGithubConnection } from "./github-store";
 const GITHUB_API = process.env.GITHUB_API_URL || "https://api.github.com";
 
 /** Bare repo name from owner/name OR a clone URL (https/ssh), sans `.git`. */
-export function repoShortName(repo?: string): string | undefined {
+function repoShortName(repo?: string): string | undefined {
   if (!repo) return undefined;
   const last = repo
     .trim()
@@ -31,9 +31,9 @@ export function repoShortName(repo?: string): string | undefined {
 }
 
 // The App config as stored (App id + PEM, plus optional slug/OAuth creds).
-export type GithubAppConfig = GithubAppSecret;
+type GithubAppConfig = GithubAppSecret;
 
-export interface InstallationToken {
+interface InstallationToken {
   token: string;
   expiresAt: string; // ISO 8601
 }
@@ -100,7 +100,7 @@ function cacheKey(installationId: string, repositories?: string[]): string {
  * whole-installation token is issued otherwise. Throws if the App isn't
  * configured or GitHub rejects the request — callers fall back to GITHUB_PAT.
  */
-export async function mintInstallationToken(
+async function mintInstallationToken(
   installationId: string,
   repositories?: string[]
 ): Promise<InstallationToken> {
@@ -139,7 +139,7 @@ export async function mintInstallationToken(
   return minted;
 }
 
-export interface CloneTokenResult {
+interface CloneTokenResult {
   /** The minted installation token, if one was issued. */
   token?: string;
   /** True when the user has a GitHub App installation connected. When this is
