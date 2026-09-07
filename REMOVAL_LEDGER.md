@@ -202,7 +202,7 @@ REMOVED-set (∅) == deletions in diff (∅). `git diff --stat <base>..HEAD` sho
 - `@smithy/node-http-handler` — transitive package named only in next.config.mjs:14 `serverComponentsExternalPackages`; not a direct dependency, so knip needed `ignoreDependencies`.
 - `@aws-crypto/sha256-js`, `@smithy/signature-v4`, `@aws-sdk/credential-provider-node` — imported in src/app/api/ember/sessions/[id]/shell/route.ts:13, src/app/api/ember/sessions/[id]/shell/route.ts:14, and src/app/api/ember/sessions/[id]/shell/route.ts:15. These were pre-flagged as classic false positives; they were not flagged by any tool this run, listed pre-emptively.
 - `@tailwindcss/typography` — required from tailwind.config.js:92; config-only reference.
-- Next.js route/page/layout default exports, HTTP handler exports (`GET`/`POST`/`PUT`/`PATCH`/`DELETE`), src/middleware.ts `middleware`/`config`, and segment-config exports (`dynamic` ×27, `maxDuration`, `metadata`, `viewport`) — framework entry points flagged by ts-prune.
+- Next.js route/page/layout default exports, HTTP handler exports (`GET`/`POST`/`PUT`/`PATCH`/`DELETE`), src/middleware.ts `middleware`/`config`, and segment-config exports (`dynamic` ×21, `maxDuration` ×6, `metadata`, `viewport`) — framework entry points flagged by ts-prune.
 - depcheck root devDeps `@types/react-dom`, `autoprefixer`, `postcss`, `typescript` — tooling deps loaded by PostCSS/Next/tsc, invisible to import analysis.
 - `node:sqlite` — Node builtin flagged as unlisted/missing by knip (mcp) and depcheck (mcp).
 - All ts-prune `(used in module)` exports (root + mcp) — symbol used inside its own module; only the `export` keyword is unused; removing the keyword is a refactor, out of scope.
