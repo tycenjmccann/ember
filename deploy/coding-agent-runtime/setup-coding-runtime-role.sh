@@ -155,6 +155,45 @@ JSON
 aws iam put-role-policy --role-name "$ROLE_NAME" \
   --policy-name "CodingRuntimePerms" --policy-document "$PERMS" >/dev/null
 
+# ─── Optional broad AWS access ────────────────────────────────────────────────
+# The baseline policy above is least-privilege: the agent can reach Bedrock, the
+# artifact bucket, and its own secrets — nothing else. That's the safe default
+# for a runtime executing UNTRUSTED agent output, so OSS deploys get it unless
+# they opt in.
+#
+# But when you actually want the agent to operate on real AWS infra (inspect the
+# account, deploy stacks, etc.), set CODING_RUNTIME_ACCESS to widen the role by
+# attaching an AWS-managed policy. Everything the agent does is still bounded by
+# THIS account's resources — scope the blast radius by pointing the runtime at a
+# dedicated/non-prod account if that matters to you.
+#
+#   locked     (default) baseline only — everything else AccessDenied
+#   readonly   + ReadOnlyAccess          inspect anything, mutate nothing
+#   poweruser  + PowerUserAccess         full access EXCEPT IAM/Organizations
+#   admin      + AdministratorAccess     unrestricted (single-env / trusted use)
+CODING_RUNTIME_ACCESS="${CODING_RUNTIME_ACCESS:-locked}"
+case "$CODING_RUNTIME_ACCESS" in
+  locked)    BROAD_POLICY_ARN="" ;;
+  readonly)  BROAD_POLICY_ARN="arn:aws:iam::aws:policy/ReadOnlyAccess" ;;
+  poweruser) BROAD_POLICY_ARN="arn:aws:iam::aws:policy/PowerUserAccess" ;;
+  admin)     BROAD_POLICY_ARN="arn:aws:iam::aws:policy/AdministratorAccess" ;;
+  *) echo "ERROR: CODING_RUNTIME_ACCESS='$CODING_RUNTIME_ACCESS' invalid (locked|readonly|poweruser|admin)" >&2; exit 1 ;;
+esac
+
+# Detach any managed broad-access policy from a previous run so switching tiers
+# (or back to locked) doesn't leave a wider one stacked underneath.
+for _mp in ReadOnlyAccess PowerUserAccess AdministratorAccess; do
+  _arn="arn:aws:iam::aws:policy/${_mp}"
+  [ "$_arn" = "$BROAD_POLICY_ARN" ] && continue
+  aws iam detach-role-policy --role-name "$ROLE_NAME" --policy-arn "$_arn" 2>/dev/null || true
+done
+if [ -n "$BROAD_POLICY_ARN" ]; then
+  echo "  [attach] broad access: $CODING_RUNTIME_ACCESS ($BROAD_POLICY_ARN)"
+  aws iam attach-role-policy --role-name "$ROLE_NAME" --policy-arn "$BROAD_POLICY_ARN" >/dev/null
+else
+  echo "  [access] locked (baseline least-privilege only)"
+fi
+
 CODING_RUNTIME_ROLE_ARN="arn:aws:iam::${ACCOUNT_ID}:role/${ROLE_NAME}"
 export CODING_RUNTIME_ROLE_ARN
 
